@@ -1,0 +1,517 @@
+from __future__ import annotations
+"""mini_generator 后台任务队列：提交 → 后台执行 → 查询状态/结果。
+
+复用 long_task 的进程内 asyncio 注册表，无需 Redis/Celery。
+需求含报告意图（报告/可视化/图表/报表）时自动走「报告生成」模式（HTML 可视化报告），
+否则走通用生成模式（表格/文件输出）。
+"""
+import asyncio
+import json
+import os
+import re
+import sys
+import time
+import uuid
+import logging
+
+from app.services.long_task import start_background, is_running, cancel
+
+logger = logging.getLogger("app.services.mini_tasks")
+
+# task_id -> 任务记录
+_TASKS: dict[str, dict] = {}
+
+# 保留最近 N 个已完成任务，防止内存无限增长
+_MAX_KEPT = 200
+
+# 报告意图关键词：命中则走 HTML 可视化报告模式
+_REPORT_HINTS = ["报告", "可视化", "图表", "报表", "dashboard", "报告页"]
+
+# 报告输出目录：项目 web/（与隧道/静态服务共享，产出即可公网访问）
+_WEB_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "web"))
+
+
+def _is_report_request(requirement: str) -> bool:
+    r = requirement.lower()
+    return any(k in r for k in _REPORT_HINTS)
+
+
+REPORT_SYSTEM_PROMPT = """你是一位 Python 脚本专家 + 数据可视化设计师。生成一个 Python 脚本，完成「按用户需求抓取数据 → 统计分析 → 生成可视化报告」全流程。
+
+【数据抓取】按用户需求抓取指定网站/搜索关键词的数据（用 urllib.request 或 requests 加 proxies={"http": None, "https": None}，注意代理 SSL 降级；网页任务可用 Playwright）
+【统计分析】用 pandas 做需求要求的统计（分组/排序/TopN 等）
+【可视化报告 report.html】（重点，必须精美）
+- 单文件 HTML，纯 HTML/CSS/SVG 图表，禁止外链 CDN/库/字体
+- 现代浅色或优雅深色主题，圆角卡片、阴影、留白
+- 结构：标题（大号渐变）+ 统计摘要卡片 + SVG 图表（条形/折线/饼图，带数值标签）+ 数据表格 + 页脚（生成时间、数据来源）
+- 中文界面
+【输出】
+- 报告保存为 report.html 到当前目录
+- 打印 SUCCESS:DATA_ROWS:N（N=统计行数）和 PREVIEW_DATA:JSON（前5行）
+
+只输出完整 Python 代码，不要解释。"""
+
+
+def submit(requirement: str, url: str | None = None, user_id: str = "", image_paths: list[str] | None = None) -> dict:
+    """提交一个后台任务，立即返回任务信息（持久化到 SQLite，重启不丢）。"""
+    task_id = uuid.uuid4().hex[:12]
+    record = {
+        "id": task_id,
+        "user_id": user_id,
+        "requirement": requirement,
+        "url": url or "",
+        "status": "queued",
+        "progress": 0,
+        "message": "排队中",
+        "created_at": time.time(),
+        "result": None,
+        "error": None,
+        "image_paths": image_paths or [],
+    }
+    _TASKS[task_id] = record
+
+    # 清理超出上限的旧任务
+    if len(_TASKS) > _MAX_KEPT:
+        for tid in list(_TASKS.keys())[: len(_TASKS) - _MAX_KEPT]:
+            if not is_running(tid):
+                _TASKS.pop(tid, None)
+
+    started = start_background(task_id, _run_task(task_id, requirement, url, record))
+    if not started:
+        record["status"] = "error"
+        record["error"] = "同名任务已在运行"
+        record["message"] = "任务已在运行"
+    return record
+
+def schedule_task(task_id: str, schedule_type: str, schedule_value: str, enabled: bool, user_id: str = "") -> dict | None:
+    """设置任务定时执行（interval 分钟 / daily HH:MM），由调度器到点重新提交任务。"""
+    rec = _TASKS.get(task_id)
+    if rec is None:
+        try:
+            import sqlite3
+            from app.database import DB_PATH
+            conn = sqlite3.connect(str(DB_PATH))
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM mini_tasks WHERE id=?", (task_id,)).fetchone()
+            conn.close()
+            if row:
+                rec = dict(row)
+        except Exception:
+            rec = None
+    if rec is None:
+        return None
+    if user_id and rec.get("user_id") and rec["user_id"] != user_id:
+        return None
+
+    schedule_type = (schedule_type or "interval").strip()
+    schedule_value = (schedule_value or "").strip()
+    if enabled:
+        if schedule_type not in ("interval", "daily"):
+            return {"error": "schedule_type 只能是 interval 或 daily"}
+        if schedule_type == "interval":
+            try:
+                if int(schedule_value) <= 0:
+                    raise ValueError
+            except (ValueError, TypeError):
+                return {"error": "interval 需要正整数分钟"}
+        else:
+            if ":" not in schedule_value:
+                return {"error": "daily 需要 HH:MM 格式"}
+
+    import time as _t
+    now = _t.time()
+    next_run = None
+    if enabled:
+        if schedule_type == "interval":
+            next_run = now + int(schedule_value) * 60
+        else:
+            # daily：今天 HH:MM 未过则今天，否则明天
+            from datetime import datetime, timedelta
+            hh, mm = (int(x) for x in schedule_value.split(":"))
+            local = datetime.now()
+            target = local.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if target <= local:
+                target += timedelta(days=1)
+            next_run = target.timestamp()
+
+    try:
+        import asyncio as _a
+        from app.database import set_mini_schedule
+        loop = _a.get_running_loop()
+        loop.create_task(set_mini_schedule(task_id, schedule_type, schedule_value, enabled, next_run))
+    except Exception:
+        pass
+    if task_id in _TASKS:
+        _TASKS[task_id].update({
+            "schedule_type": schedule_type, "schedule_value": schedule_value,
+            "enabled": 1 if enabled else 0, "next_run_at": next_run,
+        })
+    return {"id": task_id, "schedule_type": schedule_type, "schedule_value": schedule_value,
+            "enabled": enabled, "next_run_at": next_run}
+
+
+# ============================================================
+# mini 定时调度循环（原 scheduler.py 的 mini 部分迁移至此）
+# ============================================================
+
+def _next_mini_run(task: dict, now_ts: float) -> float | None:
+    """计算 mini 定时任务的下次执行时间（epoch 秒）。"""
+    from datetime import datetime, timedelta
+    stype = task.get("schedule_type", "interval")
+    sval = task.get("schedule_value", "60")
+    if stype == "interval":
+        try:
+            return now_ts + int(sval) * 60
+        except (ValueError, TypeError):
+            return now_ts + 3600
+    if stype == "daily":
+        try:
+            hh, mm = (int(x) for x in sval.split(":"))
+            local = datetime.now().replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if local.timestamp() <= now_ts:
+                local += timedelta(days=1)
+            return local.timestamp()
+        except Exception:
+            return now_ts + 86400
+    return None
+
+
+async def mini_scheduler_loop() -> None:
+    """调度循环：每分钟检查一次到期的 mini 定时任务，到点重新提交。"""
+    logger.info("[mini调度器] 启动，每 60 秒检查一次")
+    while True:
+        try:
+            import time as _t
+            from app.database import get_due_mini_tasks, update_mini_run
+            due = await get_due_mini_tasks(_t.time())
+            for mtask in due:
+                tid = mtask["id"]
+                key = f"mini_sched:{tid}"
+                if is_running(key):
+                    continue
+                submit(mtask.get("requirement") or "", mtask.get("url") or None, mtask.get("user_id") or "")
+                now_ts = _t.time()
+                nxt = _next_mini_run(mtask, now_ts)
+                start_background(key, update_mini_run(tid, now_ts, nxt))
+                logger.info(f"[mini调度器] 定时触发: {tid[:8]} - {(mtask.get('requirement') or '')[:40]}")
+        except Exception as e:
+            logger.error(f"[mini调度器] 检查异常: {e}")
+        await asyncio.sleep(60)
+
+
+def confirm_task(task_id: str, user_id: str = "") -> dict | None:
+    """确认任务结果（满意）：标记 confirmed，结果即最终版。"""
+    rec = _TASKS.get(task_id)
+    if rec is None:
+        try:
+            import sqlite3
+            from app.database import DB_PATH
+            conn = sqlite3.connect(str(DB_PATH))
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM mini_tasks WHERE id=?", (task_id,)).fetchone()
+            conn.close()
+            if row:
+                rec = dict(row)
+        except Exception:
+            rec = None
+    if rec is None:
+        return None
+    if user_id and rec.get("user_id") and rec["user_id"] != user_id:
+        return None
+    try:
+        from app.database import update_mini_task
+        asyncio.create_task(update_mini_task(task_id, status="confirmed", message="已确认"))
+    except Exception:
+        pass
+    if task_id in _TASKS:
+        _TASKS[task_id]["status"] = "confirmed"
+        _TASKS[task_id]["message"] = "已确认"
+    return {"id": task_id, "status": "confirmed"}
+
+
+def iterate(task_id: str, feedback: str, user_id: str = "") -> dict | None:
+    """迭代修改：对已完成任务提反馈，同一任务原地重跑（需求=原需求+反馈）。"""
+    rec = _TASKS.get(task_id)
+    if rec is None:
+        try:
+            import sqlite3
+            from app.database import DB_PATH
+            conn = sqlite3.connect(str(DB_PATH))
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM mini_tasks WHERE id=?", (task_id,)).fetchone()
+            conn.close()
+            if row:
+                rec = dict(row)
+        except Exception:
+            rec = None
+    if rec is None:
+        return None
+    if user_id and rec.get("user_id") and rec["user_id"] != user_id:
+        return None
+    if is_running(task_id):
+        return {"id": task_id, "status": "running", "error": "任务正在执行中，请等待完成"}
+
+    feedback = (feedback or "").strip()
+    if not feedback:
+        return {"id": task_id, "status": "error", "error": "反馈不能为空"}
+
+    base_req = rec.get("requirement") or ""
+    new_req = f"{base_req}（用户修改意见：{feedback}）"
+    url = rec.get("url") or ""
+
+    # 更新内存记录 + 重置状态（保留原图片）
+    _TASKS[task_id] = {
+        "id": task_id,
+        "user_id": rec.get("user_id", ""),
+        "requirement": new_req,
+        "url": url,
+        "status": "queued",
+        "progress": 0,
+        "message": "迭代中",
+        "created_at": rec.get("created_at", time.time()),
+        "result": None,
+        "error": None,
+        "image_paths": rec.get("image_paths") or [],
+    }
+    started = start_background(task_id, _run_task(task_id, new_req, url, _TASKS[task_id]))
+    return {"id": task_id, "status": "queued" if started else "error", "message": "迭代修改已提交"}
+
+
+async def _run_task(task_id: str, requirement: str, url: str | None, record: dict) -> None:
+    """后台执行一个任务（普通模式或报告模式），同步 SQLite。"""
+    from app.database import save_mini_task, update_mini_task
+
+    record["status"] = "running"
+    record["message"] = "正在执行..."
+    image_paths = record.get("image_paths") or []
+    try:
+        await save_mini_task(record)
+        if _is_report_request(requirement):
+            record["message"] = "检测到报告需求，正在生成可视化报告..."
+            await update_mini_task(task_id, status="running", message=record["message"])
+            result = await _run_report_task(task_id, requirement, url)
+        else:
+            record["message"] = "正在执行（生成→试跑→四重校验）..."
+            await update_mini_task(task_id, status="running", message=record["message"])
+            from app.services.mini_generator import generate_and_verify
+            result = await generate_and_verify(requirement, url or None, image_paths=image_paths or None)
+        keep = (
+            "status", "rows", "preview", "error", "elapsed", "script",
+            "expected_count", "expected_fields", "missing_fields",
+            "coverage_missing", "value_issues", "count_heals", "field_heals",
+            "coverage_heals", "value_heals", "output_file", "report_url",
+            "image_context",
+        )
+        record["result"] = {k: result.get(k) for k in keep}
+        record["status"] = "done"
+        record["message"] = "完成"
+        record["progress"] = 100
+        await update_mini_task(task_id, status="done", message="完成",
+                               result=json.dumps(record["result"], ensure_ascii=False), error=None)
+    except asyncio.CancelledError:
+        record["status"] = "cancelled"
+        record["message"] = "已取消"
+        await update_mini_task(task_id, status="cancelled", message="已取消")
+    except Exception as e:
+        logger.exception("[mini_task:%s] failed", task_id)
+        record["status"] = "error"
+        record["error"] = str(e)[:300]
+        record["message"] = f"执行出错: {str(e)[:120]}"
+        await update_mini_task(task_id, status="error", error=record["error"], message=record["message"])
+
+
+async def _run_report_task(task_id: str, requirement: str, url: str | None) -> dict:
+    """报告模式：LLM 生成脚本 → 本地运行 → report.html 落 web 目录（公网可访问）。"""
+    import subprocess
+    from app.services.llm_client import chat_completion
+
+    started = time.time()
+    report_name = f"report_{task_id}.html"
+    out_dir = _WEB_DIR
+    os.makedirs(out_dir, exist_ok=True)
+
+    # 1. 生成脚本（带需求上下文）
+    code = ""
+    for attempt in range(3):
+        try:
+            code = await chat_completion(
+                REPORT_SYSTEM_PROMPT,
+                f"【用户需求】{requirement}\n\n【目标URL】{url or '（按需求推断）'}\n请生成报告脚本，报告保存为 report.html",
+                temperature=0.3, max_tokens=8000,
+            )
+            code = code.strip()
+            if code.startswith("```python"):
+                code = code[9:]
+            elif code.startswith("```"):
+                code = code[3:]
+            if code.endswith("```"):
+                code = code[:-3]
+            code = code.strip()
+            compile(code, "<script>", "exec")
+            if "report.html" in code:
+                break
+        except Exception as e:
+            logger.warning("报告脚本生成第 %d 次失败: %s", attempt + 1, str(e)[:120])
+            code = ""
+
+    if not code:
+        return {"status": "generate_failed", "error": "报告脚本生成失败", "elapsed": round(time.time() - started, 1)}
+
+    # 2. 写脚本到临时文件，在 web 目录运行（产出 report.html）
+    import tempfile
+    fd, script_path = tempfile.mkstemp(suffix=".py", prefix=f"report_{task_id}_", dir=os.path.dirname(out_dir))
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(code)
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, script_path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            cwd=out_dir,
+        )
+        try:
+            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=180)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return {"status": "failed", "error": "报告生成超时（180s）", "elapsed": round(time.time() - started, 1)}
+        stdout = stdout_b.decode("utf-8", errors="replace")
+        stderr = stderr_b.decode("utf-8", errors="replace")
+
+        report_path = os.path.join(out_dir, report_name)
+        # 脚本产出 report.html → 改名为唯一名
+        generated = os.path.join(out_dir, "report.html")
+        if os.path.exists(generated):
+            os.replace(generated, report_path)
+        elif not os.path.exists(report_path):
+            return {
+                "status": "failed",
+                "error": f"未生成 report.html: {(stderr or stdout)[-300:]}",
+                "elapsed": round(time.time() - started, 1),
+                "script": code,
+            }
+
+        rows = 0
+        m = re.search(r"DATA_ROWS:(\d+)", stdout)
+        if m:
+            rows = int(m.group(1))
+        preview = []
+        m = re.search(r"PREVIEW_DATA:(\[.*\]|\{.*\})", stdout)
+        if m:
+            try:
+                import json as _json
+                preview = _json.loads(m.group(1))
+            except Exception:
+                preview = []
+
+        return {
+            "status": "ok" if rows >= 0 else "ok",
+            "rows": rows,
+            "preview": preview,
+            "output_file": report_path,
+            "report_url": f"/{report_name}",
+            "elapsed": round(time.time() - started, 1),
+            "script": code,
+            "error": None,
+        }
+    finally:
+        try:
+            os.unlink(script_path)
+        except OSError:
+            pass
+
+
+def get_status(task_id: str) -> dict | None:
+    rec = _TASKS.get(task_id)
+    if rec is None:
+        # 内存没有（如重启后）→ 从 SQLite 恢复（同步查询）
+        try:
+            import sqlite3
+            from app.database import DB_PATH
+            conn = sqlite3.connect(str(DB_PATH))
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM mini_tasks WHERE id=?", (task_id,)).fetchone()
+            conn.close()
+            if not row:
+                return None
+            d = dict(row)
+            if d.get("result"):
+                try:
+                    d["result"] = json.loads(d["result"])
+                except Exception:
+                    d["result"] = None
+            return {
+                "id": d["id"],
+                "requirement": d["requirement"],
+                "url": d["url"],
+                "status": d["status"],
+                "progress": 100 if d["status"] == "done" else 0,
+                "message": d["message"] or "",
+                "created_at": d["created_at"],
+                "error": d["error"],
+                "result": d["result"],
+                "running": False,
+            }
+        except Exception as e:
+            logger.warning("从 DB 恢复任务 %s 失败: %s", task_id, str(e)[:100])
+            return None
+    out = {
+        "id": rec["id"],
+        "requirement": rec["requirement"],
+        "url": rec["url"],
+        "status": rec["status"],
+        "progress": rec["progress"],
+        "message": rec["message"],
+        "created_at": rec["created_at"],
+        "error": rec["error"],
+        "result": rec["result"],
+        "running": is_running(task_id),
+    }
+    return out
+
+
+def list_tasks(limit: int = 20, user_id: str = "") -> list[dict]:
+    """任务列表：优先 SQLite（持久化历史），内存 running 任务补充，按 user_id 过滤。"""
+    items: list[dict] = []
+    try:
+        import sqlite3
+        from app.database import DB_PATH
+        conn = sqlite3.connect(str(DB_PATH))
+        conn.row_factory = sqlite3.Row
+        if user_id:
+            rows = conn.execute(
+                "SELECT * FROM mini_tasks WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
+                (user_id, limit * 2),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM mini_tasks ORDER BY created_at DESC LIMIT ?", (limit * 2,)
+            ).fetchall()
+        conn.close()
+        for row in rows:
+            d = dict(row)
+            items.append({
+                "id": d["id"],
+                "requirement": (d.get("requirement") or "")[:60],
+                "status": d.get("status", ""),
+                "message": d.get("message") or "",
+                "created_at": d.get("created_at", 0),
+            })
+    except Exception as e:
+        logger.warning("list_mini_tasks DB 失败: %s", str(e)[:100])
+    # 补充内存中还在 running 的任务（可能尚未落库完成）
+    for tid, rec in _TASKS.items():
+        if is_running(tid) and not any(i["id"] == tid for i in items):
+            if user_id and rec.get("user_id") != user_id:
+                continue
+            items.append({
+                "id": tid,
+                "requirement": (rec.get("requirement") or "")[:60],
+                "status": rec.get("status", "running"),
+                "message": rec.get("message") or "",
+                "created_at": rec.get("created_at", 0),
+            })
+    return items[:limit]
+
+
+def cancel_task(task_id: str) -> bool:
+    return cancel(task_id)

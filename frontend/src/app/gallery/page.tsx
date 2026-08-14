@@ -1,0 +1,154 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ExternalLink, QrCode, Sparkles, RefreshCw, Link2 } from "lucide-react";
+import Link from "next/link";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+interface GalleryItem {
+  path: string;
+  filename: string;
+  name: string;
+  type: string;
+  desc: string;
+}
+
+const TYPE_STYLE: Record<string, string> = {
+  game: "bg-indigo-100 text-indigo-700",
+  manga: "bg-violet-100 text-violet-700",
+  music: "bg-cyan-100 text-cyan-700",
+  video: "bg-rose-100 text-rose-700",
+  report: "bg-emerald-100 text-emerald-700",
+  html: "bg-slate-100 text-slate-600",
+};
+
+const TYPE_LABEL: Record<string, string> = {
+  game: "游戏", manga: "漫剧", music: "音乐", video: "视频", report: "报告", html: "网页",
+};
+
+export default function GalleryPage() {
+  const [items, setItems] = useState<GalleryItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [origin, setOrigin] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await fetch(`${API_BASE}/api/gallery`);
+      const data = await r.json();
+      setItems(data.items || []);
+      setOrigin(typeof window !== "undefined" ? window.location.origin : "");
+    } catch {
+      setItems([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const fullUrl = (path: string) => `${origin}${path}`;
+  const qrUrl = (path: string) =>
+    `https://api.qrserver.com/v1/create-qr-code/?size=180x180&margin=8&data=${encodeURIComponent(fullUrl(path))}`;
+
+  return (
+    <div className="min-h-screen">
+      <header className="border-b bg-white/80 backdrop-blur-sm dark:bg-slate-950/80">
+        <div className="max-w-6xl mx-auto px-4 h-16 flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center">
+            <QrCode className="w-4 h-4 text-white" />
+          </div>
+          <span className="text-lg font-semibold">分享中心</span>
+          <div className="ml-auto flex items-center gap-3">
+            <Button variant="ghost" size="sm" onClick={load} className="gap-2">
+              <RefreshCw className="w-4 h-4" />
+              刷新
+            </Button>
+            <Link href="/mini">
+              <Button size="sm" className="gap-2">
+                <Sparkles className="w-4 h-4" />
+                一句话自动化
+              </Button>
+            </Link>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-6xl mx-auto px-4 py-10">
+        <div className="mb-8 text-center">
+          <h1 className="text-2xl font-bold mb-2">你的可分享作品</h1>
+          <p className="text-sm text-muted-foreground">
+            游戏 / 漫剧 / 音乐 / 视频 / 报告，扫码或复制链接即可转发分享
+            {origin ? `（当前站点：${origin}）` : ""}
+          </p>
+        </div>
+
+        {loading ? (
+          <p className="text-center text-muted-foreground py-12">加载中...</p>
+        ) : items.length === 0 ? (
+          <Card className="rounded-2xl">
+            <CardContent className="p-10 text-center text-muted-foreground">
+              暂无作品。先去 <Link href="/mini" className="text-indigo-500 hover:underline">一句话自动化</Link> 生成报告/漫剧/视频吧
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
+            {items.map((item, i) => (
+              <Card key={i} className="rounded-2xl overflow-hidden border-2 border-slate-200/60 dark:border-slate-800/60">
+                <div className="h-1 bg-gradient-to-r from-emerald-500 to-teal-500" />
+                <CardHeader className="pb-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <span className="truncate">{item.name}</span>
+                    </CardTitle>
+                    <Badge className={TYPE_STYLE[item.type] || TYPE_STYLE.html}>{TYPE_LABEL[item.type] || "网页"}</Badge>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <p className="text-xs text-muted-foreground">{item.desc}</p>
+                  <div className="flex items-center gap-3">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={qrUrl(item.path)}
+                      alt="二维码"
+                      width={88}
+                      height={88}
+                      className="rounded-lg border border-slate-200 dark:border-slate-700 shrink-0"
+                    />
+                    <div className="flex flex-col gap-1.5 min-w-0">
+                      <a
+                        href={fullUrl(item.path)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 text-sm text-indigo-600 dark:text-indigo-400 hover:underline truncate"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                        打开
+                      </a>
+                      <button
+                        onClick={() => navigator.clipboard?.writeText(fullUrl(item.path))}
+                        className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        <Link2 className="w-3.5 h-3.5 shrink-0" />
+                        复制链接
+                      </button>
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground truncate" title={fullUrl(item.path)}>
+                    {fullUrl(item.path)}
+                  </p>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}

@@ -1,0 +1,56 @@
+import logging
+import secrets
+from functools import lru_cache
+
+from pydantic_settings import BaseSettings
+
+
+class Settings(BaseSettings):
+    # AI - DeepSeek（支持多个 key，用逗号分隔，用于负载均衡和限流切换）
+    deepseek_api_key: str = "sk-your-deepseek-api-key"  # 单个 key（兼容旧配置）
+    deepseek_api_keys: str = ""  # 多个 key 用逗号分隔，如 sk-key1,sk-key2
+    deepseek_base_url: str = "https://api.deepseek.com"
+    ai_model: str = "deepseek-chat"
+    ai_model_reasoning: str = "deepseek-reasoner"  # 复杂任务用的推理模型
+
+    # AI - 豆包（火山方舟，多模态视觉：DeepSeek 识别不了图片时用它识别并总结）
+    doubao_api_key: str = ""  # ark- 开头的火山方舟 key
+    doubao_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
+    doubao_vision_model: str = "doubao-seed-1-6-vision-250815"  # 视觉模型名或接入点 ep-xxx
+
+    # Sandbox
+    sandbox_image: str = "python:3.11-slim"
+    sandbox_timeout: int = 60
+    sandbox_max_timeout: int = 1800  # 单次执行总超时上限（秒），挡掉 LLM 估算的荒谬值
+    sandbox_inactivity_timeout: int = 120  # 无新日志输出的秒数，超过判定卡死
+    sandbox_max_concurrency: int = 3  # 同时最多执行的脚本数，超出排队
+    sandbox_allow_subprocess: bool = True  # False 时沙箱禁止 import subprocess/socket/smtplib/ftplib
+    sandbox_headful: bool = True  # True=有头浏览器（弹窗口，反爬通过率高）；False=无头（服务器可用）
+
+    # JWT
+    jwt_secret_key: str = ""  # 必须在 .env 配置；为空时启动生成临时密钥并告警
+    jwt_algorithm: str = "HS256"
+    jwt_expire_minutes: int = 1440
+
+    # App
+    app_env: str = "development"
+    debug: bool = True
+    cors_origins: str = "http://localhost:3000"  # 逗号分隔的允许来源
+
+    class Config:
+        env_file = ".env"
+        case_sensitive = False
+        extra = "ignore"  # 忽略 .env 里遗留的旧配置项（如 DATABASE_URL/REDIS_URL）
+
+
+@lru_cache()
+def get_settings() -> Settings:
+    s = Settings()
+    if not s.jwt_secret_key:
+        # 未配置密钥时生成临时密钥（仅 demo 可用，重启后旧 token 失效）
+        s.jwt_secret_key = secrets.token_hex(32)
+        logging.getLogger("app.config").warning(
+            "JWT_SECRET_KEY 未配置，已生成临时密钥（重启后旧 token 失效）。"
+            "生产环境请在 .env 里设置随机密钥。"
+        )
+    return s

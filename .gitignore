@@ -1,0 +1,80 @@
+# ===== 敏感信息（绝对不能上传）=====
+.env
+.env.local
+backend/.env
+frontend/.env.local
+backend/data/
+backend/browser_profile/
+backend/auth_sessions/
+backend/data/automation.db
+backend/tmp/
+backend/script_library/
+
+# ===== Python =====
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+
+# ===== 前端 =====
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/dist/
+
+# ===== 临时/调试文件 =====
+test_xhs*.py
+gen_script*.py
+debug_script*.py
+versions*.json
+broken_test.py
+test_working.py
+output.xlsx
+*.xlsx
+/tmp/
+
+# ===== 云隧道/工具 =====
+cf.exe
+cloudflared.exe
+
+# ===== IDE =====
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# ===== 日志 =====
+*.log
+
+# ===== AI 生成产物（可随时重新生成，不入库）=====
+web/
+frame_*.png
+manga.html
+melody.wav
+report.html
+snake_game.py
+diag_*.txt
+diag_*.png
+
+# ===== 测试/调试产物（不入库）=====
+batch_*.py
+batch_*_result.json
+test_*.py
+audit_*.py
+audit_*.txt
+*_result.json
+xhs_*.py
+core_test*.py
+debug*.png
+debug_*.py
+hard_tasks.py
+mind2web_test.py
+webvoyager_test.py
+new_capabilities_test.py
+test_runner.py
+results*.csv
+sites*.txt
+FIXES_SUMMARY.md
+md_to_docx.py
