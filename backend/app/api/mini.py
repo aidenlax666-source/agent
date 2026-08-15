@@ -49,9 +49,13 @@ def _check_anon_rate(ip: str) -> None:
     q.append(now)
 
 
-def _check_url(url: str) -> str | None:
+def _check_url(url) -> str | None:
     """URL 只允许 http/https（防 file:// 等本地文件入口）。"""
-    url = (url or "").strip()
+    if url is None:
+        return None
+    if not isinstance(url, str):
+        raise HTTPException(status_code=400, detail="url 必须是文本")
+    url = url.strip()
     if not url:
         return None
     if not url.lower().startswith(("http://", "https://")):
@@ -80,7 +84,9 @@ def _ensure_upload_path(path: str) -> str:
 @router.post("/mini/tasks")
 async def create_task(data: dict, request: Request, user=Depends(get_current_user)):
     """提交一个自然语言自动化任务，立即返回 task_id（可带已上传图片路径）。"""
-    requirement = (data.get("requirement") or "").strip()
+    if not isinstance(data.get("requirement"), str):
+        raise HTTPException(status_code=400, detail="requirement 必须是文本")
+    requirement = data.get("requirement").strip()
     if not requirement:
         raise HTTPException(status_code=400, detail="requirement 不能为空")
     if len(requirement) > MAX_REQUIREMENT_LEN:
@@ -195,8 +201,12 @@ async def data_qa(data: dict, user=Depends(get_current_user)):
     import json as _json
     import os as _os
 
-    file_path = (data.get("file_path") or "").strip()
-    question = (data.get("question") or "").strip()
+    file_path = data.get("file_path")
+    question = data.get("question")
+    if not isinstance(file_path, str) or not isinstance(question, str):
+        raise HTTPException(status_code=400, detail="file_path 和 question 必须是文本")
+    file_path = file_path.strip()
+    question = question.strip()
     if not file_path or not question:
         raise HTTPException(status_code=400, detail="file_path 和 question 不能为空")
     if len(question) > MAX_REQUIREMENT_LEN:

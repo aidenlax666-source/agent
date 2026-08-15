@@ -73,9 +73,12 @@ def make_token(user_id: str) -> str:
 
 @router.post("/register")
 async def register(data: dict):
-    email = data.get("email", "").strip()
-    pwd = data.get("password", "").strip()
-    name = data.get("name", "").strip() or None
+    if not isinstance(data.get("email"), str) or not isinstance(data.get("password"), str):
+        raise HTTPException(400, "Email and password must be text")
+    email = data["email"].strip()
+    pwd = data["password"].strip()
+    name = data.get("name")
+    name = name.strip() if isinstance(name, str) and name.strip() else None
 
     if not email or not pwd:
         raise HTTPException(400, "Email and password required")
@@ -99,8 +102,10 @@ async def register(data: dict):
 
 @router.post("/login")
 async def login(data: dict, request: Request):
-    email = data.get("email", "").strip()
-    pwd = data.get("password", "").strip()
+    if not isinstance(data.get("email"), str) or not isinstance(data.get("password"), str):
+        raise HTTPException(400, "Email and password must be text")
+    email = data["email"].strip()
+    pwd = data["password"].strip()
     ip = request.client.host if request.client else "unknown"
 
     _check_login_rate_limit(email, ip)
