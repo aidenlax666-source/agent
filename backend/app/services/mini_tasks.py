@@ -90,10 +90,55 @@ def _is_music_request(requirement: str) -> bool:
     return any(k in r for k in _MUSIC_HINTS)
 
 
+# 语音合成意图（豆包 TTS）：命中则走文本配音
+_TTS_HINTS = ["配音", "语音合成", "语音朗读", "朗读", "念出来", "读出来", "语音播报", "生成语音", "文本转语音", "tts"]
+
+
+def _is_tts_request(requirement: str) -> bool:
+    r = requirement.lower()
+    # 排除"看朗读视频"等非合成意图
+    if any(k in r for k in ("看朗读", "朗读视频")):
+        return False
+    return any(k in r for k in _TTS_HINTS)
+
+
+_TTS_EXTRACT_RE = [
+    r"配音\s*[:：]\s*[「\"'“”‘’]?([^」\"'“”‘’]{1,2000})",
+    r"朗读\s*[:：]\s*[「\"'“”‘’]?([^」\"'“”‘’]{1,2000})",
+    r"朗读[「\"'“”‘’]([^」\"'“”‘’]{1,2000})[」\"'“”‘’]",
+    r"[「\"'“”‘’]([^」\"'“”‘’]{1,2000})[」\"'“”‘’]\s*(?:配音|朗读|读出来|念出来)",
+]
+
+
+def _extract_tts_text(requirement: str) -> str:
+    """从需求里提取要配音的文本（规则优先，兜底用 LLM）。"""
+    import re as _re
+    for pat in _TTS_EXTRACT_RE:
+        m = _re.search(pat, requirement)
+        if m:
+            txt = m.group(1).strip()
+            if txt:
+                return txt
+    return ""
+
+
+async def _extract_tts_text_llm(requirement: str) -> str:
+    """LLM 提取配音文本（规则未命中时兜底）。"""
+    try:
+        from app.services.llm_client import chat_completion_json
+        info = await chat_completion_json(
+            "你是文本提取助手。从用户需求中提取【需要语音朗读的原文】，只返回 JSON {\"text\":\"原文\"}；"
+            "如果需求本身就是要朗读的内容（如\"朗读今天天气很好\"），返回该内容去掉指令词后的文本。",
+            requirement[:500], max_tokens=300)
+        return str(info.get("text") or "").strip()[:3000]
+    except Exception:
+        return ""
+
+
 def _is_content_request(requirement: str) -> bool:
     r = requirement.lower()
     if (_is_game_request(r) or _is_report_request(r) or _is_video_request(r)
-            or _is_image_request(r) or _is_music_request(r)):
+            or _is_image_request(r) or _is_music_request(r) or _is_tts_request(r)):
         return False
     if any(k in r for k in ("导出excel", "导出csv", "抓取", "爬取", "统计", "汇总", "数据", "接口")):
         return False
@@ -424,6 +469,8 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
         modes.append("image")
     if _is_music_request(requirement):
         modes.append("music")
+    if _is_tts_request(requirement):
+        modes.append("tts")
     if not modes:
         modes.append("code")
     # 生成类与"明确要数据文件"意图并存时补代码任务（如"抓XX数据导出Excel，并做成XX网页"）
@@ -511,6 +558,25 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
                     merged["message_music"] = f"音乐已生成：{ms.get('music_url')}"
                 else:
                     failed.append(f"音乐: {ms.get('error', '失败')}")
+            elif mode == "tts":
+                # 豆包 TTS 语音合成：提取配音文本 → 合成 MP3 → web/ 目录
+                from app.services.tts_client import tts_speak
+                text = _extract_tts_text(requirement)
+                if not text:
+                    text = await _extract_tts_text_llm(requirement)
+                if not text:
+                    failed.append("配音: 无法从需求中提取要朗读的文本")
+                else:
+                    os.makedirs(_WEB_DIR, exist_ok=True)
+                    fname = f"tts_{task_id}.mp3"
+                    save_path = os.path.join(_WEB_DIR, fname)
+                    tr = await tts_speak(text, save_path)
+                    if tr.get("success"):
+                        merged["tts_url"] = f"/{fname}"
+                        merged["output_file"] = save_path
+                        merged["message_tts"] = f"配音已生成：/{fname}（{_size_mb(save_path)}）"
+                    else:
+                        failed.append(f"配音: {tr.get('error', '失败')}")
             else:  # code：数据/抓取任务
                 from app.services.mini_generator import generate_and_verify
                 result = await generate_and_verify(requirement, url or None, image_paths=image_paths or None,
@@ -526,7 +592,7 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
                 if result.get("status") != "ok":
                     failed.append(f"数据处理: {result.get('error') or result.get('status')}")
 
-        if failed and not any(k in merged for k in ("game_url", "report_url", "content_url", "video_url", "image_url", "image_urls", "music_url")):
+        if failed and not any(k in merged for k in ("game_url", "report_url", "content_url", "video_url", "image_url", "image_urls", "music_url", "tts_url")):
             merged["status"] = "failed"
             merged["error"] = "；".join(failed)[:300]
         else:

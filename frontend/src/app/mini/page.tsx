@@ -34,6 +34,7 @@ const EXAMPLES = [
   { icon: "📄", label: "网页", text: "生成一个带倒计时的个人主页" },
   { icon: "📋", label: "数据", text: "生成100行销售数据（列：产品、数量、单价、日期），按产品汇总总金额，导出Excel" },
   { icon: "💬", label: "数据问答", text: "分析我上传的销售数据，哪个产品销量最高？" },
+  { icon: "🔊", label: "配音", text: "给这段文字配音：「欢迎使用 AI 自动化工作台，一切尽在掌握」" },
 ];
 
 function toPreviewData(p: Record<string, unknown>[] | undefined): PreviewData | null {
@@ -436,6 +437,14 @@ export default function MiniPage() {
                   {result.music_url && (
                     <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-gradient-to-r from-amber-50/60 to-rose-50/60 dark:from-amber-950/30 dark:to-rose-950/30 p-4">
                       <audio src={`${ASSETS_BASE}${result.music_url}`} controls className="w-full" />
+                    </div>
+                  )}
+                  {result.tts_url && (
+                    <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-gradient-to-r from-sky-50/60 to-indigo-50/60 dark:from-sky-950/30 dark:to-indigo-950/30 p-4">
+                      <p className="text-xs font-medium text-sky-700 dark:text-sky-300 mb-2 flex items-center gap-1.5">
+                        🔊 AI 配音
+                      </p>
+                      <audio src={`${ASSETS_BASE}${result.tts_url}`} controls className="w-full" />
                     </div>
                   )}
 

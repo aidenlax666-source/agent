@@ -160,6 +160,7 @@ export interface MiniTaskResult {
   image_url?: string;
   image_urls?: string[];
   music_url?: string;
+  tts_url?: string;
   answer?: string;
   columns?: string[];
 }
