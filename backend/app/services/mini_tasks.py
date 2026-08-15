@@ -140,8 +140,32 @@ MUSIC_SYSTEM_PROMPT = """你是一位作曲家 + Python 音频合成专家。用
 只输出完整 Python 代码，不要解释。"""
 
 
-def submit(requirement: str, url: str | None = None, user_id: str = "", image_paths: list[str] | None = None) -> dict:
-    """提交一个后台任务，立即返回任务信息（持久化到 SQLite，重启不丢）。"""
+QA_ROUTER_PROMPT = """你是任务路由专家。判断用户需求属于哪一类，只返回 JSON {"type":"qa"} 或 {"type":"task"}：
+
+- "qa"：用户已上传数据文件（Excel/CSV）并要对这些数据提问/分析/统计/对比/汇总（如"哪个产品销量最高"、"分析一下这份数据"、"按月份汇总金额"、"帮我看看有什么规律"）
+- "task"：一切自动化执行任务——生成/抓取/爬取/导出/制作/网页/视频/图片/音乐/游戏/文件操作等（这类需求需要写脚本执行）
+
+注意：只有明确针对"已上传的数据文件"的提问/分析才算 qa；"生成XX数据"、"爬取XX数据"属于 task。"""
+
+
+async def _classify_intent(requirement: str, has_data_files: bool) -> str:
+    """LLM 判断：数据问答(qa) 还是 自动化任务(task)。没传数据文件时直接判 task。"""
+    if not has_data_files:
+        return "task"
+    try:
+        from app.services.llm_client import chat_completion_json
+        info = await chat_completion_json(QA_ROUTER_PROMPT, requirement[:300], max_tokens=20)
+        return "qa" if info.get("type") == "qa" else "task"
+    except Exception:
+        return "task"
+
+
+def submit(requirement: str, url: str | None = None, user_id: str = "", image_paths: list[str] | None = None,
+           data_paths: list[str] | None = None) -> dict:
+    """提交一个后台任务，立即返回任务信息（持久化到 SQLite，重启不丢）。
+
+    统一入口：LLM 自动判断"数据问答"还是"任务执行"，无需用户选择。
+    """
     task_id = uuid.uuid4().hex[:12]
     record = {
         "id": task_id,
@@ -155,6 +179,7 @@ def submit(requirement: str, url: str | None = None, user_id: str = "", image_pa
         "result": None,
         "error": None,
         "image_paths": image_paths or [],
+        "data_paths": data_paths or [],
     }
     _TASKS[task_id] = record
 
@@ -366,12 +391,21 @@ def iterate(task_id: str, feedback: str, user_id: str = "") -> dict | None:
 
 
 async def _run_task(task_id: str, requirement: str, url: str | None, record: dict) -> None:
-    """后台执行一个任务（联机游戏/报告/内容生成/代码任务，可组合多模式），同步 SQLite。"""
+    """后台执行一个任务（联机游戏/报告/内容/视频/图片/音乐/代码任务，可组合多模式），同步 SQLite。"""
     from app.database import save_mini_task, update_mini_task
 
     record["status"] = "running"
     record["message"] = "正在执行..."
     image_paths = record.get("image_paths") or []
+    data_paths = record.get("data_paths") or []
+
+    # ---- 统一入口：LLM 判断"数据问答"还是"任务执行" ----
+    intent = await _classify_intent(requirement, bool(data_paths))
+    if intent == "qa":
+        record["message"] = "识别为数据问答，AI 正在分析..."
+        await update_mini_task(task_id, status="running", message=record["message"])
+        await _run_qa_task(task_id, requirement, data_paths, record)
+        return
 
     # ---- 多模式检测（需求可同时含多种意图，依次执行并合并产物） ----
     modes: list[str] = []
@@ -613,6 +647,85 @@ async def _run_report_task(task_id: str, requirement: str, url: str | None) -> d
             os.unlink(script_path)
         except OSError:
             pass
+
+
+QA_SYSTEM_PROMPT = """你是一位数据分析师。根据用户上传的数据文件的摘要信息，回答用户的自然语言问题。
+
+【回答要求】
+1. 基于给出的数据摘要（列名、行数、示例数据、统计信息）作答
+2. 如果问题需要具体计算（求和/平均/最大等），基于摘要中能获取的数据估算，并说明"基于示例数据"
+3. 中文回答，简洁清晰，必要时给出关键数字
+4. 摘要信息不足时，明确说明还缺什么数据
+
+只输出回答内容，不要解释过程。"""
+
+
+async def _run_qa_task(task_id: str, requirement: str, data_paths: list[str], record: dict) -> None:
+    """数据问答：读取上传的 Excel/CSV 摘要 → LLM 回答自然语言问题。"""
+    import json as _json
+    from app.database import update_mini_task
+    from app.services.llm_client import chat_completion
+
+    started = time.time()
+    summary: dict = {}
+    last_err = ""
+    for fp in data_paths or []:
+        if not os.path.exists(fp):
+            continue
+        try:
+            if fp.lower().endswith((".xlsx", ".xls")):
+                import pandas as pd
+                df = pd.read_excel(fp)
+            elif fp.lower().endswith(".csv"):
+                import pandas as pd
+                df = pd.read_csv(fp)
+            else:
+                continue
+            summary = {
+                "rows": int(len(df)),
+                "columns": list(df.columns),
+                "head": df.head(8).fillna("").to_dict(orient="records"),
+                "describe": df.describe(include="all").fillna("").to_dict() if len(df) > 0 else {},
+            }
+            break
+        except Exception as e:
+            last_err = str(e)[:200]
+
+    if not summary:
+        merged = {"status": "failed", "answer": "",
+                  "error": f"无法读取上传的数据文件（仅支持 Excel/CSV）: {last_err}",
+                  "elapsed": round(time.time() - started, 1)}
+        record["result"] = merged
+        record["status"] = "done"
+        record["message"] = "完成（读取失败）"
+        record["progress"] = 100
+        await update_mini_task(task_id, status="done", message=record["message"],
+                               result=_json.dumps(merged, ensure_ascii=False), error=merged["error"])
+        return
+
+    user_prompt = (
+        f"【数据摘要】\n{_json.dumps(summary, ensure_ascii=False, default=str)[:4000]}\n\n"
+        f"【用户问题】{requirement}"
+    )
+    try:
+        answer = await chat_completion(QA_SYSTEM_PROMPT, user_prompt, temperature=0.3, max_tokens=800)
+    except Exception as e:
+        answer = f"分析失败: {str(e)[:200]}"
+
+    merged = {
+        "status": "ok",
+        "answer": answer,
+        "rows": summary["rows"],
+        "columns": summary["columns"],
+        "elapsed": round(time.time() - started, 1),
+        "error": None,
+    }
+    record["result"] = merged
+    record["status"] = "done"
+    record["message"] = "完成"
+    record["progress"] = 100
+    await update_mini_task(task_id, status="done", message="完成",
+                           result=_json.dumps(merged, ensure_ascii=False), error=None)
 
 
 async def _run_music_task(task_id: str, requirement: str) -> dict:

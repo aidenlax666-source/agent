@@ -4,31 +4,35 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { miniApi, uploadApi, type MiniTaskStatus } from "@/lib/api";
 import type { PreviewData } from "@/lib/types";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { PreviewTable } from "@/components/PreviewTable";
-import { Loader2, Sparkles, Play, CheckCircle2, XCircle, AlertTriangle, Download, RefreshCw, History, Upload } from "lucide-react";
+import {
+  Loader2, Sparkles, Play, CheckCircle2, XCircle, AlertTriangle, Download,
+  RefreshCw, History, Upload, Send, Wand2, FileSpreadsheet, Trash2, Zap,
+} from "lucide-react";
 
-const STATUS_COLOR: Record<string, string> = {
-  queued: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300",
-  running: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300",
-  done: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300",
-  error: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
-  cancelled: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
+const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+const STATUS_STYLE: Record<string, { label: string; cls: string }> = {
+  queued: { label: "排队中", cls: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300" },
+  running: { label: "执行中", cls: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300" },
+  done: { label: "已完成", cls: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300" },
+  error: { label: "失败", cls: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300" },
+  cancelled: { label: "已取消", cls: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300" },
 };
 
-const RESULT_STATUS_TEXT: Record<string, { label: string; color: string }> = {
-  ok: { label: "✅ 通过（执行+数量+字段+覆盖+值 全校验）", color: "bg-emerald-100 text-emerald-700" },
-  insufficient_count: { label: "⚠️ 数量不足", color: "bg-amber-100 text-amber-700" },
-  missing_fields: { label: "⚠️ 缺少字段", color: "bg-amber-100 text-amber-700" },
-  coverage_gap: { label: "⚠️ 需求未覆盖", color: "bg-amber-100 text-amber-700" },
-  value_suspect: { label: "⚠️ 数据值可疑", color: "bg-amber-100 text-amber-700" },
-  login_required: { label: "🔒 需要登录", color: "bg-blue-100 text-blue-700" },
-  no_data: { label: "⚠️ 无数据", color: "bg-amber-100 text-amber-700" },
-  robots_blocked: { label: "🚫 网站禁止抓取", color: "bg-red-100 text-red-700" },
-  generate_failed: { label: "❌ 生成失败", color: "bg-red-100 text-red-700" },
-  failed: { label: "❌ 执行失败", color: "bg-red-100 text-red-700" },
-};
+// 一键试用示例（点击填入输入框）
+const EXAMPLES = [
+  { icon: "🎬", label: "短视频", text: "生成一段橘猫在花园追蝴蝶的短视频" },
+  { icon: "🖼️", label: "图片", text: "生成一张赛博朋克机械猫壁纸" },
+  { icon: "🎵", label: "音乐", text: "生成一首星空主题的背景音乐" },
+  { icon: "📊", label: "报告", text: "从quotes.toscrape.com抓取名言，生成可视化分析报告" },
+  { icon: "🎮", label: "联机游戏", text: "做一个联机五子棋" },
+  { icon: "📄", label: "网页", text: "生成一个带倒计时的个人主页" },
+  { icon: "📋", label: "数据", text: "生成100行销售数据（列：产品、数量、单价、日期），按产品汇总总金额，导出Excel" },
+  { icon: "💬", label: "数据问答", text: "分析我上传的销售数据，哪个产品销量最高？" },
+];
 
 function toPreviewData(p: Record<string, unknown>[] | undefined): PreviewData | null {
   if (!p || p.length === 0) return null;
@@ -53,12 +57,8 @@ export default function MiniPage() {
   const [uploading, setUploading] = useState(false);
   const [imagePaths, setImagePaths] = useState<string[]>([]);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
-  const [qaMode, setQaMode] = useState(false);
-  const [qaFile, setQaFile] = useState<string | null>(null);
-  const [qaFileName, setQaFileName] = useState("");
-  const [qaQuestion, setQaQuestion] = useState("");
-  const [qaAnswer, setQaAnswer] = useState("");
-  const [qaLoading, setQaLoading] = useState(false);
+  const [dataPaths, setDataPaths] = useState<string[]>([]);
+  const [dataFiles, setDataFiles] = useState<{ name: string; path: string }[]>([]);
   const [scheduleValue, setScheduleValue] = useState("30");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -107,7 +107,7 @@ export default function MiniPage() {
     setTask(null);
     stopPolling();
     try {
-      const res = await miniApi.submit(requirement.trim(), url.trim() || undefined, imagePaths);
+      const res = await miniApi.submit(requirement.trim(), url.trim() || undefined, imagePaths, dataPaths);
       const initial = await miniApi.get(res.task_id);
       setTask(initial);
       pollTask(res.task_id);
@@ -139,9 +139,33 @@ export default function MiniPage() {
     }
   };
 
+  const handleDataFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setUploading(true);
+    setSubmitError(null);
+    try {
+      const added: { name: string; path: string }[] = [];
+      for (const file of Array.from(files).slice(0, 3)) {
+        const res = await uploadApi.upload(file);
+        added.push({ name: res.filename, path: res.path });
+      }
+      setDataFiles((prev) => [...prev, ...added]);
+      setDataPaths((prev) => [...prev, ...added.map((a) => a.path)]);
+    } catch (e) {
+      setSubmitError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUploading(false);
+    }
+  };
+
   const removeImage = (idx: number) => {
     setImagePaths((prev) => prev.filter((_, i) => i !== idx));
     setImagePreviews((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const removeDataFile = (idx: number) => {
+    setDataFiles((prev) => prev.filter((_, i) => i !== idx));
+    setDataPaths((prev) => prev.filter((_, i) => i !== idx));
   };
 
   const handleCancel = async () => {
@@ -163,34 +187,6 @@ export default function MiniPage() {
       setSubmitError(null);
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : String(e));
-    }
-  };
-
-  const handleQaFile = async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    setQaLoading(true);
-    try {
-      const res = await uploadApi.upload(files[0]);
-      setQaFile(res.path);
-      setQaFileName(res.filename);
-    } catch (e) {
-      setSubmitError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setQaLoading(false);
-    }
-  };
-
-  const handleQa = async () => {
-    if (!qaFile || !qaQuestion.trim()) return;
-    setQaLoading(true);
-    setQaAnswer("");
-    try {
-      const r = await miniApi.qa(qaFile, qaQuestion.trim());
-      setQaAnswer(r.answer);
-    } catch (e) {
-      setQaAnswer(e instanceof Error ? e.message : String(e));
-    } finally {
-      setQaLoading(false);
     }
   };
 
@@ -239,301 +235,152 @@ export default function MiniPage() {
 
   const isActive = task && (task.status === "queued" || task.status === "running");
   const result = task?.result;
-  const statusStyle = RESULT_STATUS_TEXT[result?.status ?? ""];
+  const statusStyle = STATUS_STYLE[task?.status ?? ""];
+  const isQa = !!result?.answer;
 
   return (
-    <div className="min-h-screen">
-      <header className="border-b bg-white/80 backdrop-blur-sm dark:bg-slate-950/80">
-        <div className="max-w-6xl mx-auto px-4 h-16 flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-indigo-100 dark:bg-indigo-900/50 flex items-center justify-center">
-            <Sparkles className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50/80 dark:from-slate-950 dark:via-slate-950 dark:to-indigo-950/40">
+      {/* 顶部装饰网格 */}
+      <div className="pointer-events-none fixed inset-0 opacity-[0.35] dark:opacity-[0.15]"
+        style={{ backgroundImage: "linear-gradient(rgba(99,102,241,0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(99,102,241,0.08) 1px, transparent 1px)", backgroundSize: "44px 44px" }}
+      />
+
+      <header className="sticky top-0 z-20 border-b border-slate-200/60 dark:border-slate-800/60 bg-white/70 dark:bg-slate-950/70 backdrop-blur-xl">
+        <div className="max-w-5xl mx-auto px-4 h-16 flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 via-violet-500 to-fuchsia-500 flex items-center justify-center shadow-lg shadow-indigo-500/30">
+            <Sparkles className="w-5 h-5 text-white" />
           </div>
-          <span className="text-lg font-semibold">一句话自动化</span>
-          <Badge variant="outline" className="ml-auto font-normal text-xs">
-            自然语言 → 脚本 → 四重校验
+          <div className="leading-tight">
+            <span className="text-base font-bold tracking-tight">AI 自动化工作台</span>
+            <span className="block text-[11px] text-muted-foreground">一句话 → 生成 · 执行 · 校验 · 迭代</span>
+          </div>
+          <Badge className="ml-auto font-normal text-xs bg-gradient-to-r from-indigo-50 to-fuchsia-50 text-indigo-600 dark:from-indigo-950 dark:to-fuchsia-950 dark:text-indigo-300 border-indigo-200/60 dark:border-indigo-800">
+            <Zap className="w-3 h-3 mr-1" /> 任务/数据问答自动识别
           </Badge>
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-4 py-10 space-y-6">
-        <Card className="rounded-2xl border-2 border-slate-200/60 dark:border-slate-800/60">
-          <CardHeader className="pb-3">
-            <div className="flex items-center gap-4 flex-wrap">
-              <CardTitle className="text-base">描述你要做的事</CardTitle>
-              <div className="ml-auto flex items-center gap-1 bg-slate-100 dark:bg-slate-800 rounded-xl p-1 text-sm">
-                <button
-                  onClick={() => setQaMode(false)}
-                  className={`px-3 py-1 rounded-lg transition-colors ${!qaMode ? "bg-white dark:bg-slate-700 shadow font-medium" : "text-muted-foreground"}`}
-                >
-                  任务
-                </button>
-                <button
-                  onClick={() => setQaMode(true)}
-                  className={`px-3 py-1 rounded-lg transition-colors ${qaMode ? "bg-white dark:bg-slate-700 shadow font-medium" : "text-muted-foreground"}`}
-                >
-                  数据问答
-                </button>
+      <main className="relative max-w-5xl mx-auto px-4 py-8 space-y-6">
+        {/* 提交区 */}
+        <Card className="rounded-3xl border-slate-200/70 dark:border-slate-800/70 bg-white/80 dark:bg-slate-900/70 backdrop-blur-xl shadow-xl shadow-indigo-500/5 overflow-visible">
+          <CardContent className="p-5 sm:p-7 space-y-5">
+            <div>
+              <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
+                <span className="bg-gradient-to-r from-indigo-600 via-violet-600 to-fuchsia-600 dark:from-indigo-400 dark:via-violet-400 dark:to-fuchsia-400 bg-clip-text text-transparent">
+                  一句话，AI 帮你搞定一切
+                </span>
+              </h1>
+              <p className="mt-1.5 text-sm text-muted-foreground">
+                抓数据、出报告、做游戏、生成视频/图片/音乐——或上传 Excel/CSV 直接提问，AI 自动判断怎么执行。
+              </p>
+            </div>
+
+            <div className="relative">
+              <textarea
+                value={requirement}
+                onChange={(e) => setRequirement(e.target.value)}
+                placeholder={"描述你要做的事，例如：\n「生成100行销售数据（列：产品、数量、单价、日期），按产品汇总总金额，导出Excel」\n「分析我上传的数据，哪个产品销量最高？」\n「生成一段橘猫在花园追蝴蝶的短视频」"}
+                className="w-full min-h-36 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-900/90 p-4 text-sm shadow-inner outline-none focus:ring-4 focus:ring-indigo-400/20 focus:border-indigo-400 transition-all resize-y"
+              />
+              <div className="absolute right-3 bottom-3 flex items-center gap-2">
+                {uploading && <Loader2 className="w-4 h-4 animate-spin text-indigo-500" />}
+                <label className="inline-flex items-center gap-1.5 text-xs font-medium text-indigo-600 dark:text-indigo-400 cursor-pointer hover:bg-indigo-50 dark:hover:bg-indigo-950 rounded-lg px-2.5 py-1.5 transition-colors">
+                  <Upload className="w-3.5 h-3.5" /> 图片
+                  <input type="file" accept="image/*" multiple className="hidden" disabled={uploading} onChange={(e) => handleImages(e.target.files)} />
+                </label>
+                <label className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-600 dark:text-emerald-400 cursor-pointer hover:bg-emerald-50 dark:hover:bg-emerald-950 rounded-lg px-2.5 py-1.5 transition-colors">
+                  <FileSpreadsheet className="w-3.5 h-3.5" /> 数据文件
+                  <input type="file" accept=".xlsx,.xls,.csv" multiple className="hidden" disabled={uploading} onChange={(e) => handleDataFiles(e.target.files)} />
+                </label>
               </div>
             </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {qaMode ? (
-              <>
-                <p className="text-sm text-muted-foreground">
-                  上传 Excel/CSV 数据文件，用自然语言提问（如“哪个产品销量最高？”），AI 直接分析回答。
-                </p>
-                <div className="flex items-center gap-3 flex-wrap">
-                  <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer hover:text-foreground transition-colors">
-                    <Upload className="w-4 h-4" />
-                    上传数据文件（xlsx/csv）
-                    <input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={(e) => handleQaFile(e.target.files)} />
-                  </label>
-                  {qaLoading && <Loader2 className="w-4 h-4 animate-spin text-indigo-500" />}
-                  {qaFileName && <Badge variant="outline">{qaFileName}</Badge>}
-                </div>
-                <div className="flex flex-col sm:flex-row gap-2">
-                  <input
-                    value={qaQuestion}
-                    onChange={(e) => setQaQuestion(e.target.value)}
-                    placeholder="你的问题，如：哪个产品的销售额最高？"
-                    className="flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-400"
-                    onKeyDown={(e) => e.key === "Enter" && handleQa()}
-                  />
-                  <Button onClick={handleQa} disabled={!qaFile || !qaQuestion.trim() || qaLoading} className="gap-2">
-                    {qaLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-                    分析
-                  </Button>
-                </div>
-                {qaAnswer && (
-                  <div className="rounded-xl bg-slate-50 dark:bg-slate-900 p-4 text-sm leading-relaxed whitespace-pre-wrap">
-                    {qaAnswer}
+
+            {/* 已上传文件 */}
+            {(imagePreviews.length > 0 || dataFiles.length > 0) && (
+              <div className="flex items-center gap-3 flex-wrap">
+                {imagePreviews.map((src, i) => (
+                  <div key={i} className="relative group">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={src} alt={`upload-${i}`} className="w-14 h-14 object-cover rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm" />
+                    <button onClick={() => removeImage(i)} className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-500 text-white text-xs flex items-center justify-center shadow opacity-0 group-hover:opacity-100 transition-opacity" title="移除">
+                      ×
+                    </button>
                   </div>
-                )}
-              </>
-            ) : (
-              <>
-            <textarea
-              value={requirement}
-              onChange={(e) => setRequirement(e.target.value)}
-              placeholder={'例如：\n生成100行销售数据（列：产品、数量、单价、日期），按产品汇总总金额，导出Excel\n\n从quotes.toscrape.com抓取前10条名言和作者，导出Excel'}
-              className="w-full min-h-32 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4 text-sm outline-none focus:ring-2 focus:ring-indigo-400 resize-y"
-            />
-            <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center">
+                ))}
+                {dataFiles.map((f, i) => (
+                  <div key={i} className="inline-flex items-center gap-2 rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50/70 dark:bg-emerald-950/50 px-3 py-1.5 text-xs text-emerald-700 dark:text-emerald-300">
+                    <FileSpreadsheet className="w-3.5 h-3.5" />
+                    <span className="max-w-40 truncate">{f.name}</span>
+                    <button onClick={() => removeDataFile(i)} className="text-emerald-500 hover:text-red-500 transition-colors" title="移除">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
               <input
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
-                placeholder="目标 URL（网页任务可填，留空自动识别）"
-                className="flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-400"
+                placeholder="目标 URL（网页任务可填，留空由 AI 推断）"
+                className="flex-1 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/80 px-4 py-3 text-sm outline-none focus:ring-4 focus:ring-indigo-400/20 focus:border-indigo-400 transition-all"
               />
-              <Button onClick={handleSubmit} disabled={!requirement.trim() || submitting || !!isActive} className="gap-2">
-                {submitting || isActive ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-                {isActive ? "执行中..." : "生成并执行"}
+              <Button
+                onClick={handleSubmit}
+                disabled={!requirement.trim() || submitting || !!isActive}
+                className="gap-2 h-12 px-8 rounded-2xl bg-gradient-to-r from-indigo-600 via-violet-600 to-fuchsia-600 hover:opacity-90 text-white font-semibold shadow-lg shadow-indigo-500/30 disabled:opacity-50"
+              >
+                {submitting || isActive ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                {isActive ? "执行中..." : "让 AI 搞定"}
               </Button>
             </div>
-            <div className="flex items-center gap-3 flex-wrap">
-              <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer hover:text-foreground transition-colors">
-                <Upload className="w-4 h-4" />
-                上传图片（需求截图/参考图，最多4张，AI 自动识别）
-                <input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  className="hidden"
-                  disabled={uploading}
-                  onChange={(e) => handleImages(e.target.files)}
-                />
-              </label>
-              {uploading && <Loader2 className="w-4 h-4 animate-spin text-indigo-500" />}
-              {imagePreviews.map((src, i) => (
-                <div key={i} className="relative">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={src} alt={`upload-${i}`} className="w-16 h-16 object-cover rounded-lg border border-slate-200 dark:border-slate-700" />
+
+            {/* 能力示例 chips */}
+            <div>
+              <p className="text-[11px] font-medium text-muted-foreground mb-2 flex items-center gap-1.5">
+                <Wand2 className="w-3 h-3" /> 试试这些（点击填入）
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {EXAMPLES.map((ex) => (
                   <button
-                    onClick={() => removeImage(i)}
-                    className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-500 text-white text-xs flex items-center justify-center shadow"
-                    title="移除"
+                    key={ex.label}
+                    onClick={() => setRequirement(ex.text)}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 dark:border-slate-700 bg-white/70 dark:bg-slate-900/70 px-3 py-1.5 text-xs text-slate-600 dark:text-slate-300 hover:border-indigo-300 hover:text-indigo-600 dark:hover:text-indigo-300 hover:shadow-sm transition-all"
                   >
-                    ×
+                    <span>{ex.icon}</span>
+                    {ex.label}
                   </button>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
+
             {submitError && (
-              <p className="text-sm text-red-500 bg-red-50 dark:bg-red-950 rounded-lg px-3 py-2">{submitError}</p>
-            )}
-            <p className="text-xs text-muted-foreground">
-              支持：网页抓取（含登录态/排序筛选）、Excel/Word/PPT、文件操作、数据处理、API 调用、图片/PDF，
-              以及 🎮 联机游戏、📊 可视化报告、📄 网页内容、🎬 AI 视频（Seedance）、🖼️ AI 图片（Seedream）、🎵 AI 作曲（标准库合成）。
-              系统自动执行并做数量、字段、功能覆盖、数据值四重校验，发现问题自动修复。
-            </p>
-              </>
+              <p className="text-sm text-red-500 bg-red-50 dark:bg-red-950 rounded-xl px-4 py-2.5">{submitError}</p>
             )}
           </CardContent>
         </Card>
 
+        {/* 结果区 */}
         {task && (
-          <Card className="rounded-2xl border-2 border-slate-200/60 dark:border-slate-800/60">
-            <CardHeader className="pb-3">
+          <Card className="rounded-3xl border-slate-200/70 dark:border-slate-800/70 bg-white/80 dark:bg-slate-900/70 backdrop-blur-xl shadow-xl shadow-indigo-500/5">
+            <CardContent className="p-5 sm:p-6 space-y-4">
               <div className="flex items-center gap-3 flex-wrap">
-                <CardTitle className="text-base">任务 #{task.id.slice(0, 8)}</CardTitle>
-                <Badge className={STATUS_COLOR[task.status] ?? ""}>{task.message || task.status}</Badge>
+                <span className="text-sm font-semibold font-mono">#{task.id.slice(0, 8)}</span>
+                {statusStyle && <Badge className={statusStyle.cls}>{statusStyle.label}</Badge>}
+                <span className="text-xs text-muted-foreground flex-1 min-w-0 truncate">{task.message || ""}</span>
                 {isActive && <Loader2 className="w-4 h-4 text-blue-500 animate-spin" />}
               </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <p className="text-sm text-muted-foreground break-words">{task.requirement}</p>
-
-              {result && (
-                <>
-                  <div className="flex items-center gap-3 flex-wrap">
-                    {statusStyle ? (
-                      <Badge className={statusStyle.color}>{statusStyle.label}</Badge>
-                    ) : (
-                      <Badge variant="outline">状态: {result.status}</Badge>
-                    )}
-                    {result.rows > 0 && <Badge variant="outline">共 {result.rows} 行</Badge>}
-                    {typeof result.elapsed === "number" && (
-                      <Badge variant="secondary">{result.elapsed.toFixed(1)}s</Badge>
-                    )}
-                    {typeof result.count_heals === "number" && result.count_heals > 0 && (
-                      <Badge variant="secondary">数量自愈×{result.count_heals}</Badge>
-                    )}
-                    {typeof result.field_heals === "number" && result.field_heals > 0 && (
-                      <Badge variant="secondary">字段自愈×{result.field_heals}</Badge>
-                    )}
-                    {typeof result.coverage_heals === "number" && result.coverage_heals > 0 && (
-                      <Badge variant="secondary">覆盖自愈×{result.coverage_heals}</Badge>
-                    )}
-                    {typeof result.value_heals === "number" && result.value_heals > 0 && (
-                      <Badge variant="secondary">值自愈×{result.value_heals}</Badge>
-                    )}
-                  </div>
-
-                  {result.error && (
-                    <div className="flex items-start gap-2 text-sm text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950 rounded-xl px-4 py-3">
-                      <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
-                      <span>{result.error}</span>
-                    </div>
-                  )}
-
-                  {result.missing_fields && result.missing_fields.length > 0 && (
-                    <p className="text-xs text-amber-600">缺少字段: {result.missing_fields.join("、")}</p>
-                  )}
-                  {result.coverage_missing && result.coverage_missing.length > 0 && (
-                    <p className="text-xs text-amber-600">未覆盖功能: {result.coverage_missing.join("、")}</p>
-                  )}
-                  {result.value_issues && result.value_issues.length > 0 && (
-                    <p className="text-xs text-amber-600">数据值问题: {result.value_issues.join("；")}</p>
-                  )}
-
-                  <PreviewTable data={toPreviewData(result.preview)} totalEstimate={result.rows} />
-
-                  {result.output_file && (
-                    <a
-                      href={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/api/mini/tasks/${task.id}/download`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-2 text-sm font-medium text-indigo-600 dark:text-indigo-400 hover:underline"
-                    >
-                      <Download className="w-4 h-4" />
-                      下载结果文件（{result.output_file.split(/[\\/]/).pop()}）
-                    </a>
-                  )}
-                  {result.report_url && (
-                    <a
-                      href={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/api/mini/tasks/${task.id}/download`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-2 text-sm font-medium text-emerald-600 dark:text-emerald-400 hover:underline"
-                    >
-                      <Sparkles className="w-4 h-4" />
-                      📊 查看可视化报告
-                    </a>
-                  )}
-                  {result.game_url && (
-                    <a
-                      href={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}${result.game_url}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-2 text-sm font-medium text-violet-600 dark:text-violet-400 hover:underline"
-                    >
-                      <Play className="w-4 h-4" />
-                      🎮 开始联机游戏（建房分享给好友一起玩）
-                    </a>
-                  )}
-                  {result.content_url && (
-                    <a
-                      href={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}${result.content_url}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-2 text-sm font-medium text-sky-600 dark:text-sky-400 hover:underline"
-                    >
-                      <Play className="w-4 h-4" />
-                      📄 打开生成的内容
-                    </a>
-                  )}
-                  {result.video_url && (
-                    <a
-                      href={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}${result.video_url}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-2 text-sm font-medium text-rose-600 dark:text-rose-400 hover:underline"
-                    >
-                      <Play className="w-4 h-4" />
-                      🎬 播放生成的视频
-                    </a>
-                  )}
-                  {result.music_url && (
-                    <a
-                      href={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}${result.music_url}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-2 text-sm font-medium text-amber-600 dark:text-amber-400 hover:underline"
-                    >
-                      <Play className="w-4 h-4" />
-                      🎵 播放生成的音乐
-                    </a>
-                  )}
-                  {result.image_urls && result.image_urls.length > 0 && (
-                    <div className="flex items-center gap-3 flex-wrap">
-                      <span className="text-sm font-medium text-pink-600 dark:text-pink-400">
-                        🖼️ 生成的图片（{result.image_urls.length} 张）：
-                      </span>
-                      {result.image_urls.map((u, i) => (
-                        <a key={u} href={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}${u}`} target="_blank" rel="noreferrer">
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img
-                            src={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}${u}`}
-                            alt={`generated-${i}`}
-                            className="w-24 h-24 object-cover rounded-lg border border-slate-200 dark:border-slate-700 hover:opacity-80 transition-opacity"
-                          />
-                        </a>
-                      ))}
-                    </div>
-                  )}
-
-                  {result.script && (
-                    <details className="text-sm">
-                      <summary className="cursor-pointer text-muted-foreground hover:text-foreground select-none">
-                        查看生成的脚本（{result.script.length} 字符）
-                      </summary>
-                      <pre className="mt-3 max-h-96 overflow-auto rounded-xl bg-slate-950 text-slate-100 p-4 text-xs leading-relaxed whitespace-pre-wrap">
-                        {result.script}
-                      </pre>
-                    </details>
-                  )}
-                </>
-              )}
+              <p className="text-sm text-muted-foreground break-words bg-slate-50 dark:bg-slate-900 rounded-xl px-4 py-3">{task.requirement}</p>
 
               {!result && !task.error && (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground py-6">
+                <div className="flex items-center gap-3 text-sm text-muted-foreground py-6 justify-center">
                   {isActive ? (
                     <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      系统正在生成脚本、沙箱试跑并做四重校验，请稍候…
-                      <Button variant="outline" size="sm" onClick={handleCancel} className="ml-2 gap-1.5 text-red-500">
-                        <XCircle className="w-3.5 h-3.5" />
-                        取消
+                      <Loader2 className="w-4 h-4 animate-spin text-indigo-500" />
+                      <span>AI 正在识别意图并执行，请稍候…</span>
+                      <Button variant="outline" size="sm" onClick={handleCancel} className="gap-1.5 text-red-500">
+                        <XCircle className="w-3.5 h-3.5" /> 取消
                       </Button>
                     </>
                   ) : (
@@ -549,50 +396,125 @@ export default function MiniPage() {
                 </div>
               )}
 
-              {result?.status === "ok" && (
-                <div className="flex items-center gap-2 text-sm text-emerald-600">
-                  <CheckCircle2 className="w-4 h-4" />
-                  四重校验全部通过，数据可信。
-                </div>
+              {result && (
+                <>
+                  {/* QA 答案 */}
+                  {isQa && (
+                    <div className="rounded-2xl bg-gradient-to-br from-indigo-50/80 to-fuchsia-50/60 dark:from-indigo-950/40 dark:to-fuchsia-950/30 border border-indigo-100 dark:border-indigo-900/50 p-5">
+                      <div className="flex items-center gap-2 text-sm font-semibold text-indigo-700 dark:text-indigo-300 mb-2">
+                        <Sparkles className="w-4 h-4" /> AI 数据分析结果
+                        {typeof result.rows === "number" && <Badge variant="outline" className="ml-auto text-xs font-normal">{result.rows} 行数据</Badge>}
+                      </div>
+                      <div className="text-sm leading-relaxed whitespace-pre-wrap text-slate-700 dark:text-slate-200">{result.answer}</div>
+                    </div>
+                  )}
+
+                  {/* 状态与校验徽章（非 QA） */}
+                  {!isQa && (
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Badge className={result.status === "ok" ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300" : "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300"}>
+                        {result.status === "ok" ? "✅ 校验通过" : `⚠️ ${result.status}`}
+                      </Badge>
+                      {result.rows > 0 && <Badge variant="outline">{result.rows} 行</Badge>}
+                      {typeof result.elapsed === "number" && <Badge variant="secondary">{result.elapsed.toFixed(1)}s</Badge>}
+                      {typeof result.count_heals === "number" && result.count_heals > 0 && <Badge variant="secondary">数量自愈×{result.count_heals}</Badge>}
+                      {typeof result.field_heals === "number" && result.field_heals > 0 && <Badge variant="secondary">字段自愈×{result.field_heals}</Badge>}
+                      {typeof result.coverage_heals === "number" && result.coverage_heals > 0 && <Badge variant="secondary">覆盖自愈×{result.coverage_heals}</Badge>}
+                      {typeof result.value_heals === "number" && result.value_heals > 0 && <Badge variant="secondary">值自愈×{result.value_heals}</Badge>}
+                    </div>
+                  )}
+
+                  {result.error && (
+                    <div className="flex items-start gap-2 text-sm text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950 rounded-xl px-4 py-3">
+                      <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+                      <span>{result.error}</span>
+                    </div>
+                  )}
+
+                  {!isQa && <PreviewTable data={toPreviewData(result.preview)} totalEstimate={result.rows} />}
+
+                  {/* 媒体产物 */}
+                  {result.video_url && (
+                    <div className="rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-700">
+                      <video src={`${API}${result.video_url}`} controls className="w-full max-h-96 bg-black" />
+                    </div>
+                  )}
+                  {result.image_urls && result.image_urls.length > 0 && (
+                    <div className="flex items-start gap-3 flex-wrap">
+                      {result.image_urls.map((u, i) => (
+                        <a key={u} href={`${API}${u}`} target="_blank" rel="noreferrer" className="group relative">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={`${API}${u}`} alt={`generated-${i}`} className="w-40 h-40 object-cover rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm group-hover:opacity-85 group-hover:scale-[1.02] transition-all" />
+                          <span className="absolute inset-0 rounded-2xl opacity-0 group-hover:opacity-100 bg-black/30 flex items-center justify-center text-white text-xs font-medium transition-opacity">查看大图</span>
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                  {result.music_url && (
+                    <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-gradient-to-r from-amber-50/60 to-rose-50/60 dark:from-amber-950/30 dark:to-rose-950/30 p-4">
+                      <audio src={`${API}${result.music_url}`} controls className="w-full" />
+                    </div>
+                  )}
+
+                  {/* 链接类产物 */}
+                  <div className="flex flex-wrap gap-2.5">
+                    {result.output_file && (
+                      <a href={`${API}/api/mini/tasks/${task.id}/download`} target="_blank" rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 text-sm font-medium text-indigo-600 dark:text-indigo-400 hover:underline rounded-xl border border-indigo-200/60 dark:border-indigo-800 px-3.5 py-2 hover:bg-indigo-50 dark:hover:bg-indigo-950/50 transition-colors">
+                        <Download className="w-4 h-4" /> 下载结果文件
+                      </a>
+                    )}
+                    {result.report_url && (
+                      <a href={`${API}/api/mini/tasks/${task.id}/download`} target="_blank" rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 text-sm font-medium text-emerald-600 dark:text-emerald-400 hover:underline rounded-xl border border-emerald-200/60 dark:border-emerald-800 px-3.5 py-2 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 transition-colors">
+                        <Sparkles className="w-4 h-4" /> 📊 查看可视化报告
+                      </a>
+                    )}
+                    {result.game_url && (
+                      <a href={`${API}${result.game_url}`} target="_blank" rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 text-sm font-medium text-violet-600 dark:text-violet-400 hover:underline rounded-xl border border-violet-200/60 dark:border-violet-800 px-3.5 py-2 hover:bg-violet-50 dark:hover:bg-violet-950/50 transition-colors">
+                        <Play className="w-4 h-4" /> 🎮 开始联机游戏
+                      </a>
+                    )}
+                    {result.content_url && (
+                      <a href={`${API}${result.content_url}`} target="_blank" rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 text-sm font-medium text-sky-600 dark:text-sky-400 hover:underline rounded-xl border border-sky-200/60 dark:border-sky-800 px-3.5 py-2 hover:bg-sky-50 dark:hover:bg-sky-950/50 transition-colors">
+                        <Play className="w-4 h-4" /> 📄 打开生成的内容
+                      </a>
+                    )}
+                  </div>
+
+                  {result.script && (
+                    <details className="text-sm">
+                      <summary className="cursor-pointer text-muted-foreground hover:text-foreground select-none">查看生成的脚本（{result.script.length} 字符）</summary>
+                      <pre className="mt-3 max-h-96 overflow-auto rounded-xl bg-slate-950 text-slate-100 p-4 text-xs leading-relaxed whitespace-pre-wrap">{result.script}</pre>
+                    </details>
+                  )}
+                </>
               )}
 
               {result && task.status === "done" && (
-                <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-3">
-                  <div className="flex items-center gap-2">
-                    <Button size="sm" className="gap-2" onClick={handleConfirm} disabled={acting}>
-                      <CheckCircle2 className="w-4 h-4" />
-                      满意，确认结果
-                    </Button>
-                    <span className="text-xs text-muted-foreground">
-                      不满意？在下方提出修改意见，AI 会在原任务上迭代重跑
-                    </span>
-                  </div>
+                <div className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-3">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs text-muted-foreground">定时执行：</span>
-                    <input
-                      value={scheduleValue}
-                      onChange={(e) => setScheduleValue(e.target.value)}
-                      className="w-20 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-xs outline-none focus:ring-2 focus:ring-indigo-400"
-                      placeholder="分钟"
-                    />
-                    <span className="text-xs text-muted-foreground">分钟</span>
-                    <Button variant="outline" size="sm" onClick={() => handleSchedule(true)} className="text-xs">
-                      开启定时
+                    <Button size="sm" className="gap-2 rounded-xl" onClick={handleConfirm} disabled={acting}>
+                      <CheckCircle2 className="w-4 h-4" /> 满意，确认结果
                     </Button>
-                    <Button variant="ghost" size="sm" onClick={() => handleSchedule(false)} className="text-xs text-red-500">
-                      关闭
-                    </Button>
+                    <span className="text-xs text-muted-foreground">不满意？下方提出修改意见，AI 会在原任务上迭代重跑</span>
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap text-xs">
+                    <span className="text-muted-foreground">定时执行：</span>
+                    <input value={scheduleValue} onChange={(e) => setScheduleValue(e.target.value)}
+                      className="w-20 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-xs outline-none focus:ring-2 focus:ring-indigo-400" placeholder="分钟" />
+                    <span className="text-muted-foreground">分钟</span>
+                    <Button variant="outline" size="sm" onClick={() => handleSchedule(true)}>开启</Button>
+                    <Button variant="ghost" size="sm" onClick={() => handleSchedule(false)} className="text-red-500">关闭</Button>
                   </div>
                   <div className="flex flex-col sm:flex-row gap-2">
-                    <textarea
-                      value={feedback}
-                      onChange={(e) => setFeedback(e.target.value)}
+                    <textarea value={feedback} onChange={(e) => setFeedback(e.target.value)}
                       placeholder="修改意见，如：只要产品名和金额两列 / 换成按月份统计 / 数据太多只要前5条…"
-                      className="flex-1 min-h-16 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-400 resize-y"
-                    />
-                    <Button variant="outline" size="sm" onClick={handleIterate} disabled={!feedback.trim() || acting} className="gap-2">
-                      <RefreshCw className="w-4 h-4" />
-                      迭代修改
+                      className="flex-1 min-h-16 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-400 resize-y" />
+                    <Button variant="outline" size="sm" onClick={handleIterate} disabled={!feedback.trim() || acting} className="gap-2 rounded-xl">
+                      <RefreshCw className="w-4 h-4" /> 迭代修改
                     </Button>
                   </div>
                 </div>
@@ -600,8 +522,7 @@ export default function MiniPage() {
 
               {task.status === "confirmed" && (
                 <div className="flex items-center gap-2 text-sm text-emerald-600">
-                  <CheckCircle2 className="w-4 h-4" />
-                  已确认完成，结果即最终版。
+                  <CheckCircle2 className="w-4 h-4" /> 已确认完成，结果即最终版。
                 </div>
               )}
             </CardContent>
@@ -609,36 +530,40 @@ export default function MiniPage() {
         )}
 
         {/* 历史任务 */}
-        <Card className="rounded-2xl border-2 border-slate-200/60 dark:border-slate-800/60">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base flex items-center gap-2">
-              <History className="w-4 h-4" />
-              任务历史
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-1.5">
+        <Card className="rounded-3xl border-slate-200/70 dark:border-slate-800/70 bg-white/80 dark:bg-slate-900/70 backdrop-blur-xl shadow-xl shadow-indigo-500/5">
+          <CardContent className="p-5 sm:p-6">
+            <h2 className="text-sm font-bold flex items-center gap-2 mb-4">
+              <History className="w-4 h-4 text-indigo-500" /> 任务历史
+            </h2>
             {history.length === 0 ? (
-              <p className="text-sm text-muted-foreground py-3">暂无历史任务，提交第一个需求吧</p>
+              <p className="text-sm text-muted-foreground py-4 text-center">暂无历史任务，提交第一个需求吧 ✨</p>
             ) : (
-              history.map((h) => (
-                <button
-                  key={h.id}
-                  onClick={() => handleLoadTask(h.id)}
-                  className={`w-full text-left rounded-xl px-3 py-2 text-sm transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50 ${
-                    task?.id === h.id ? "bg-indigo-50 dark:bg-indigo-950/30 ring-1 ring-indigo-200 dark:ring-indigo-800" : ""
-                  }`}
-                >
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <Badge variant="outline" className="text-[10px] font-normal">{h.status}</Badge>
-                    <span className="text-muted-foreground text-xs font-mono">#{h.id.slice(0, 8)}</span>
-                    <span className="text-xs text-muted-foreground">{h.message || ""}</span>
-                  </div>
-                  <div className="mt-0.5 text-foreground/80 truncate">{h.requirement}</div>
-                </button>
-              ))
+              <div className="space-y-1.5">
+                {history.map((h) => {
+                  const st = STATUS_STYLE[h.status];
+                  return (
+                    <button key={h.id} onClick={() => handleLoadTask(h.id)}
+                      className={`w-full text-left rounded-2xl px-4 py-2.5 text-sm transition-all hover:bg-indigo-50/60 dark:hover:bg-indigo-950/30 ${
+                        task?.id === h.id ? "bg-indigo-50/80 dark:bg-indigo-950/40 ring-1 ring-indigo-200 dark:ring-indigo-800" : ""
+                      }`}>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className={`w-1.5 h-1.5 rounded-full ${st ? st.cls.split(" ")[0] : "bg-slate-300"}`} />
+                        <span className="text-muted-foreground text-xs font-mono">#{h.id.slice(0, 8)}</span>
+                        {st && <Badge className={`${st.cls} text-[10px]`}>{st.label}</Badge>}
+                        <span className="text-xs text-muted-foreground truncate flex-1">{h.message || ""}</span>
+                      </div>
+                      <div className="mt-0.5 text-foreground/80 truncate">{h.requirement}</div>
+                    </button>
+                  );
+                })}
+              </div>
             )}
           </CardContent>
         </Card>
+
+        <footer className="text-center text-[11px] text-muted-foreground pb-6">
+          AI 自动化工作台 · 任务与数据问答自动识别 · 生成产物自动校验（数量 / 字段 / 覆盖 / 数值）
+        </footer>
       </main>
     </div>
   );

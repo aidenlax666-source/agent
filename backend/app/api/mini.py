@@ -29,7 +29,10 @@ async def create_task(data: dict, user=Depends(get_current_user)):
     image_paths = data.get("image_paths") or []
     if not isinstance(image_paths, list):
         image_paths = []
-    record = mini_tasks.submit(requirement, url, user["id"], image_paths=image_paths)
+    data_paths = data.get("data_paths") or []
+    if not isinstance(data_paths, list):
+        data_paths = []
+    record = mini_tasks.submit(requirement, url, user["id"], image_paths=image_paths, data_paths=data_paths)
     return {
         "task_id": record["id"],
         "status": record["status"],

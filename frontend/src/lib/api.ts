@@ -157,6 +157,8 @@ export interface MiniTaskResult {
   image_url?: string;
   image_urls?: string[];
   music_url?: string;
+  answer?: string;
+  columns?: string[];
 }
 
 export interface MiniTaskStatus {
@@ -173,10 +175,15 @@ export interface MiniTaskStatus {
 }
 
 export const miniApi = {
-  submit: (requirement: string, url?: string, image_paths?: string[]) =>
+  submit: (requirement: string, url?: string, image_paths?: string[], data_paths?: string[]) =>
     request<{ task_id: string; status: string; message: string }>("/api/mini/tasks", {
       method: "POST",
-      body: JSON.stringify({ requirement, url: url || undefined, image_paths: image_paths || [] }),
+      body: JSON.stringify({
+        requirement,
+        url: url || undefined,
+        image_paths: image_paths || [],
+        data_paths: data_paths || [],
+      }),
     }),
 
   get: (taskId: string) =>
