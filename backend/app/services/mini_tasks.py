@@ -639,12 +639,26 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
                     "image_context",
                 )
                 merged.update({k: result.get(k) for k in keep})
-                if result.get("status") != "ok":
-                    failed.append(f"数据处理: {result.get('error') or result.get('status')}")
+                rs = result.get("status")
+                if rs == "ok":
+                    pass
+                elif rs in ("no_data", "login_required", "robots_blocked"):
+                    # 业务结果（无符合条件的数据 / 需登录 / 禁止抓取）：如实告知用户，不算执行失败
+                    merged["status"] = rs
+                    hint = {
+                        "no_data": "没有符合条件的数据（筛选/抓取结果为空，可能条件过严或站点无此类数据）",
+                        "login_required": "目标网站需要登录，请先在「登录态」功能保存登录状态后重试",
+                        "robots_blocked": "目标网站禁止抓取",
+                    }.get(rs, rs)
+                    merged["error"] = result.get("error") or hint
+                else:
+                    failed.append(f"数据处理: {result.get('error') or rs}")
 
         if failed and not any(merged.get(k) for k in ("game_url", "report_url", "content_url", "video_url", "image_url", "image_urls", "music_url", "tts_url")):
             merged["status"] = "failed"
             merged["error"] = "；".join(failed)[:300]
+        elif merged.get("status") in ("no_data", "login_required", "robots_blocked"):
+            pass  # 保留业务状态（无数据/需登录/禁止抓取），前端有对应友好展示
         else:
             merged["status"] = "ok"
             if failed:

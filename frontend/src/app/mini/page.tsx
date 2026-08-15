@@ -24,6 +24,18 @@ const STATUS_STYLE: Record<string, { label: string; cls: string }> = {
   cancelled: { label: "已取消", cls: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300" },
 };
 
+// 业务状态友好文案（无数据/需登录/禁止抓取等是如实告知，不是执行失败）
+const RESULT_BADGE: Record<string, string> = {
+  no_data: "⚠️ 无符合条件的数据",
+  login_required: "🔒 需要登录",
+  robots_blocked: "🚫 网站禁止抓取",
+  insufficient_count: "⚠️ 数量不足",
+  missing_fields: "⚠️ 缺少字段",
+  coverage_gap: "⚠️ 需求未覆盖",
+  value_suspect: "⚠️ 数据值可疑",
+  failed: "❌ 执行失败",
+};
+
 // 一键试用示例（点击填入输入框）
 const EXAMPLES = [
   { icon: "🎬", label: "短视频", text: "生成一段橘猫在花园追蝴蝶的短视频" },
@@ -398,7 +410,7 @@ export default function MiniPage() {
                   {!isQa && (
                     <div className="flex items-center gap-2 flex-wrap">
                       <Badge className={result.status === "ok" ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300" : "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300"}>
-                        {result.status === "ok" ? "✅ 校验通过" : `⚠️ ${result.status}`}
+                        {result.status === "ok" ? "✅ 校验通过" : (RESULT_BADGE[result.status] || `⚠️ ${result.status}`)}
                       </Badge>
                       {result.rows > 0 && <Badge variant="outline">{result.rows} 行</Badge>}
                       {typeof result.elapsed === "number" && <Badge variant="secondary">{result.elapsed.toFixed(1)}s</Badge>}
