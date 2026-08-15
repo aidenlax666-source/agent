@@ -204,9 +204,19 @@ REPORT_SYSTEM_PROMPT = """你是一位 Python 脚本专家 + 数据可视化设�
 【代码完整性（必须遵守）】
 - 脚本必须**自包含**：所有辅助函数（如 create_pie_chart/generate_html 等）必须在同一脚本内先完整定义再调用，禁止引用未定义函数
 - 生成 HTML 时所有用到的变量必须先赋值再使用
+- 数值变量（width/height/坐标/尺寸等）必须用数字类型（int/float），禁止用字符串参与运算
+- 大段 HTML 模板**避免用 f-string**（极易因变量未定义报 KeyError），用三引号字符串 + .replace()/.format() 或普通拼接
 - 执行前在脑中走查一遍，确保无 NameError/变量未定义/缩进错误
 
 只输出完整 Python 代码，不要解释。"""
+
+
+REPORT_HEAL_PROMPT = """你是一位 Python 修复专家。用户需求是生成可视化报告脚本，脚本运行报错。请根据报错修复：
+
+1. 先看报错定位问题（NameError/KeyError/TypeError/未定义函数等）
+2. 常见原因：f-string 引用了未定义变量（改普通拼接）、数值变量是字符串（转 int/float）、辅助函数未定义或顺序错误
+3. 保持 def run_task()/main() 或主流程结构，保持 report.html 输出
+4. 直接输出修复后的完整 Python 代码，不要解释"""
 
 
 MUSIC_SYSTEM_PROMPT = """你是一位作曲家 + Python 音频合成专家。用 Python **标准库**（wave / math / struct，禁止 numpy/pygame/mido/任何第三方库）编写一个脚本，合成一首契合主题的音乐并保存为 WAV。
@@ -719,13 +729,42 @@ async def _run_report_task(task_id: str, requirement: str, url: str | None) -> d
     if not code:
         return {"status": "generate_failed", "error": "报告脚本生成失败", "elapsed": round(time.time() - started, 1)}
 
-    # 2. 沙箱执行（隔离环境 + 静态扫描 + 超时/资源限制），产物从沙箱工作区复制到 web/
+    # 2. 沙箱执行（隔离环境 + 静态扫描 + 超时/资源限制），失败时带 stderr 定向修复（最多 2 轮）
     from app.sandbox.docker_executor import execute_in_sandbox
-    result = await execute_in_sandbox(code, timeout=180, preview_mode=False)
-    stdout = result.stdout or ""
-    stderr = result.stderr or ""
+    result = None
+    stdout = stderr = ""
+    for round_no in range(3):  # 首次执行 + 最多 2 次定向修复
+        if round_no > 0:
+            logger.info("报告脚本第 %d 轮失败，带错误定向修复...", round_no)
+            heal = await chat_completion(
+                REPORT_HEAL_PROMPT,
+                f"【用户需求】{requirement}\n\n【当前脚本】\n```python\n{code}\n```\n\n【运行报错】\n{(stderr or stdout)[-1500:]}\n\n请修复脚本（保持 report.html 输出），只输出修复后的完整代码。",
+                temperature=0.2, max_tokens=8000,
+            )
+            heal = heal.strip()
+            if heal.startswith("```python"):
+                heal = heal[9:]
+            elif heal.startswith("```"):
+                heal = heal[3:]
+            if heal.endswith("```"):
+                heal = heal[:-3]
+            heal = heal.strip()
+            try:
+                compile(heal, "<script>", "exec")
+                if "report.html" in heal:
+                    code = heal
+                else:
+                    break
+            except Exception:
+                break  # 修复代码不合格，放弃
+        result = await execute_in_sandbox(code, timeout=180, preview_mode=False)
+        stdout = result.stdout or ""
+        stderr = result.stderr or ""
+        report_ok = result.success and result.output_file_path and os.path.exists(result.output_file_path)
+        if report_ok:
+            break
 
-    if not result.success:
+    if not result or not result.success:
         return {
             "status": "failed",
             "error": f"脚本执行失败: {(stderr or stdout)[-300:]}",
