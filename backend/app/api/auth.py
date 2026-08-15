@@ -20,6 +20,13 @@ _failed_logins: dict[str, list[float]] = {}
 _failed_logins_by_ip: dict[str, list[float]] = {}
 MAX_LOGIN_ATTEMPTS = 5
 LOGIN_LOCKOUT_SECONDS = 300
+_FAILED_LOGIN_MAX_KEYS = 10000  # 限流表键数上限（防伪造输入无限填充内存）
+
+
+def _trim_rate_dict(d: dict) -> None:
+    if len(d) > _FAILED_LOGIN_MAX_KEYS:
+        for k in list(d.keys())[: _FAILED_LOGIN_MAX_KEYS // 2]:
+            d.pop(k, None)
 
 
 def _hash_pwd(password: str) -> str:
@@ -35,6 +42,8 @@ def _verify_pwd(password: str, stored: str) -> bool:
 
 def _check_login_rate_limit(email: str, ip: str) -> None:
     now = _time.time()
+    _trim_rate_dict(_failed_logins)
+    _trim_rate_dict(_failed_logins_by_ip)
     # 邮箱维度
     attempts = [t for t in _failed_logins.get(email, []) if now - t < LOGIN_LOCKOUT_SECONDS]
     _failed_logins[email] = attempts

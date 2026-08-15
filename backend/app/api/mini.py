@@ -22,6 +22,7 @@ MAX_REQUIREMENT_LEN = 2000
 # 匿名用户提交限速：防止换 ID 无限刷积分/刷任务（内存表，按 IP）
 _ANON_SUBMIT_RATE: dict[str, deque] = defaultdict(deque)
 ANON_MAX_PER_MINUTE = 10
+_ANON_RATE_MAX_KEYS = 10000  # 限速表键数上限（防伪造 XFF 无限填充内存）
 
 
 def _client_ip(request: Request) -> str:
@@ -36,6 +37,10 @@ def _client_ip(request: Request) -> str:
 
 def _check_anon_rate(ip: str) -> None:
     now = _time.time()
+    if len(_ANON_SUBMIT_RATE) > _ANON_RATE_MAX_KEYS:
+        # 键数超限：清空最旧一半（按插入顺序）
+        for k in list(_ANON_SUBMIT_RATE.keys())[: _ANON_RATE_MAX_KEYS // 2]:
+            _ANON_SUBMIT_RATE.pop(k, None)
     q = _ANON_SUBMIT_RATE[ip]
     while q and now - q[0] > 60:
         q.popleft()

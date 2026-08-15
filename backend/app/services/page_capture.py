@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Capture page DOM structure without collecting user data."""
 
 import json
