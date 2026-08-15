@@ -35,6 +35,7 @@ const EXAMPLES = [
   { icon: "📋", label: "数据", text: "生成100行销售数据（列：产品、数量、单价、日期），按产品汇总总金额，导出Excel" },
   { icon: "💬", label: "数据问答", text: "分析我上传的销售数据，哪个产品销量最高？" },
   { icon: "🔊", label: "配音", text: "给这段文字配音：「欢迎使用 AI 自动化工作台，一切尽在掌握」" },
+  { icon: "🎙️", label: "男声配音", text: "用男声开心地朗读：「大家好，欢迎收听今天的新闻快报」" },
 ];
 
 function toPreviewData(p: Record<string, unknown>[] | undefined): PreviewData | null {

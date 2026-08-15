@@ -122,6 +122,44 @@ def _extract_tts_text(requirement: str) -> str:
     return ""
 
 
+# 音色识别：需求关键词 → 音色别名（tts_client.VOICES）
+_TTS_VOICE_MAP = [
+    (("男声", "男生", "男音", "云舟"), "m191"),
+    (("知性灿灿", "灿灿"), "cancan"),
+    (("甜美", "小源", "甜美女声"), "xiaoyuan"),
+    (("晓荷", "温柔女声", "温柔"), "xiaohe"),
+    (("晓田",), "taocheng"),
+    (("客服", "暖阳"), "kefunv"),
+    (("英文", "英语", "english", "dacey"), "dacey"),
+]
+
+# 情绪识别：需求关键词 → 豆包情绪（旁白/讲故事等更精确的词放前面）
+_TTS_EMOTION_MAP = [
+    (("旁白", "解说"), "narrator"),
+    (("讲故事", "故事"), "storytelling"),
+    (("开心", "高兴", "欢快", "愉快"), "happy"),
+    (("悲伤", "难过", "忧伤"), "sad"),
+    (("生气", "愤怒"), "angry"),
+]
+
+
+def _extract_tts_voice(requirement: str) -> str:
+    """从需求里识别音色（如"用男声配音"→ m191）。"""
+    r = requirement.lower()
+    for keys, voice in _TTS_VOICE_MAP:
+        if any(k in r for k in keys):
+            return voice
+    return ""
+
+
+def _extract_tts_emotion(requirement: str) -> str:
+    """从需求里识别情绪（如"开心地朗读"→ happy）。"""
+    for keys, e in _TTS_EMOTION_MAP:
+        if any(k in requirement for k in keys):
+            return e
+    return ""
+
+
 async def _extract_tts_text_llm(requirement: str) -> str:
     """LLM 提取配音文本（规则未命中时兜底）。"""
     try:
@@ -570,11 +608,15 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
                     os.makedirs(_WEB_DIR, exist_ok=True)
                     fname = f"tts_{task_id}.mp3"
                     save_path = os.path.join(_WEB_DIR, fname)
-                    tr = await tts_speak(text, save_path)
+                    # 从需求识别音色与情绪（如"用男声开心地朗读…"）
+                    voice = _extract_tts_voice(requirement)
+                    emotion = _extract_tts_emotion(requirement)
+                    tr = await tts_speak(text, save_path, voice=voice or None, emotion=emotion or None)
                     if tr.get("success"):
                         merged["tts_url"] = f"/{fname}"
                         merged["output_file"] = save_path
-                        merged["message_tts"] = f"配音已生成：/{fname}（{_size_mb(save_path)}）"
+                        note = f"（{voice or '默认音色'}{'/' + emotion if emotion else ''}）"
+                        merged["message_tts"] = f"配音已生成：/{fname}{note}"
                     else:
                         failed.append(f"配音: {tr.get('error', '失败')}")
             else:  # code：数据/抓取任务
