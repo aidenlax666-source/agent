@@ -146,6 +146,7 @@ GEN_SYSTEM_PROMPT = f"""你是自动化脚本专家。根据用户需求生成�
 6. 元素定位优先级：data-testid > id > 稳定class+文本 > XPath。
    SPA 站点（页面结构很少但正文多）优先用 page.evaluate 读 window.__NEXT_DATA__ / window.__INITIAL_STATE__ / window.__NUXT__，
    用 .get() 防御性取值，禁止写递归遍历整个对象的函数（会超时）。
+   禁止使用 __import__ 动态导入（直接用正常 import 语句），禁止 eval/exec/compile。
 7. 防坑：.first 是属性不带括号，.all()/.count()/.nth() 是方法带括号；禁止 f-string 里出现反斜杠；禁止写 pip install（库已装好）；
    网页请求之间加 time.sleep(random.uniform(1,3))；用 .goto(..., wait_until="domcontentloaded")，不要用 networkidle。
    执行系统命令（subprocess/os.system/setx 等）：必须用 subprocess.run(..., capture_output=True, text=True) 并检查 returncode，

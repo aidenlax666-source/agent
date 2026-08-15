@@ -15,6 +15,12 @@ import re
 # Names that must not be called as functions at all (dynamic code execution).
 _BLOCKED_CALL_NAMES = {"eval", "exec", "compile", "__import__"}
 
+# __import__ 动态导入时视为危险的模块（其余模块的动态导入放行，避免误拦合法脚本）
+_DANGEROUS_IMPORT_MODULES = {
+    "os", "subprocess", "socket", "smtplib", "ftplib", "sys", "ctypes",
+    "shutil", "pty", "winreg", "win32api", "win32process", "pickle", "marshal",
+}
+
 # 内网/云元数据地址：生成脚本不得访问（防 SSRF 内网探测/元数据窃取）
 _LAN_URL_RE = re.compile(
     r"https?://(localhost|127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|"
@@ -148,9 +154,16 @@ def scan_dangerous_code(script_code: str, block_subprocess: bool = False) -> lis
 
         func = node.func
 
-        # --- Dynamic code execution: eval/exec/compile/__import__ ---
+        # --- Dynamic code execution: eval/exec/compile 全拦；__import__ 只拦危险模块 ---
         if isinstance(func, ast.Name) and func.id in _BLOCKED_CALL_NAMES:
-            violations.append(f"动态代码执行被禁止: {func.id}()")
+            if func.id == "__import__":
+                # 动态导入：仅当目标是危险模块（os/subprocess/socket 等）才拦截；
+                # 合法动态导入（如 __import__("json")）放行，避免误拦 LLM 生成的正常脚本
+                arg = _is_literal_path_arg(node.args[0] if node.args else None)
+                if arg and arg.split(".")[0] in _DANGEROUS_IMPORT_MODULES:
+                    violations.append(f"禁止动态导入危险模块: __import__({arg!r})")
+            else:
+                violations.append(f"动态代码执行被禁止: {func.id}()")
 
         # --- 敏感文件读取拦截：open/read_* 读 .env/.db 等 ---
         call_name = func.id if isinstance(func, ast.Name) else (
