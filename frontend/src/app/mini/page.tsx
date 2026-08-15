@@ -449,6 +449,17 @@ export default function MiniPage() {
                       📊 查看可视化报告
                     </a>
                   )}
+                  {result.game_url && (
+                    <a
+                      href={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}${result.game_url}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-2 text-sm font-medium text-violet-600 dark:text-violet-400 hover:underline"
+                    >
+                      <Play className="w-4 h-4" />
+                      🎮 开始联机游戏（建房分享给好友一起玩）
+                    </a>
+                  )}
 
                   {result.script && (
                     <details className="text-sm">

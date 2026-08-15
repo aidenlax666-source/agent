@@ -151,6 +151,7 @@ export interface MiniTaskResult {
   value_heals?: number;
   output_file?: string;
   report_url?: string;
+  game_url?: string;
 }
 
 export interface MiniTaskStatus {

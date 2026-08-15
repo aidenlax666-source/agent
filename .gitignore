@@ -86,3 +86,6 @@ _tmp_*.py
 *_analysis.txt
 xhs_*.png
 ctrl_test.txt
+
+mp*.txt
+game_api.txt

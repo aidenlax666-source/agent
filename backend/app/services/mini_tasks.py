@@ -36,6 +36,31 @@ def _is_report_request(requirement: str) -> bool:
     return any(k in r for k in _REPORT_HINTS)
 
 
+# 联机游戏意图关键词：命中则走多人游戏生成
+_GAME_HINTS = ["联机", "多人", "一起玩", "对战", "加入房间", "创建房间", "合作", "同步玩"]
+
+
+def _is_game_request(requirement: str) -> bool:
+    r = requirement.lower()
+    return any(k in r for k in _GAME_HINTS)
+
+
+# 单机内容生成意图：做/生成 + 内容类名词，且非联机/报告/数据抓取任务
+_CONTENT_VERBS = ["生成一个", "做一个", "制作一个", "创作", "设计", "写一个", "给我做一个"]
+_CONTENT_ITEMS = ["游戏", "漫剧", "网页", "页面", "小工具", "动画", "简历", "海报", "贺卡", "倒计时", "计算器", "主页", "个人网"]
+
+
+def _is_content_request(requirement: str) -> bool:
+    r = requirement.lower()
+    if _is_game_request(r) or _is_report_request(r):
+        return False
+    if any(k in r for k in ("导出excel", "导出csv", "抓取", "爬取", "统计", "汇总", "数据", "接口")):
+        return False
+    if not any(v in r for v in _CONTENT_VERBS):
+        return False
+    return any(k in r for k in _CONTENT_ITEMS)
+
+
 REPORT_SYSTEM_PROMPT = """你是一位 Python 脚本专家 + 数据可视化设计师。生成一个 Python 脚本，完成「按用户需求抓取数据 → 统计分析 → 生成可视化报告」全流程。
 
 【数据抓取】按用户需求抓取指定网站/搜索关键词的数据（用 urllib.request 或 requests 加 proxies={"http": None, "https": None}，注意代理 SSL 降级；网页任务可用 Playwright）
@@ -286,10 +311,42 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
     image_paths = record.get("image_paths") or []
     try:
         await save_mini_task(record)
-        if _is_report_request(requirement):
+        if _is_game_request(requirement):
+            record["message"] = "检测到联机游戏需求，正在生成游戏页面..."
+            await update_mini_task(task_id, status="running", message=record["message"])
+            from app.services.game_generator import generate_multiplayer_game
+            g = await generate_multiplayer_game(requirement)
+            if g.get("success"):
+                result = {
+                    "status": "ok", "rows": 0, "preview": [],
+                    "output_file": g.get("file_path"),
+                    "game_url": g.get("url"),
+                    "elapsed": 0, "script": "", "error": None,
+                }
+                record["message"] = f"游戏已生成：{g.get('url')}"
+            else:
+                result = {"status": "generate_failed", "rows": 0, "preview": [],
+                          "error": g.get("error", "联机游戏生成失败"), "elapsed": 0}
+        elif _is_report_request(requirement):
             record["message"] = "检测到报告需求，正在生成可视化报告..."
             await update_mini_task(task_id, status="running", message=record["message"])
             result = await _run_report_task(task_id, requirement, url)
+        elif _is_content_request(requirement):
+            record["message"] = "检测到内容创作需求，正在生成..."
+            await update_mini_task(task_id, status="running", message=record["message"])
+            from app.services.content_generator import generate_content
+            g = await generate_content(requirement)
+            if g.get("success"):
+                result = {
+                    "status": "ok", "rows": 0, "preview": [],
+                    "output_file": g.get("file_path"),
+                    "content_url": g.get("url"),
+                    "elapsed": 0, "script": "", "error": None,
+                }
+                record["message"] = f"内容已生成：{g.get('url')}"
+            else:
+                result = {"status": "generate_failed", "rows": 0, "preview": [],
+                          "error": g.get("error", "内容生成失败"), "elapsed": 0}
         else:
             record["message"] = "正在执行（生成→试跑→四重校验）..."
             await update_mini_task(task_id, status="running", message=record["message"])
@@ -300,7 +357,7 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
             "expected_count", "expected_fields", "missing_fields",
             "coverage_missing", "value_issues", "count_heals", "field_heals",
             "coverage_heals", "value_heals", "output_file", "report_url",
-            "image_context",
+            "image_context", "game_url", "content_url",
         )
         record["result"] = {k: result.get(k) for k in keep}
         record["status"] = "done"
