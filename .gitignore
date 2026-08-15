@@ -90,3 +90,7 @@ ctrl_test.txt
 
 mp*.txt
 game_api.txt
+
+# ===== Benchmark 测试工具（不上传）=====
+benchmark/
+bench_*.json

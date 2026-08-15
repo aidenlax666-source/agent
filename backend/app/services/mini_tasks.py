@@ -201,6 +201,11 @@ REPORT_SYSTEM_PROMPT = """你是一位 Python 脚本专家 + 数据可视化设�
 - 报告保存为 report.html 到当前目录
 - 打印 SUCCESS:DATA_ROWS:N（N=统计行数）和 PREVIEW_DATA:JSON（前5行）
 
+【代码完整性（必须遵守）】
+- 脚本必须**自包含**：所有辅助函数（如 create_pie_chart/generate_html 等）必须在同一脚本内先完整定义再调用，禁止引用未定义函数
+- 生成 HTML 时所有用到的变量必须先赋值再使用
+- 执行前在脑中走查一遍，确保无 NameError/变量未定义/缩进错误
+
 只输出完整 Python 代码，不要解释。"""
 
 
