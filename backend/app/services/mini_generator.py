@@ -21,6 +21,7 @@ import re
 import time
 import urllib.parse
 
+from app.config import get_settings
 from app.services.llm_client import chat_completion, chat_completion_json
 from app.services.page_capture import capture_page_structure, format_dom_for_prompt
 from app.sandbox.docker_executor import execute_in_sandbox
@@ -384,6 +385,7 @@ async def _heal_insufficient_count(
         fixed = await chat_completion(
             HEAL_COUNT_SYSTEM_PROMPT.format(expected=expected, actual=actual),
             user_prompt, temperature=0.2, max_tokens=4096,
+            model=get_settings().ai_model_reasoning,  # 自愈用推理模型，提升修复成功率
         )
         fixed = _clean_code(fixed)
         fixed, ok = _try_gate(fixed)
@@ -472,6 +474,7 @@ async def _heal_missing_fields(
         fixed = await chat_completion(
             HEAL_FIELD_SYSTEM_PROMPT.format(missing="、".join(missing), current="(见代码)"),
             user_prompt, temperature=0.2, max_tokens=4096,
+            model=get_settings().ai_model_reasoning,
         )
         fixed = _clean_code(fixed)
         fixed, ok = _try_gate(fixed)
@@ -534,6 +537,7 @@ async def _fill_coverage(
         fixed = await chat_completion(
             COVERAGE_FILL_SYSTEM_PROMPT.format(missing="、".join(missing)),
             user_prompt, temperature=0.2, max_tokens=4096,
+            model=get_settings().ai_model_reasoning,
         )
         fixed = _clean_code(fixed)
         fixed, ok = _try_gate(fixed)
@@ -602,6 +606,7 @@ async def _heal_values(
         fixed = await chat_completion(
             VALUE_HEAL_SYSTEM_PROMPT.format(issues="；".join(issues)),
             user_prompt, temperature=0.2, max_tokens=4096,
+            model=get_settings().ai_model_reasoning,
         )
         fixed = _clean_code(fixed)
         fixed, ok = _try_gate(fixed)

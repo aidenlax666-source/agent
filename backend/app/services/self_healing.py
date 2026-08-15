@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from app.config import get_settings
 from app.services.llm_client import chat_completion
 
 HEALING_SYSTEM_PROMPT = """你是一位 Python + Playwright 自动化脚本调试专家，类似 Claude Code 的自动修复模式。
@@ -210,6 +211,7 @@ async def heal_script(
                 user_prompt=healing_prompt,
                 temperature=0.2,
                 max_tokens=4096,
+                model=get_settings().ai_model_reasoning,  # 自愈用推理模型，提升修复成功率
             )
 
             # Clean response
@@ -362,6 +364,7 @@ async def heal_empty_result(
             user_prompt=prompt,
             temperature=0.2,
             max_tokens=4096,
+            model=get_settings().ai_model_reasoning,  # 自愈用推理模型
         )
         # Clean response
         fixed_code = fixed_code.strip()
