@@ -675,17 +675,28 @@ async def generate_and_verify(
         url = info.get("url") or _default_search_url(requirement, info)
     report["url"] = url
 
+    # --- Step 2.5: SSRF 防护：内网/云元数据地址不允许服务端采集（页面快照/结构分析会真实访问） ---
+    from app.sandbox.security import is_lan_url
+    ssrf_blocked = bool(url and is_lan_url(url))
+    if ssrf_blocked:
+        logger.warning("[SSRF] 阻止内网目标: %s", url[:120])
+        report["url"] = url
+        url = ""  # 阻断：不采集、不传给生成脚本
+
     # --- Step 3: 采集页面结构（纯文件/命令/API 任务跳过） ---
     needs_web = info.get("needs_web", True)
     dom_snapshot = ""
     if needs_web and url:
         try:
-            structure = await capture_page_structure(url)
+            structure = await capture_page_structure(url, profile_dir=profile_dir or None)
             dom_snapshot = format_dom_for_prompt(structure)
         except Exception as e:
             dom_snapshot = f"(页面采集失败: {str(e)[:120]})"
     else:
         dom_snapshot = "(代码/文件任务，不需要网页)"
+    # SSRF 拦截提示（覆盖默认文案，让模型知道为什么没有页面信息）
+    if ssrf_blocked:
+        dom_snapshot = "(目标 URL 是内网/云元数据地址，出于安全已跳过页面采集，请改用公开网站)"
 
     # --- Step 3.3: 网站结构分析（自动探查卡片/字段/跳转路径，让 LLM 写对选择器） ---
     site_analysis = ""
@@ -693,7 +704,7 @@ async def generate_and_verify(
     if needs_web and url:
         try:
             from app.services.site_analyzer import analyze_site, format_analysis_report
-            analysis = await analyze_site(url, timeout=25)
+            analysis = await analyze_site(url, timeout=25, profile_dir=profile_dir or None)
             if analysis.get("ok"):
                 site_analysis = format_analysis_report(analysis)
                 report["site_analysis"] = site_analysis[:2000]

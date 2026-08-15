@@ -105,8 +105,10 @@ _ANALYZE_JS = r"""
 """
 
 
-async def analyze_site(url: str, timeout: int = 30) -> dict:
+async def analyze_site(url: str, timeout: int = 30, profile_dir: str | None = None) -> dict:
     """打开目标页面，自动分析结构，返回报告 dict。
+
+    profile_dir: 该任务所属用户的登录态目录（按账号隔离）；None 时回退全局目录。
 
     Returns:
         {"ok": bool, "title": str, "url": str, "cardCandidates": [...], "links": {...}, "error": str}
@@ -122,8 +124,9 @@ async def analyze_site(url: str, timeout: int = 30) -> dict:
         import json as _json
         from playwright.sync_api import sync_playwright
 
-        # 注入保存的登录态（合并 browser_profile 所有域，同沙箱）
-        profile_dir = _os.path.normpath(_os.path.join(_os.path.dirname(__file__), "..", "..", "browser_profile"))
+        # 注入该任务所属用户的登录态（按账号隔离；未指定回退全局目录）
+        profile_dir = _os.path.normpath(
+            profile_dir or _os.path.join(_os.path.dirname(__file__), "..", "..", "browser_profile"))
         storage_state = None
         try:
             merged = {"cookies": [], "origins": []}

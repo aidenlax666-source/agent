@@ -14,10 +14,20 @@ logger = logging.getLogger("app.services.game_rooms")
 # room = {"id": str, "players": {player_id: name}, "created_at": float, "messages": int}
 _rooms: dict[str, dict] = {}
 _MAX_ROOMS = 200
+_ROOM_TTL = 24 * 3600  # 房间最长存活 24h（防僵尸房间占内存）
+
+
+def _cleanup_stale() -> None:
+    """清理超 TTL 的僵尸房间（无人加入也不删的老房间）。"""
+    now = time.time()
+    stale = [rid for rid, room in _rooms.items() if now - room["created_at"] > _ROOM_TTL]
+    for rid in stale:
+        _rooms.pop(rid, None)
 
 
 def create_room() -> str:
     """创建房间，返回 room_id。"""
+    _cleanup_stale()
     # 清理超限旧房间
     if len(_rooms) > _MAX_ROOMS:
         for rid in list(_rooms.keys())[: len(_rooms) - _MAX_ROOMS]:
@@ -32,6 +42,7 @@ def create_room() -> str:
 
 
 def get_room(room_id: str) -> dict | None:
+    _cleanup_stale()
     room = _rooms.get(room_id)
     if not room:
         return None

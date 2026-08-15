@@ -171,10 +171,11 @@ def _flatten_ax_tree(node, depth=0, max_depth=8, max_items=120):
     return result
 
 
-async def capture_page_structure(url: str, timeout: int = 30000) -> dict:
+async def capture_page_structure(url: str, timeout: int = 30000, profile_dir: str | None = None) -> dict:
     """Navigate to a URL and capture the page's DOM structure.
 
-    Uses sync Playwright in executor to avoid Windows asyncio subprocess issues.
+    profile_dir: 该任务所属用户的登录态目录（按账号隔离）；None 时回退全局目录。
+    使用 sync Playwright in executor to avoid Windows asyncio subprocess issues.
     """
     import asyncio as _asyncio
 
@@ -191,9 +192,9 @@ async def capture_page_structure(url: str, timeout: int = 30000) -> dict:
     def _capture():
         try:
             import json as _json, os as _os
-            # Load saved login state (merge all per-domain files, same as sandbox)
-            profile_dir = _os.path.join(_os.path.dirname(__file__), "..", "..", "browser_profile")
-            profile_dir = _os.path.normpath(profile_dir)
+            # Load THIS USER's saved login state (按账号隔离；未指定时回退全局目录)
+            profile_dir = _os.path.normpath(
+                profile_dir or _os.path.join(_os.path.dirname(__file__), "..", "..", "browser_profile"))
             storage_state = None
             try:
                 import glob as _glob

@@ -100,6 +100,13 @@ def _is_sensitive_path(s: str) -> bool:
     return any(m in low for m in _SENSITIVE_PATH_MARKERS)
 
 
+def is_lan_url(url: str) -> bool:
+    """True 如果 URL 指向内网/回环/云元数据地址（SSRF 防护，供服务端采集/分析前拦截）。"""
+    if not url:
+        return False
+    return _LAN_URL_RE.search(url) is not None
+
+
 def scan_dangerous_code(script_code: str, block_subprocess: bool = False) -> list[str]:
     """Scan generated code for hard-blocked patterns.
 
