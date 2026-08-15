@@ -67,7 +67,7 @@ STRUCTURE_SYSTEM_PROMPT = """你是任务理解专家。把用户的一句话需
 
 字段说明：
 - site: 目标网站名（网页任务才填），否则空字符串
-- url: 目标 URL（能推断就填完整 URL，否则空字符串）
+- url: 目标 URL。网页任务（needs_web=true）必填完整可访问的 URL：搜索类填对应站点搜索页（把关键词拼进 URL），具体页面类填页面地址；纯文件/命令任务才留空
 - keywords: 搜索/处理关键词
 - fields: 需求中提到过的数据字段列表（如 ["标题","链接","价格"]）
 - output_columns: 最终输出表格的列名（关键！）。
@@ -270,29 +270,10 @@ def _try_gate(code: str) -> tuple[str, bool]:
     return code, False
 
 
-def _guess_url(requirement: str, info: dict) -> str:
-    """站点名 → 搜索 URL（比让 LLM 猜 URL 更可靠）。"""
-    text = (requirement + info.get("site", "")).lower()
+def _default_search_url(requirement: str, info: dict) -> str:
+    """模型没给出 URL 时的兜底：用关键词走必应搜索（通用兜底，不含任何站点映射表）。"""
     kw = info.get("keywords", "") or requirement
-    q = urllib.parse.quote(kw)
-    site_map = [
-        (("小红书", "xiaohongshu", "xhs"), f"https://www.xiaohongshu.com/search_result?keyword={kw}"),
-        (("豆瓣", "douban"), f"https://search.douban.com/book/subject_search?search_text={kw}"),
-        (("京东", "jd"), f"https://search.jd.com/Search?keyword={kw}&enc=utf-8"),
-        (("淘宝", "taobao"), f"https://s.taobao.com/search?q={kw}"),
-        (("必应", "bing"), f"https://www.bing.com/search?q={q}"),
-        (("百度", "baidu"), f"https://www.baidu.com/s?wd={q}"),
-        (("微博", "weibo"), f"https://s.weibo.com/weibo?q={q}"),
-        (("b站", "bilibili"), f"https://search.bilibili.com/all?keyword={kw}"),
-        (("知乎", "zhihu"), f"https://www.zhihu.com/search?q={q}"),
-        (("爱奇艺", "iqiyi"), f"https://so.iqiyi.com/so/q_{kw}"),
-    ]
-    for keys, url in site_map:
-        if any(k in text for k in keys):
-            return url
-    if info.get("url") and "http" in info["url"]:
-        return info["url"]
-    return f"https://www.bing.com/search?q={q}"
+    return f"https://www.bing.com/search?q={urllib.parse.quote(kw)}"
 
 
 def _build_user_prompt(requirement: str, url: str, info: dict, dom_snapshot: str,
@@ -679,9 +660,9 @@ async def generate_and_verify(
         info = {}
     report["info"] = info
 
-    # --- Step 2: 解析 URL ---
+    # --- Step 2: 解析 URL（URL 由模型生成，无站点映射表） ---
     if not url:
-        url = info.get("url") or _guess_url(requirement, info)
+        url = info.get("url") or _default_search_url(requirement, info)
     report["url"] = url
 
     # --- Step 3: 采集页面结构（纯文件/命令/API 任务跳过） ---
