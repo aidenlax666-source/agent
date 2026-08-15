@@ -24,6 +24,16 @@ _ANON_SUBMIT_RATE: dict[str, deque] = defaultdict(deque)
 ANON_MAX_PER_MINUTE = 10
 
 
+def _client_ip(request: Request) -> str:
+    """取客户端真实 IP：优先 X-Forwarded-For（cloudflared 等隧道/代理场景），否则直连 IP。"""
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        first = xff.split(",")[0].strip()
+        if first:
+            return first
+    return request.client.host if request.client else "unknown"
+
+
 def _check_anon_rate(ip: str) -> None:
     now = _time.time()
     q = _ANON_SUBMIT_RATE[ip]
@@ -73,8 +83,7 @@ async def create_task(data: dict, request: Request, user=Depends(get_current_use
 
     # 匿名用户按 IP 限速（登录用户不受限），防换 ID 刷积分
     if (user.get("email") or "").startswith("anon_"):
-        ip = (request.client.host if request.client else "unknown")
-        _check_anon_rate(ip)
+        _check_anon_rate(_client_ip(request))
 
     # 额度校验：原子扣减（防并发竞态），余额不足返回 402
     from app.database import get_credits, try_decrement_credits

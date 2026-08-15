@@ -133,16 +133,21 @@ async def execute_in_sandbox(
     script_code: str,
     timeout: int | None = None,
     preview_mode: bool = True,
+    profile_dir: str | None = None,
 ) -> ScriptResult:
-    """Execute a Python script in an isolated environment, with global concurrency cap."""
+    """Execute a Python script in an isolated environment, with global concurrency cap.
+
+    profile_dir: 该任务所属用户的登录态目录（按账号隔离）；None 时回退全局目录。
+    """
     async with _sandbox_semaphore:
-        return await _execute_in_sandbox_impl(script_code, timeout, preview_mode)
+        return await _execute_in_sandbox_impl(script_code, timeout, preview_mode, profile_dir)
 
 
 async def _execute_in_sandbox_impl(
     script_code: str,
     timeout: int | None = None,
     preview_mode: bool = True,
+    profile_dir: str | None = None,
 ) -> ScriptResult:
     """Execute a Python script in an isolated environment.
 
@@ -229,8 +234,9 @@ async def _execute_in_sandbox_impl(
     if settings.sandbox_headful:
         script_code = script_code.replace("headless=True", "headless=False")
 
-    # Inject auth state loading - merge ALL saved per-domain login states
-    auth_dir = os.path.join(os.path.dirname(__file__), "..", "..", "browser_profile")
+    # Inject auth state loading - load THIS USER's saved per-domain login states
+    # (按账号隔离：任务只加载所属用户的登录态；未指定时回退全局目录)
+    auth_dir = profile_dir or os.path.join(os.path.dirname(__file__), "..", "..", "browser_profile")
     auth_dir = os.path.normpath(auth_dir)
     if os.path.exists(auth_dir):
         auth_injection = (

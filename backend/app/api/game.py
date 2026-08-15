@@ -42,9 +42,30 @@ async def room_info(room_id: str):
     return room
 
 
+def _origin_allowed(origin: str) -> bool:
+    """WS Origin 校验：允许 localhost 任意端口 + 配置的 CORS 来源；无 Origin（非浏览器）放行。"""
+    if not origin:
+        return True
+    if origin.startswith("http://localhost:") or origin.startswith("https://localhost:"):
+        return True
+    try:
+        from app.config import get_settings
+        normalized = origin.rstrip("/")
+        for o in get_settings().cors_origins.split(","):
+            if normalized == o.strip().rstrip("/"):
+                return True
+    except Exception:
+        pass
+    return False
+
+
 @router.websocket("/ws/game/{room_id}")
 async def game_ws(websocket: WebSocket, room_id: str):
     """房间 WebSocket：加入/广播。"""
+    # Origin 校验（跨站 WebSocket 防护；游戏页面在产物域 localhost:8001 等）
+    if not _origin_allowed(websocket.headers.get("origin", "")):
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     room = game_rooms.get_room(room_id)
     if room is None:

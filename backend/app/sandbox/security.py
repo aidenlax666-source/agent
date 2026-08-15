@@ -10,9 +10,16 @@ legitimate task types the product supports (file/office, API, browser automation
 """
 
 import ast
+import re
 
 # Names that must not be called as functions at all (dynamic code execution).
 _BLOCKED_CALL_NAMES = {"eval", "exec", "compile", "__import__"}
+
+# 内网/云元数据地址：生成脚本不得访问（防 SSRF 内网探测/元数据窃取）
+_LAN_URL_RE = re.compile(
+    r"https?://(localhost|127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|"
+    r"172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|169\.254\.\d+\.\d+)",
+    re.IGNORECASE)
 
 # Fully-qualified attribute calls that are always blocked.
 _BLOCKED_ATTRS = {
@@ -112,6 +119,11 @@ def scan_dangerous_code(script_code: str, block_subprocess: bool = False) -> lis
         return []
 
     for node in ast.walk(tree):
+        # --- 内网/元数据地址访问拦截（SSRF 缓解） ---
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if _LAN_URL_RE.search(node.value):
+                violations.append("禁止访问内网地址（SSRF 防护）")
+
         # --- Strict-mode module import blocks ---
         if block_subprocess and isinstance(node, (ast.Import, ast.ImportFrom)):
             if isinstance(node, ast.Import):

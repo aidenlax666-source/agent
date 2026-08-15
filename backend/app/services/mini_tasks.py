@@ -511,7 +511,8 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
                     failed.append(f"音乐: {ms.get('error', '失败')}")
             else:  # code：数据/抓取任务
                 from app.services.mini_generator import generate_and_verify
-                result = await generate_and_verify(requirement, url or None, image_paths=image_paths or None)
+                result = await generate_and_verify(requirement, url or None, image_paths=image_paths or None,
+                                                   user_id=record.get("user_id") or "")
                 keep = (
                     "status", "rows", "preview", "error", "elapsed", "script",
                     "expected_count", "expected_fields", "missing_fields",

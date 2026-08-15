@@ -636,17 +636,27 @@ async def generate_and_verify(
     max_heals: int = MAX_HEAL_ROUNDS,
     timeout: int = 120,
     image_paths: list[str] | None = None,
+    user_id: str = "",
 ) -> dict:
     """完整闭环：结构化 → 采集DOM → 生成 → 门禁 → 沙箱试跑 → 自愈。
 
     image_paths: 用户上传的图片路径列表。DeepSeek 是文本模型，图片会先用豆包
     （火山方舟视觉模型）识别并总结成文字，再作为上下文传给 DeepSeek。
+    user_id: 任务所属用户，用于按账号加载该用户自己的登录态（沙箱注入）。
 
     返回报告 dict：
       success / status(ok|login_required|no_data|robots_blocked|failed)
       script / stdout / rows / preview / healing_rounds / info / elapsed
     """
     start = time.time()
+    # 按用户隔离的登录态目录（browser_profile/{user_id}/），无则回退全局
+    profile_dir = ""
+    if user_id:
+        candidate = os.path.normpath(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "browser_profile", str(user_id)))
+        if os.path.isdir(candidate):
+            profile_dir = candidate
     report = {
         "requirement": requirement, "url": url or "", "success": False,
         "status": "failed", "script": "", "stdout": "", "rows": 0,
@@ -730,7 +740,7 @@ async def generate_and_verify(
         return report
 
     for round_no in range(max_heals + 1):
-        result = await execute_in_sandbox(code, timeout=timeout, preview_mode=True)
+        result = await execute_in_sandbox(code, timeout=timeout, preview_mode=True, profile_dir=profile_dir or None)
         report["stdout"] = result.stdout or ""
         output = (result.stdout or "") + "\n" + (result.stderr or "")
         markers = _parse_markers(output)
@@ -804,7 +814,7 @@ async def generate_and_verify(
                             break
                         code = fixed
                         report["script"] = code
-                        result = await execute_in_sandbox(code, timeout=timeout, preview_mode=True)
+                        result = await execute_in_sandbox(code, timeout=timeout, preview_mode=True, profile_dir=profile_dir or None)
                         report["stdout"] = result.stdout or ""
                         output = (result.stdout or "") + "\n" + (result.stderr or "")
                         markers = _parse_markers(output)
@@ -832,7 +842,7 @@ async def generate_and_verify(
                         break
                     code = fixed
                     report["script"] = code
-                    result = await execute_in_sandbox(code, timeout=timeout, preview_mode=True)
+                    result = await execute_in_sandbox(code, timeout=timeout, preview_mode=True, profile_dir=profile_dir or None)
                     report["stdout"] = result.stdout or ""
                     output = (result.stdout or "") + "\n" + (result.stderr or "")
                     markers = _parse_markers(output)
@@ -864,7 +874,7 @@ async def generate_and_verify(
                         break
                     code = fixed
                     report["script"] = code
-                    result = await execute_in_sandbox(code, timeout=timeout, preview_mode=True)
+                    result = await execute_in_sandbox(code, timeout=timeout, preview_mode=True, profile_dir=profile_dir or None)
                     report["stdout"] = result.stdout or ""
                     output = (result.stdout or "") + "\n" + (result.stderr or "")
                     markers = _parse_markers(output)
