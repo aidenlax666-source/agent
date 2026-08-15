@@ -369,8 +369,21 @@ def _decrement_credits(user_id: str, amount: int = 1) -> int:
     return row["credits"] if row else 0
 
 
+def _try_decrement_credits(user_id: str, amount: int = 1) -> bool:
+    """原子扣减积分：仅当余额足够才扣，返回是否成功（防并发竞态透支）。"""
+    with _get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE users SET credits = credits - ? WHERE id=? AND credits >= ?",
+            (amount, user_id, amount))
+        return cur.rowcount == 1
+
+
 async def get_credits(user_id: str) -> int:
     return await _run_async(_get_credits, user_id)
+
+
+async def try_decrement_credits(user_id: str, amount: int = 1) -> bool:
+    return await _run_async(_try_decrement_credits, user_id, amount)
 
 
 async def decrement_credits(user_id: str, amount: int = 1) -> int:

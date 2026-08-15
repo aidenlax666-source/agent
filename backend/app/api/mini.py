@@ -13,8 +13,11 @@ from app.services import mini_tasks
 
 router = APIRouter()
 
-# 上传文件根目录：只允许引用此目录内的文件（防任意文件读取）
+# 上传文件根目录：只允许引用此目录内的文件（防任意文件读取/外泄）
 UPLOAD_DIR = Path(__file__).parent.parent.parent / "uploads"
+
+# 需求描述长度上限（防 LLM 成本 DoS）
+MAX_REQUIREMENT_LEN = 2000
 
 # 匿名用户提交限速：防止换 ID 无限刷积分/刷任务（内存表，按 IP）
 _ANON_SUBMIT_RATE: dict[str, deque] = defaultdict(deque)
@@ -29,6 +32,16 @@ def _check_anon_rate(ip: str) -> None:
     if len(q) >= ANON_MAX_PER_MINUTE:
         raise HTTPException(status_code=429, detail="操作太频繁，请稍后再试")
     q.append(now)
+
+
+def _check_url(url: str) -> str | None:
+    """URL 只允许 http/https（防 file:// 等本地文件入口）。"""
+    url = (url or "").strip()
+    if not url:
+        return None
+    if not url.lower().startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="url 仅支持 http/https 协议")
+    return url
 
 
 def _ensure_upload_path(path: str) -> str:
@@ -55,23 +68,26 @@ async def create_task(data: dict, request: Request, user=Depends(get_current_use
     requirement = (data.get("requirement") or "").strip()
     if not requirement:
         raise HTTPException(status_code=400, detail="requirement 不能为空")
+    if len(requirement) > MAX_REQUIREMENT_LEN:
+        raise HTTPException(status_code=400, detail=f"需求描述过长（最多 {MAX_REQUIREMENT_LEN} 字）")
 
     # 匿名用户按 IP 限速（登录用户不受限），防换 ID 刷积分
     if (user.get("email") or "").startswith("anon_"):
         ip = (request.client.host if request.client else "unknown")
         _check_anon_rate(ip)
 
-    # 额度校验（登录/匿名用户默认 10 credits）
-    from app.database import get_credits, decrement_credits
-    credits = await get_credits(user["id"])
-    if credits <= 0:
+    # 额度校验：原子扣减（防并发竞态），余额不足返回 402
+    from app.database import get_credits, try_decrement_credits
+    if not await try_decrement_credits(user["id"], 1):
         raise HTTPException(status_code=402, detail="额度不足，无法提交任务")
-    await decrement_credits(user["id"], 1)
+    credits = await get_credits(user["id"])
 
-    url = (data.get("url") or "").strip() or None
+    url = _check_url(data.get("url"))
     image_paths = data.get("image_paths") or []
     if not isinstance(image_paths, list):
         image_paths = []
+    # 图片路径必须是上传目录内的文件（防任意文件被读取/外泄到豆包 API）
+    image_paths = [_ensure_upload_path(p) for p in image_paths]
     data_paths = data.get("data_paths") or []
     if not isinstance(data_paths, list):
         data_paths = []
@@ -82,7 +98,7 @@ async def create_task(data: dict, request: Request, user=Depends(get_current_use
         "task_id": record["id"],
         "status": record["status"],
         "message": record["message"],
-        "credits_left": max(credits - 1, 0),
+        "credits_left": credits,
     }
 
 
@@ -112,6 +128,8 @@ async def iterate_task(task_id: str, data: dict, user=Depends(get_current_user))
     feedback = (data.get("feedback") or "").strip()
     if not feedback:
         raise HTTPException(status_code=400, detail="feedback 不能为空")
+    if len(feedback) > MAX_REQUIREMENT_LEN:
+        raise HTTPException(status_code=400, detail=f"修改意见过长（最多 {MAX_REQUIREMENT_LEN} 字）")
     result = mini_tasks.iterate(task_id, feedback, user["id"])
     if result is None:
         raise HTTPException(status_code=404, detail="任务不存在")

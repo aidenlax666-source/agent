@@ -76,7 +76,7 @@ async def game_ws(websocket: WebSocket, room_id: str):
                 continue
             msg = json.loads(raw)
             if msg.get("type") == "join":
-                name = msg.get("name") or "玩家"
+                name = str(msg.get("name") or "玩家")[:30]  # 玩家名截断防滥用
                 pid, resolved = game_rooms.add_player(room_id, name)
                 if pid is None:
                     await websocket.send_json({"type": "error", "message": resolved})
@@ -104,11 +104,18 @@ async def game_ws(websocket: WebSocket, room_id: str):
                 continue
             mtype = msg.get("type")
             if mtype == "action":
+                # 动作数据大小限制（防恶意连接放大广播）
+                data = msg.get("data", {})
+                try:
+                    if len(json.dumps(data, ensure_ascii=False)) > 10_000:
+                        continue
+                except Exception:
+                    continue
                 await broadcast({
                     "type": "action",
                     "from": player_id,
                     "fromName": player_name,
-                    "data": msg.get("data", {}),
+                    "data": data,
                 }, exclude=websocket)
             elif mtype == "chat":
                 await broadcast({
