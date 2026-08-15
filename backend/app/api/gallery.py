@@ -17,7 +17,7 @@ def _classify(name: str) -> dict | None:
     if lower.endswith(".html"):
         base = lower[:-5]
         if base == "index":
-            return {"name": "🎮 网页游戏", "type": "game", "desc": "贪吃蛇游戏"}
+            return {"name": "🏠 首页", "type": "game", "desc": "AI 生成的主页/作品"}
         if base == "manga":
             return {"name": "🦊 AI 漫剧", "type": "manga", "desc": "小狐狸和萤火虫"}
         if base == "music":

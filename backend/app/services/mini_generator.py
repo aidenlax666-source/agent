@@ -196,18 +196,22 @@ NORMAL_RULES = """【常规规则（本网站无强风控，正常速度执行�
 - 请求间隔保持 time.sleep(random.uniform(1,3)) 即可，不需要额外慢速"""
 
 
-# 已知强风控/需登录的网站域名（有头+人速+验证码等待）
-_ANTI_BOT_DOMAINS = ("xiaohongshu.com", "zhihu.com", "weibo.com", "douban.com", "taobao.com", "jd.com")
-
-
 def _detect_anti_bot(url: str, analysis: dict | None = None) -> bool:
-    """判断目标网站是否需要反爬适配（有头/人速/验证码等待）。"""
+    """判断目标网站是否需要反爬适配（有头/人速/验证码等待）。
+
+    反爬域名表来自配置（config.anti_bot_domains，.env 可调）。
+    """
     url_low = (url or "").lower()
     # 1. URL 特征：登录/验证码页
     if any(k in url_low for k in ("login", "signin", "auth", "passport", "captcha", "verify", "sso")):
         return True
-    # 2. 已知强风控域名
-    if any(d in url_low for d in _ANTI_BOT_DOMAINS):
+    # 2. 配置的反爬域名
+    try:
+        from app.config import get_settings
+        domains = [d.strip().lower() for d in get_settings().anti_bot_domains.split(",") if d.strip()]
+    except Exception:
+        domains = []
+    if any(d in url_low for d in domains):
         return True
     # 3. 分析结果显示验证码/登录墙
     if analysis:
