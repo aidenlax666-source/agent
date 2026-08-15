@@ -2,6 +2,7 @@
 
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
+import AppNav from "@/components/AppNav";
 import {
   Sparkles,
   Wrench,
@@ -9,11 +10,9 @@ import {
   Eye,
   RefreshCw,
   FileSpreadsheet,
-  Zap,
   Shield,
   Code2,
   ArrowRight,
-  QrCode,
 } from "lucide-react";
 
 const features = [
@@ -58,33 +57,7 @@ const features = [
 export default function Home() {
   return (
     <div className="flex flex-col min-h-screen">
-      {/* Header */}
-      <header className="border-b bg-white/60 backdrop-blur-xl dark:bg-slate-950/60 sticky top-0 z-50">
-        <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
-          <Link href="/" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center">
-              <Zap className="w-5 h-5 text-white" />
-            </div>
-            <span className="text-lg font-bold bg-gradient-to-r from-indigo-600 to-violet-600 bg-clip-text text-transparent">
-              AI 自动化脚本生成器
-            </span>
-          </Link>
-          <div className="flex items-center gap-3">
-            <Link href="/gallery">
-              <Button variant="ghost" size="sm" className="gap-2">
-                <QrCode className="w-4 h-4" />
-                分享中心
-              </Button>
-            </Link>
-            <Link href="/mini">
-              <Button size="sm" className="gap-2">
-                <Sparkles className="w-4 h-4" />
-                一句话自动化
-              </Button>
-            </Link>
-          </div>
-        </div>
-      </header>
+      <AppNav />
 
       {/* Hero section */}
       <section className="relative overflow-hidden">
@@ -162,7 +135,7 @@ export default function Home() {
                 step: "01",
                 icon: <Code2 className="w-8 h-8" />,
                 title: "描述需求",
-                desc: "输入目标网址，用自然语言描述你想要的数据",
+                desc: "用一句话描述你想做的事，AI 自动判断目标网站与执行方式",
               },
               {
                 step: "02",

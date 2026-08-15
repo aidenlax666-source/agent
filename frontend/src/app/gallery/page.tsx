@@ -4,8 +4,9 @@ import { useCallback, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ExternalLink, QrCode, Sparkles, RefreshCw, Link2 } from "lucide-react";
+import { ExternalLink, QrCode, RefreshCw, Link2 } from "lucide-react";
 import Link from "next/link";
+import AppNav from "@/components/AppNav";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -58,35 +59,23 @@ export default function GalleryPage() {
     `https://api.qrserver.com/v1/create-qr-code/?size=180x180&margin=8&data=${encodeURIComponent(fullUrl(path))}`;
 
   return (
-    <div className="min-h-screen">
-      <header className="border-b bg-white/80 backdrop-blur-sm dark:bg-slate-950/80">
-        <div className="max-w-6xl mx-auto px-4 h-16 flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center">
-            <QrCode className="w-4 h-4 text-white" />
-          </div>
-          <span className="text-lg font-semibold">分享中心</span>
-          <div className="ml-auto flex items-center gap-3">
-            <Button variant="ghost" size="sm" onClick={load} className="gap-2">
-              <RefreshCw className="w-4 h-4" />
-              刷新
-            </Button>
-            <Link href="/mini">
-              <Button size="sm" className="gap-2">
-                <Sparkles className="w-4 h-4" />
-                一句话自动化
-              </Button>
-            </Link>
-          </div>
-        </div>
-      </header>
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-emerald-50/60 dark:from-slate-950 dark:via-slate-950 dark:to-emerald-950/30">
+      <AppNav />
 
       <main className="max-w-6xl mx-auto px-4 py-10">
-        <div className="mb-8 text-center">
-          <h1 className="text-2xl font-bold mb-2">你的可分享作品</h1>
-          <p className="text-sm text-muted-foreground">
-            游戏 / 漫剧 / 音乐 / 视频 / 报告，扫码或复制链接即可转发分享
-            {origin ? `（当前站点：${origin}）` : ""}
-          </p>
+        <div className="mb-8 flex items-center gap-3 flex-wrap">
+          <div className="flex-1">
+            <h1 className="text-2xl font-bold flex items-center gap-2">
+              <QrCode className="w-6 h-6 text-emerald-500" /> 你的可分享作品
+            </h1>
+            <p className="text-sm text-muted-foreground mt-1">
+              游戏 / 漫剧 / 音乐 / 视频 / 报告 / 图片，扫码或复制链接即可转发分享
+              {origin ? `（当前站点：${origin}）` : ""}
+            </p>
+          </div>
+          <Button variant="ghost" size="sm" onClick={load} className="gap-2">
+            <RefreshCw className="w-4 h-4" /> 刷新
+          </Button>
         </div>
 
         {loading ? (

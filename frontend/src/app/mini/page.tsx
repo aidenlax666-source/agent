@@ -1,15 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { miniApi, uploadApi, type MiniTaskStatus } from "@/lib/api";
 import type { PreviewData } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { PreviewTable } from "@/components/PreviewTable";
+import AppNav from "@/components/AppNav";
 import {
   Loader2, Sparkles, Play, CheckCircle2, XCircle, AlertTriangle, Download,
-  RefreshCw, History, Upload, Send, Wand2, FileSpreadsheet, Trash2, Zap,
+  RefreshCw, Upload, Send, Wand2, FileSpreadsheet, Trash2, History,
 } from "lucide-react";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -47,11 +49,9 @@ function toPreviewData(p: Record<string, unknown>[] | undefined): PreviewData | 
 
 export default function MiniPage() {
   const [requirement, setRequirement] = useState("");
-  const [url, setUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [task, setTask] = useState<MiniTaskStatus | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [history, setHistory] = useState<{ id: string; requirement: string; status: string; message?: string }[]>([]);
   const [feedback, setFeedback] = useState("");
   const [acting, setActing] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -71,19 +71,6 @@ export default function MiniPage() {
 
   useEffect(() => stopPolling, [stopPolling]);
 
-  const loadHistory = useCallback(async () => {
-    try {
-      const r = await miniApi.list(10);
-      setHistory(r.tasks);
-    } catch {
-      // 忽略历史加载失败
-    }
-  }, []);
-
-  useEffect(() => {
-    loadHistory();
-  }, [loadHistory]);
-
   const pollTask = useCallback((taskId: string) => {
     stopPolling();
     pollRef.current = setInterval(async () => {
@@ -92,13 +79,35 @@ export default function MiniPage() {
         setTask(s);
         if (s.status === "done" || s.status === "error" || s.status === "cancelled" || s.status === "confirmed") {
           stopPolling();
-          loadHistory();
         }
       } catch {
         stopPolling();
       }
     }, 2000);
-  }, [stopPolling, loadHistory]);
+  }, [stopPolling]);
+
+  const handleLoadTask = useCallback(async (taskId: string) => {
+    setFeedback("");
+    try {
+      const s = await miniApi.get(taskId);
+      setTask(s);
+      if (s.status === "done" || s.status === "running" || s.status === "queued") {
+        pollTask(taskId);
+      }
+    } catch (e) {
+      setSubmitError(e instanceof Error ? e.message : String(e));
+    }
+  }, [pollTask]);
+
+  // 从 /history 跳转过来时（/mini?task=xxx）自动加载任务
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tid = params.get("task");
+    if (tid) {
+      handleLoadTask(tid);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSubmit = async () => {
     if (!requirement.trim() || submitting) return;
@@ -107,7 +116,7 @@ export default function MiniPage() {
     setTask(null);
     stopPolling();
     try {
-      const res = await miniApi.submit(requirement.trim(), url.trim() || undefined, imagePaths, dataPaths);
+      const res = await miniApi.submit(requirement.trim(), undefined, imagePaths, dataPaths);
       const initial = await miniApi.get(res.task_id);
       setTask(initial);
       pollTask(res.task_id);
@@ -174,7 +183,6 @@ export default function MiniPage() {
       await miniApi.cancel(task.id);
       stopPolling();
       setTask({ ...task, status: "cancelled", message: "已取消" });
-      loadHistory();
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : String(e));
     }
@@ -190,26 +198,12 @@ export default function MiniPage() {
     }
   };
 
-  const handleLoadTask = async (taskId: string) => {
-    setFeedback("");
-    try {
-      const s = await miniApi.get(taskId);
-      setTask(s);
-      if (s.status === "done" || s.status === "running" || s.status === "queued") {
-        pollTask(taskId);
-      }
-    } catch (e) {
-      setSubmitError(e instanceof Error ? e.message : String(e));
-    }
-  };
-
   const handleConfirm = async () => {
     if (!task || acting) return;
     setActing(true);
     try {
       await miniApi.confirm(task.id);
       setTask({ ...task, status: "confirmed", message: "已确认" });
-      loadHistory();
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -245,34 +239,26 @@ export default function MiniPage() {
         style={{ backgroundImage: "linear-gradient(rgba(99,102,241,0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(99,102,241,0.08) 1px, transparent 1px)", backgroundSize: "44px 44px" }}
       />
 
-      <header className="sticky top-0 z-20 border-b border-slate-200/60 dark:border-slate-800/60 bg-white/70 dark:bg-slate-950/70 backdrop-blur-xl">
-        <div className="max-w-5xl mx-auto px-4 h-16 flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 via-violet-500 to-fuchsia-500 flex items-center justify-center shadow-lg shadow-indigo-500/30">
-            <Sparkles className="w-5 h-5 text-white" />
-          </div>
-          <div className="leading-tight">
-            <span className="text-base font-bold tracking-tight">AI 自动化工作台</span>
-            <span className="block text-[11px] text-muted-foreground">一句话 → 生成 · 执行 · 校验 · 迭代</span>
-          </div>
-          <Badge className="ml-auto font-normal text-xs bg-gradient-to-r from-indigo-50 to-fuchsia-50 text-indigo-600 dark:from-indigo-950 dark:to-fuchsia-950 dark:text-indigo-300 border-indigo-200/60 dark:border-indigo-800">
-            <Zap className="w-3 h-3 mr-1" /> 任务/数据问答自动识别
-          </Badge>
-        </div>
-      </header>
+      <AppNav />
 
       <main className="relative max-w-5xl mx-auto px-4 py-8 space-y-6">
         {/* 提交区 */}
         <Card className="rounded-3xl border-slate-200/70 dark:border-slate-800/70 bg-white/80 dark:bg-slate-900/70 backdrop-blur-xl shadow-xl shadow-indigo-500/5 overflow-visible">
           <CardContent className="p-5 sm:p-7 space-y-5">
-            <div>
-              <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
-                <span className="bg-gradient-to-r from-indigo-600 via-violet-600 to-fuchsia-600 dark:from-indigo-400 dark:via-violet-400 dark:to-fuchsia-400 bg-clip-text text-transparent">
-                  一句话，AI 帮你搞定一切
-                </span>
-              </h1>
-              <p className="mt-1.5 text-sm text-muted-foreground">
-                抓数据、出报告、做游戏、生成视频/图片/音乐——或上传 Excel/CSV 直接提问，AI 自动判断怎么执行。
-              </p>
+            <div className="flex items-start gap-3">
+              <div className="flex-1">
+                <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
+                  <span className="bg-gradient-to-r from-indigo-600 via-violet-600 to-fuchsia-600 dark:from-indigo-400 dark:via-violet-400 dark:to-fuchsia-400 bg-clip-text text-transparent">
+                    一句话，AI 帮你搞定一切
+                  </span>
+                </h1>
+                <p className="mt-1.5 text-sm text-muted-foreground">
+                  抓数据、出报告、做游戏、生成视频/图片/音乐——或上传 Excel/CSV 直接提问，AI 自动判断怎么执行。
+                </p>
+              </div>
+              <Link href="/history" className="shrink-0 hidden sm:inline-flex items-center gap-1.5 text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline mt-1">
+                <History className="w-3.5 h-3.5" /> 全部历史
+              </Link>
             </div>
 
             <div className="relative">
@@ -320,20 +306,17 @@ export default function MiniPage() {
             )}
 
             <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
-              <input
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder="目标 URL（网页任务可填，留空由 AI 推断）"
-                className="flex-1 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/80 px-4 py-3 text-sm outline-none focus:ring-4 focus:ring-indigo-400/20 focus:border-indigo-400 transition-all"
-              />
               <Button
                 onClick={handleSubmit}
                 disabled={!requirement.trim() || submitting || !!isActive}
-                className="gap-2 h-12 px-8 rounded-2xl bg-gradient-to-r from-indigo-600 via-violet-600 to-fuchsia-600 hover:opacity-90 text-white font-semibold shadow-lg shadow-indigo-500/30 disabled:opacity-50"
+                className="gap-2 h-12 px-8 rounded-2xl bg-gradient-to-r from-indigo-600 via-violet-600 to-fuchsia-600 hover:opacity-90 text-white font-semibold shadow-lg shadow-indigo-500/30 disabled:opacity-50 w-full sm:w-auto"
               >
                 {submitting || isActive ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
                 {isActive ? "执行中..." : "让 AI 搞定"}
               </Button>
+              <span className="text-xs text-muted-foreground sm:ml-1">
+                网页抓取无需填 URL，AI 会根据需求自动定位目标网站
+              </span>
             </div>
 
             {/* 能力示例 chips */}
@@ -528,38 +511,6 @@ export default function MiniPage() {
             </CardContent>
           </Card>
         )}
-
-        {/* 历史任务 */}
-        <Card className="rounded-3xl border-slate-200/70 dark:border-slate-800/70 bg-white/80 dark:bg-slate-900/70 backdrop-blur-xl shadow-xl shadow-indigo-500/5">
-          <CardContent className="p-5 sm:p-6">
-            <h2 className="text-sm font-bold flex items-center gap-2 mb-4">
-              <History className="w-4 h-4 text-indigo-500" /> 任务历史
-            </h2>
-            {history.length === 0 ? (
-              <p className="text-sm text-muted-foreground py-4 text-center">暂无历史任务，提交第一个需求吧 ✨</p>
-            ) : (
-              <div className="space-y-1.5">
-                {history.map((h) => {
-                  const st = STATUS_STYLE[h.status];
-                  return (
-                    <button key={h.id} onClick={() => handleLoadTask(h.id)}
-                      className={`w-full text-left rounded-2xl px-4 py-2.5 text-sm transition-all hover:bg-indigo-50/60 dark:hover:bg-indigo-950/30 ${
-                        task?.id === h.id ? "bg-indigo-50/80 dark:bg-indigo-950/40 ring-1 ring-indigo-200 dark:ring-indigo-800" : ""
-                      }`}>
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className={`w-1.5 h-1.5 rounded-full ${st ? st.cls.split(" ")[0] : "bg-slate-300"}`} />
-                        <span className="text-muted-foreground text-xs font-mono">#{h.id.slice(0, 8)}</span>
-                        {st && <Badge className={`${st.cls} text-[10px]`}>{st.label}</Badge>}
-                        <span className="text-xs text-muted-foreground truncate flex-1">{h.message || ""}</span>
-                      </div>
-                      <div className="mt-0.5 text-foreground/80 truncate">{h.requirement}</div>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </CardContent>
-        </Card>
 
         <footer className="text-center text-[11px] text-muted-foreground pb-6">
           AI 自动化工作台 · 任务与数据问答自动识别 · 生成产物自动校验（数量 / 字段 / 覆盖 / 数值）
