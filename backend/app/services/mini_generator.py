@@ -143,9 +143,6 @@ GEN_SYSTEM_PROMPT = f"""你是自动化脚本专家。根据用户需求生成�
    - 需要登录：print("LOGIN_REQUIRED: 一句话原因")，然后 return 空 DataFrame，绝不硬闯/绕验证码
    - 无数据：print("NO_DATA: 一句话原因")，然后 return 空 DataFrame；页脚/导航/版权/ICP备案不是数据，禁止拿来兜底
    - robots 禁止抓取：print("ROBOTS_BLOCKED")
-   验证码/安全验证处理（重要）：页面出现验证码/滑块/安全验证时，禁止直接退出。
-   正确做法：print("[STEP] 页面出现安全验证，请在弹出的浏览器窗口完成验证...")，然后循环等待
-   （每 3 秒检查验证码是否消失，最多等 90 秒），验证码消失后继续抓取；等待超时仍未解决才 print("LOGIN_REQUIRED") 退出。
 6. 元素定位优先级：data-testid > id > 稳定class+文本 > XPath。
    SPA 站点（页面结构很少但正文多）优先用 page.evaluate 读 window.__NEXT_DATA__ / window.__INITIAL_STATE__ / window.__NUXT__，
    用 .get() 防御性取值，禁止写递归遍历整个对象的函数（会超时）。
@@ -153,13 +150,6 @@ GEN_SYSTEM_PROMPT = f"""你是自动化脚本专家。根据用户需求生成�
    网页请求之间加 time.sleep(random.uniform(1,3))；用 .goto(..., wait_until="domcontentloaded")，不要用 networkidle。
    执行系统命令（subprocess/os.system/setx 等）：必须用 subprocess.run(..., capture_output=True, text=True) 并检查 returncode，
    命令失败必须如实报告失败原因（打印返回码和 stderr），禁止把失败标成"成功"；只有 returncode==0 才算成功。
-   浏览器启动必须用有头模式：p.chromium.launch(headless=False)，保证窗口可见（便于人工处理验证码）。
-   模拟真人操作节奏（非常重要，防止反爬触发，宁可慢不可快）：
-   - 每次打开页面/跳转/点击后 sleep random.uniform(2, 5) 秒
-   - 连续抓取：条与条之间 sleep random.uniform(3, 6) 秒
-   - 滚动页面用小步多次（每步 sleep random.uniform(1, 2) 秒），禁止一次性快速滚动
-   - 进详情页前 sleep random.uniform(2, 3) 秒，返回搜索页后 sleep random.uniform(2, 3) 秒
-   - 从详情页提取作者粉丝数：用 page.locator("选择器").first.inner_text() 拿文本，禁止用 evaluate 返回 DOM 对象（会报 Cannot serialize result）。
 8. 排序/筛选切换（重要）：用户提到「最新/最热/按时间/按销量」等排序要求时，必须先切换排序再抓取：
    a) URL 参数优先：若已知站点支持排序参数（如小红书 sort=time_descending 表示最新、sort=popularity_descending 表示最热），
       直接把参数拼进 URL 访问，最稳定，不需要点击。
@@ -187,6 +177,44 @@ GEN_SYSTEM_PROMPT = f"""你是自动化脚本专家。根据用户需求生成�
 {{SKELETON}}
 
 只输出 Python 代码，不要任何解释。"""
+
+
+# 反爬适配规则：仅对强风控/需登录网站（小红书等）追加
+ANTI_BOT_RULES = """【反爬适配规则（本网站风控强，必须遵守）】
+- 浏览器必须用有头模式：p.chromium.launch(headless=False)，保证窗口可见
+- 验证码/安全验证出现时：print("[STEP] 页面出现安全验证，请在弹出的浏览器窗口完成验证...")，
+  然后每 3 秒检查验证码是否消失，最多等 90 秒，消失后继续抓取；超时未解决才 print("LOGIN_REQUIRED") 退出
+- 模拟真人操作节奏（防止反爬触发，宁可慢不可快）：每次跳转/点击后 sleep random.uniform(2, 5) 秒；
+  条与条之间 sleep random.uniform(3, 6) 秒；滚动用小步多次；进/出详情页各 sleep 2-3 秒
+- 提取详情页字段用 page.locator("选择器").first.inner_text() 拿文本，禁止 evaluate 返回 DOM 对象"""
+
+
+# 常规规则：普通网站（无强风控）用无头快跑
+NORMAL_RULES = """【常规规则（本网站无强风控，正常速度执行）】
+- 浏览器用无头模式：p.chromium.launch(headless=True)，不弹窗口
+- 遇到验证码/登录墙：直接 print("LOGIN_REQUIRED: 原因") 退出，不等待、不硬闯
+- 请求间隔保持 time.sleep(random.uniform(1,3)) 即可，不需要额外慢速"""
+
+
+# 已知强风控/需登录的网站域名（有头+人速+验证码等待）
+_ANTI_BOT_DOMAINS = ("xiaohongshu.com", "zhihu.com", "weibo.com", "douban.com", "taobao.com", "jd.com")
+
+
+def _detect_anti_bot(url: str, analysis: dict | None = None) -> bool:
+    """判断目标网站是否需要反爬适配（有头/人速/验证码等待）。"""
+    url_low = (url or "").lower()
+    # 1. URL 特征：登录/验证码页
+    if any(k in url_low for k in ("login", "signin", "auth", "passport", "captcha", "verify", "sso")):
+        return True
+    # 2. 已知强风控域名
+    if any(d in url_low for d in _ANTI_BOT_DOMAINS):
+        return True
+    # 3. 分析结果显示验证码/登录墙
+    if analysis:
+        title = (analysis.get("title") or "").lower()
+        if "安全验证" in title or "验证码" in title or "登录" in title:
+            return True
+    return False
 
 
 # ============================================================
@@ -593,13 +621,15 @@ async def _heal_values(
 # ============================================================
 
 async def _generate(requirement: str, url: str, info: dict, dom_snapshot: str,
-                    image_context: str = "", site_analysis: str = "") -> str | None:
+                    image_context: str = "", site_analysis: str = "",
+                    anti_bot: bool = False) -> str | None:
     """组装提示词 → 调 LLM → 质量门禁，不合格重试。"""
     user_prompt = _build_user_prompt(requirement, url, info, dom_snapshot, image_context, site_analysis)
+    system_prompt = GEN_SYSTEM_PROMPT + "\n\n" + (ANTI_BOT_RULES if anti_bot else NORMAL_RULES)
     for attempt in range(MAX_GEN_RETRIES):
         try:
             code = await chat_completion(
-                system_prompt=GEN_SYSTEM_PROMPT,
+                system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 temperature=0.2,
                 max_tokens=4096,
@@ -664,6 +694,7 @@ async def generate_and_verify(
 
     # --- Step 3.3: 网站结构分析（自动探查卡片/字段/跳转路径，让 LLM 写对选择器） ---
     site_analysis = ""
+    anti_bot = False
     if needs_web and url:
         try:
             from app.services.site_analyzer import analyze_site, format_analysis_report
@@ -671,9 +702,12 @@ async def generate_and_verify(
             if analysis.get("ok"):
                 site_analysis = format_analysis_report(analysis)
                 report["site_analysis"] = site_analysis[:2000]
+            anti_bot = _detect_anti_bot(url, analysis)
+            report["needs_anti_bot"] = anti_bot
         except Exception as e:
             logger.warning("网站结构分析失败: %s", str(e)[:100])
             site_analysis = ""
+            anti_bot = _detect_anti_bot(url)
 
     # --- Step 3.5: 图片视觉识别（豆包）：DeepSeek 看不懂图片，先让豆包识别总结成文字 ---
     image_context = ""
@@ -694,7 +728,7 @@ async def generate_and_verify(
             image_context = "(图片识别失败)"
 
     # --- Step 4: 生成 + 质量门禁 ---
-    code = await _generate(requirement, url, info, dom_snapshot, image_context, site_analysis)
+    code = await _generate(requirement, url, info, dom_snapshot, image_context, site_analysis, anti_bot)
     if not code:
         report["status"] = "generate_failed"
         report["elapsed"] = round(time.time() - start, 1)
@@ -780,7 +814,7 @@ async def generate_and_verify(
                             # 降级：把缺失字段并入需求，重新生成整个脚本（比局部修补更稳）
                             logger.warning("字段自愈失败，降级为带字段要求重新生成...")
                             enhanced_req = f"{requirement}（注意：最终输出表格的列必须包含：{'、'.join(missing_f)}）"
-                            fixed = await _generate(enhanced_req, url, info, dom_snapshot, image_context, site_analysis)
+                            fixed = await _generate(enhanced_req, url, info, dom_snapshot, image_context, site_analysis, anti_bot)
                         if not fixed:
                             break
                         code = fixed
@@ -840,7 +874,7 @@ async def generate_and_verify(
                     if not fixed:
                         logger.warning("值自愈失败，降级为带值要求重新生成...")
                         enhanced_req = f"{requirement}（注意：输出数据必须修正以下问题：{'；'.join(value_issues)}）"
-                        fixed = await _generate(enhanced_req, url, info, dom_snapshot, image_context, site_analysis)
+                        fixed = await _generate(enhanced_req, url, info, dom_snapshot, image_context, site_analysis, anti_bot)
                     if not fixed:
                         break
                     code = fixed
