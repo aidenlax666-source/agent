@@ -331,8 +331,8 @@ def _parse_expected_count(requirement: str) -> int:
     if any(k in requirement for k in ("docx", "pptx", "演示文稿", "幻灯片", "柱状图", "图表")):
         return 0
     m = re.search(
-        r"(?:提取|抓取|采集|下载|搜索|读取|取|要|需要)\s*(?:前)?\s*(\d{1,4})\s*(条|个|篇|行|页|张|首)"
-        r"|前\s*(\d{1,4})\s*(条|个|篇|行|页|张|首)",
+        r"(?:提取|抓取|采集|下载|搜索|读取|取|要|需要)\s*(?:前)?\s*(\d{1,4})\s*(条|个|篇|行|页|张|首|位|名|本)"
+        r"|前\s*(\d{1,4})\s*(条|个|篇|行|页|张|首|位|名|本)",
         requirement,
     )
     if m:
@@ -664,10 +664,14 @@ async def generate_and_verify(
     }
 
     # --- Step 1: 结构化需求 ---
-    try:
-        info = await chat_completion_json(STRUCTURE_SYSTEM_PROMPT, requirement[:500], max_tokens=500)
-    except Exception:
-        info = {}
+    info = {}
+    for _attempt in range(2):  # LLM 偶发失败时重试一次，避免 info 为空导致目标跑偏
+        try:
+            info = await chat_completion_json(STRUCTURE_SYSTEM_PROMPT, requirement[:500], max_tokens=500)
+            if info:
+                break
+        except Exception:
+            info = {}
     report["info"] = info
 
     # --- Step 2: 解析 URL（URL 由模型生成，无站点映射表） ---

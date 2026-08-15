@@ -637,7 +637,7 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
                 if result.get("status") != "ok":
                     failed.append(f"数据处理: {result.get('error') or result.get('status')}")
 
-        if failed and not any(k in merged for k in ("game_url", "report_url", "content_url", "video_url", "image_url", "image_urls", "music_url", "tts_url")):
+        if failed and not any(merged.get(k) for k in ("game_url", "report_url", "content_url", "video_url", "image_url", "image_urls", "music_url", "tts_url")):
             merged["status"] = "failed"
             merged["error"] = "；".join(failed)[:300]
         else:
