@@ -228,8 +228,10 @@ def schedule_task(task_id: str, schedule_type: str, schedule_value: str, enabled
             except (ValueError, TypeError):
                 return {"error": "interval 需要正整数分钟"}
         else:
-            if ":" not in schedule_value:
-                return {"error": "daily 需要 HH:MM 格式"}
+            # daily：严格校验 HH:MM（00-23:00-59），防非法值导致 500
+            import re as _re
+            if not _re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", schedule_value):
+                return {"error": "daily 需要 HH:MM 格式（如 08:30）"}
 
     import time as _t
     now = _t.time()

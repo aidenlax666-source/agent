@@ -199,6 +199,8 @@ async def data_qa(data: dict, user=Depends(get_current_user)):
     question = (data.get("question") or "").strip()
     if not file_path or not question:
         raise HTTPException(status_code=400, detail="file_path 和 question 不能为空")
+    if len(question) > MAX_REQUIREMENT_LEN:
+        raise HTTPException(status_code=400, detail=f"问题过长（最多 {MAX_REQUIREMENT_LEN} 字）")
     # 只能分析上传目录内的文件（防任意文件读取）
     file_path = _ensure_upload_path(file_path)
 
