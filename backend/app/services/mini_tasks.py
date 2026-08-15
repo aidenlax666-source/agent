@@ -31,6 +31,14 @@ _REPORT_HINTS = ["报告", "可视化", "图表", "报表", "dashboard", "报告
 _WEB_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "web"))
 
 
+def _size_mb(path: str) -> str:
+    """文件大小人性化显示（MB）。"""
+    try:
+        return f"{os.path.getsize(path) / 1024 / 1024:.1f}MB"
+    except Exception:
+        return ""
+
+
 def _is_report_request(requirement: str) -> bool:
     r = requirement.lower()
     return any(k in r for k in _REPORT_HINTS)
@@ -50,9 +58,32 @@ _CONTENT_VERBS = ["生成一个", "做一个", "制作一个", "创作", "设计
 _CONTENT_ITEMS = ["游戏", "漫剧", "网页", "页面", "小工具", "动画", "简历", "海报", "贺卡", "倒计时", "计算器", "主页", "个人网"]
 
 
+# 视频生成意图（豆包 Seedance）：命中则走文生视频
+_VIDEO_HINTS = ["生成视频", "制作视频", "做视频", "短视频", "宣传片", "vlog", "文生视频",
+                "视频生成", "动画视频", "动画短片", "视频"]
+
+
+def _is_video_request(requirement: str) -> bool:
+    r = requirement.lower()
+    # 排除"看视频/上传视频"这类非生成意图
+    if any(k in r for k in ("看视频", "上传视频", "视频教程", "视频会议")):
+        return False
+    return any(k in r for k in _VIDEO_HINTS)
+
+
+# 图片生成意图（豆包 Seedream）：命中则走文生图
+_IMAGE_HINTS = ["生成图片", "生成一张图", "生成照片", "文生图", "图片生成", "画一张", "画一幅",
+                "画一个", "插画", "壁纸", "头像", "表情包", "封面图", "logo", "图标", "设计一张"]
+
+
+def _is_image_request(requirement: str) -> bool:
+    r = requirement.lower()
+    return any(k in r for k in _IMAGE_HINTS)
+
+
 def _is_content_request(requirement: str) -> bool:
     r = requirement.lower()
-    if _is_game_request(r) or _is_report_request(r):
+    if _is_game_request(r) or _is_report_request(r) or _is_video_request(r) or _is_image_request(r):
         return False
     if any(k in r for k in ("导出excel", "导出csv", "抓取", "爬取", "统计", "汇总", "数据", "接口")):
         return False
@@ -319,6 +350,10 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
         modes.append("report")
     if _is_content_request(requirement):
         modes.append("content")
+    if _is_video_request(requirement):
+        modes.append("video")
+    if _is_image_request(requirement):
+        modes.append("image")
     if not modes:
         modes.append("code")
     # 生成类与"明确要数据文件"意图并存时补代码任务（如"抓XX数据导出Excel，并做成XX网页"）
@@ -357,6 +392,44 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
                     merged["output_file"] = g.get("file_path")
                 else:
                     failed.append(f"内容: {g.get('error', '失败')}")
+            elif mode == "video":
+                # 豆包 Seedance 文生视频：提交异步任务 → 轮询 → 下载到 web/ 目录（公网可访问）
+                from app.services.video_client import generate_video, download_video
+                v = await generate_video(requirement, max_wait=600)
+                if v.get("success") and v.get("video_url"):
+                    merged["message_video"] = "视频已生成，正在下载..."
+                    fname = f"video_{task_id}.mp4"
+                    save_path = os.path.join(_WEB_DIR, fname)
+                    os.makedirs(_WEB_DIR, exist_ok=True)
+                    if await download_video(v["video_url"], save_path):
+                        merged["video_url"] = f"/{fname}"
+                        merged["output_file"] = save_path
+                        merged["message_video"] = f"视频已生成：/{fname}（{_size_mb(save_path)}）"
+                    else:
+                        failed.append("视频已生成但下载失败")
+                else:
+                    failed.append(f"视频: {v.get('detail', '失败')}")
+            elif mode == "image":
+                # 豆包 Seedream 文生图：同步生成 → 下载全部图片到 web/ 目录
+                from app.services.video_client import generate_image, download_video
+                img = await generate_image(requirement)
+                if img.get("success") and img.get("image_urls"):
+                    os.makedirs(_WEB_DIR, exist_ok=True)
+                    urls: list[str] = []
+                    for i, u in enumerate(img["image_urls"][:4]):
+                        fname = f"image_{task_id}_{i}.png"
+                        save_path = os.path.join(_WEB_DIR, fname)
+                        if await download_video(u, save_path):
+                            urls.append(f"/{fname}")
+                    if urls:
+                        merged["image_urls"] = urls
+                        merged["image_url"] = urls[0]
+                        merged["output_file"] = os.path.join(_WEB_DIR, f"image_{task_id}_0.png")
+                        merged["message_image"] = f"生成 {len(urls)} 张图片"
+                    else:
+                        failed.append("图片已生成但下载失败")
+                else:
+                    failed.append(f"图片: {img.get('detail', '失败')}")
             else:  # code：数据/抓取任务
                 from app.services.mini_generator import generate_and_verify
                 result = await generate_and_verify(requirement, url or None, image_paths=image_paths or None)
@@ -371,7 +444,7 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
                 if result.get("status") != "ok":
                     failed.append(f"数据处理: {result.get('error') or result.get('status')}")
 
-        if failed and not any(k in merged for k in ("game_url", "report_url", "content_url")):
+        if failed and not any(k in merged for k in ("game_url", "report_url", "content_url", "video_url", "image_url", "image_urls")):
             merged["status"] = "failed"
             merged["error"] = "；".join(failed)[:300]
         else:

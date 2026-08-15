@@ -362,7 +362,8 @@ export default function MiniPage() {
               <p className="text-sm text-red-500 bg-red-50 dark:bg-red-950 rounded-lg px-3 py-2">{submitError}</p>
             )}
             <p className="text-xs text-muted-foreground">
-              支持：网页抓取（含登录态/排序筛选）、Excel/Word/PPT、文件操作、数据处理、API 调用、图片/PDF。
+              支持：网页抓取（含登录态/排序筛选）、Excel/Word/PPT、文件操作、数据处理、API 调用、图片/PDF，
+              以及 🎮 联机游戏、📊 可视化报告、📄 网页内容、🎬 AI 视频（Seedance）、🖼️ AI 图片（Seedream）。
               系统自动执行并做数量、字段、功能覆盖、数据值四重校验，发现问题自动修复。
             </p>
               </>
@@ -459,6 +460,45 @@ export default function MiniPage() {
                       <Play className="w-4 h-4" />
                       🎮 开始联机游戏（建房分享给好友一起玩）
                     </a>
+                  )}
+                  {result.content_url && (
+                    <a
+                      href={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}${result.content_url}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-2 text-sm font-medium text-sky-600 dark:text-sky-400 hover:underline"
+                    >
+                      <Play className="w-4 h-4" />
+                      📄 打开生成的内容
+                    </a>
+                  )}
+                  {result.video_url && (
+                    <a
+                      href={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}${result.video_url}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-2 text-sm font-medium text-rose-600 dark:text-rose-400 hover:underline"
+                    >
+                      <Play className="w-4 h-4" />
+                      🎬 播放生成的视频
+                    </a>
+                  )}
+                  {result.image_urls && result.image_urls.length > 0 && (
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <span className="text-sm font-medium text-pink-600 dark:text-pink-400">
+                        🖼️ 生成的图片（{result.image_urls.length} 张）：
+                      </span>
+                      {result.image_urls.map((u, i) => (
+                        <a key={u} href={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}${u}`} target="_blank" rel="noreferrer">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}${u}`}
+                            alt={`generated-${i}`}
+                            className="w-24 h-24 object-cover rounded-lg border border-slate-200 dark:border-slate-700 hover:opacity-80 transition-opacity"
+                          />
+                        </a>
+                      ))}
+                    </div>
                   )}
 
                   {result.script && (

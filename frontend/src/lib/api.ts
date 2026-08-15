@@ -152,6 +152,10 @@ export interface MiniTaskResult {
   output_file?: string;
   report_url?: string;
   game_url?: string;
+  content_url?: string;
+  video_url?: string;
+  image_url?: string;
+  image_urls?: string[];
 }
 
 export interface MiniTaskStatus {
