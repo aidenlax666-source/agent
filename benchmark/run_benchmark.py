@@ -40,54 +40,70 @@ def load_tasks(only: list[str] | None = None) -> list[dict]:
     return tasks
 
 
-async def register_and_topup(client: httpx.AsyncClient, credits: int = 200) -> str:
-    """注册一个基准测试账号并直连 DB 充值，返回 token。"""
-    email = f"bench_{uuid.uuid4().hex[:8]}@bench.local"
-    r = await client.post(f"{API}/api/auth/register", json={"email": email, "password": "bench1234", "name": "Bench"})
-    r.raise_for_status()
-    data = r.json()
-    uid = data["user"]["id"]
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.execute("UPDATE users SET credits = ? WHERE id=?", (credits, uid))
-    conn.commit()
-    conn.close()
-    return data["access_token"]
-
-
-async def submit_all(client: httpx.AsyncClient, token: str, tasks: list[dict], concurrency: int) -> dict:
-    """并行提交任务，返回 {task_id: task}。"""
+async def register_accounts(client: httpx.AsyncClient, n: int, credits: int = 10, concurrency: int = 10) -> list[str]:
+    """注册 n 个独立测试账号并各自充值，返回 token 列表（每个账号跑一个任务）。"""
     sem = asyncio.Semaphore(concurrency)
-    headers = {"Authorization": f"Bearer {token}"}
+    tokens: list[str] = []
 
-    async def submit(t: dict) -> tuple[str, dict] | None:
+    async def one(i: int):
         async with sem:
+            email = f"bench_{uuid.uuid4().hex[:8]}@bench.local"
+            r = await client.post(f"{API}/api/auth/register", json={"email": email, "password": "bench1234", "name": "Bench"})
+            r.raise_for_status()
+            data = r.json()
+            uid = data["user"]["id"]
+            conn = sqlite3.connect(str(DB_PATH))
+            conn.execute("UPDATE users SET credits = ? WHERE id=?", (credits, uid))
+            conn.commit()
+            conn.close()
+            tokens.append(data["access_token"])
+
+    await asyncio.gather(*(one(i) for i in range(n)))
+    return tokens
+
+
+async def submit_all(client: httpx.AsyncClient, tokens: list[str], tasks: list[dict], concurrency: int) -> dict:
+    """并行提交任务：第 i 个任务用第 i 个账号（一个账号一个任务）。
+
+    返回 {task_id: (task, token)}，轮询时用对应账号查询（归属校验）。
+    """
+    sem = asyncio.Semaphore(concurrency)
+
+    async def submit(i: int, t: dict) -> tuple[str, dict, str] | None:
+        async with sem:
+            headers = {"Authorization": f"Bearer {tokens[i]}"}
             try:
                 r = await client.post(f"{API}/api/mini/tasks",
                                       json={"requirement": t["req"], "url": "", "image_paths": [], "data_paths": []},
                                       headers=headers, timeout=30)
                 if r.status_code == 200:
                     tid = r.json()["task_id"]
-                    print(f"  [submit] {t['id']} -> {tid[:8]}", flush=True)
-                    return tid, t
-                print(f"  [submit-FAIL] {t['id']}: HTTP {r.status_code} {r.text[:100]}", flush=True)
+                    print(f"  [submit] {t['id']} (acct {i}) -> {tid[:8]}", flush=True)
+                    return tid, t, tokens[i]
+                print(f"  [submit-FAIL] {t['id']} (acct {i}): HTTP {r.status_code} {r.text[:100]}", flush=True)
                 return None
             except Exception as e:
                 print(f"  [submit-ERR] {t['id']}: {e}", flush=True)
                 return None
 
-    results = await asyncio.gather(*(submit(t) for t in tasks))
-    return {tid: t for tid, t in results if tid}
+    results = await asyncio.gather(*(submit(i, t) for i, t in enumerate(tasks)))
+    return {tid: (t, token) for tid, t, token in results if tid}
 
 
-async def poll_all(client: httpx.AsyncClient, token: str, mapping: dict, timeout_s: int, poll_interval: int = 15) -> dict:
-    """并行轮询所有任务直到完成，返回 {task_id: (task, status_dict)}。"""
-    headers = {"Authorization": f"Bearer {token}"}
-    remaining = dict(mapping)
+async def poll_all(client: httpx.AsyncClient, mapping: dict, timeout_s: int, poll_interval: int = 15) -> dict:
+    """并行轮询：每个任务用自己账号的 token 查询（跨账号会 404）。
+
+    mapping: {task_id: (task, token)}
+    返回 {task_id: (task, status_dict)}。
+    """
+    remaining = {tid: (t, token) for tid, (t, token) in mapping.items()}
     out: dict[str, tuple[dict, dict]] = {}
     deadline = time.time() + timeout_s
 
     while remaining and time.time() < deadline:
         async def fetch(tid: str):
+            _t, token = remaining[tid]
+            headers = {"Authorization": f"Bearer {token}"}
             try:
                 r = await client.get(f"{API}/api/mini/tasks/{tid}", headers=headers, timeout=15)
                 if r.status_code == 200:
@@ -99,11 +115,11 @@ async def poll_all(client: httpx.AsyncClient, token: str, mapping: dict, timeout
         states = await asyncio.gather(*(fetch(tid) for tid in list(remaining.keys())))
         for tid, st in states:
             if st and st.get("status") in ("done", "error", "cancelled"):
-                out[tid] = (remaining.pop(tid), st)
+                out[tid] = (remaining.pop(tid)[0], st)
         if remaining:
             await asyncio.sleep(poll_interval)
 
-    for tid, t in remaining.items():  # 超时未完成
+    for tid, (t, _tok) in remaining.items():  # 超时未完成
         out[tid] = (t, {"status": "timeout", "result": None})
     return out
 
@@ -153,22 +169,22 @@ def print_report(summary: dict) -> None:
 
 
 async def main() -> None:
-    ap = argparse.ArgumentParser(description="benchmark 自动并行测试")
+    ap = argparse.ArgumentParser(description="benchmark 自动并行测试（每账号一个任务）")
     ap.add_argument("--tasks", help="逗号分隔的任务 id，默认全部")
     ap.add_argument("--concurrency", type=int, default=3)
     ap.add_argument("--timeout", type=int, default=1800)
-    ap.add_argument("--credits", type=int, default=200)
+    ap.add_argument("--credits", type=int, default=10, help="每个测试账号的积分")
     args = ap.parse_args()
 
     tasks = load_tasks([s.strip() for s in args.tasks.split(",") if s.strip()] if args.tasks else None)
-    print(f"任务数: {len(tasks)} | 并发: {args.concurrency} | 超时: {args.timeout}s", flush=True)
+    print(f"任务数: {len(tasks)} | 账号数: {len(tasks)}（一账号一任务）| 提交并发: {args.concurrency} | 超时: {args.timeout}s", flush=True)
 
     async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
-        token = await register_and_topup(client, args.credits)
-        print("测试账号已注册并充值", flush=True)
-        mapping = await submit_all(client, token, tasks, args.concurrency)
+        tokens = await register_accounts(client, len(tasks), args.credits)
+        print(f"已注册 {len(tokens)} 个独立测试账号并各自充值", flush=True)
+        mapping = await submit_all(client, tokens, tasks, args.concurrency)
         print(f"提交成功: {len(mapping)}/{len(tasks)}，开始轮询...", flush=True)
-        results = await poll_all(client, token, mapping, args.timeout)
+        results = await poll_all(client, mapping, args.timeout)
         summary = summarize(results)
         print_report(summary)
         RESULT_FILE.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
