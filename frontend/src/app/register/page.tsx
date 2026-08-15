@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
-import { Loader2, UserPlus, ArrowLeft } from "lucide-react";
+import { Loader2, UserPlus, CheckCircle2 } from "lucide-react";
 import { authApi, setAuthToken } from "@/lib/api";
 
 export default function RegisterPage() {
@@ -20,11 +20,11 @@ export default function RegisterPage() {
 
   const handleRegister = async () => {
     if (!email.trim() || !password.trim()) {
-      setError("Please enter email and password");
+      setError("请输入邮箱和密码");
       return;
     }
     if (password.length < 4) {
-      setError("Password must be at least 4 characters");
+      setError("密码至少 4 位");
       return;
     }
     setError("");
@@ -32,45 +32,49 @@ export default function RegisterPage() {
     try {
       const result = await authApi.register(email, password, name || undefined);
       setAuthToken(result.access_token);
-      router.push("/");
+      router.push("/mini");
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Registration failed");
+      setError(e instanceof Error ? e.message : "注册失败，请重试");
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center px-4 bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900">
-      <Card className="w-full max-w-md rounded-2xl border-2 border-slate-200/60 dark:border-slate-800/60 shadow-xl overflow-hidden">
-        <div className="h-1.5 bg-gradient-to-r from-indigo-500 via-violet-500 to-purple-500" />
+    <div className="min-h-screen flex items-center justify-center px-4 bg-gradient-to-br from-indigo-50 via-white to-fuchsia-50 dark:from-slate-950 dark:via-slate-950 dark:to-indigo-950/60">
+      <div className="pointer-events-none fixed inset-0 opacity-[0.35] dark:opacity-[0.15]"
+        style={{ backgroundImage: "linear-gradient(rgba(99,102,241,0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(99,102,241,0.08) 1px, transparent 1px)", backgroundSize: "44px 44px" }}
+      />
+      <Card className="relative w-full max-w-md rounded-3xl border-slate-200/70 dark:border-slate-800/70 bg-white/80 dark:bg-slate-900/70 backdrop-blur-xl shadow-xl shadow-indigo-500/5 overflow-hidden">
+        <div className="h-1.5 bg-gradient-to-r from-indigo-500 via-violet-500 to-fuchsia-500" />
         <CardContent className="p-8 space-y-5">
           <div className="text-center">
-            <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 mb-4 shadow-lg">
+            <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500 via-violet-500 to-fuchsia-500 mb-4 shadow-lg shadow-indigo-500/30">
               <UserPlus className="w-6 h-6 text-white" />
             </div>
-            <h2 className="text-xl font-bold">Create Account</h2>
-            <p className="text-sm text-muted-foreground mt-1">Start automating in seconds</p>
+            <h2 className="text-xl font-bold">注册账号</h2>
+            <p className="text-sm text-muted-foreground mt-1">每个账号的任务和数据互相独立，互不可见</p>
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="name">Name <span className="text-muted-foreground">(optional)</span></Label>
-            <Input id="name" placeholder="Your name" value={name}
+            <Label htmlFor="name">昵称 <span className="text-muted-foreground">（可选）</span></Label>
+            <Input id="name" placeholder="你的昵称" value={name}
               onChange={(e) => setName(e.target.value)} disabled={loading} className="rounded-xl" />
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="email">Email</Label>
+            <Label htmlFor="email">邮箱</Label>
             <Input id="email" type="email" placeholder="you@example.com"
               value={email} onChange={(e) => setEmail(e.target.value)}
               disabled={loading} className="rounded-xl" />
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="password">Password</Label>
-            <Input id="password" type="password" placeholder="At least 4 characters"
+            <Label htmlFor="password">密码</Label>
+            <Input id="password" type="password" placeholder="至少 4 位"
               value={password} onChange={(e) => setPassword(e.target.value)}
-              disabled={loading} className="rounded-xl" />
+              disabled={loading} className="rounded-xl"
+              onKeyDown={(e) => e.key === "Enter" && handleRegister()} />
           </div>
 
           {error && (
@@ -79,19 +83,20 @@ export default function RegisterPage() {
             </div>
           )}
 
-          <Button className="w-full h-11 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 shadow-lg"
+          <Button className="w-full h-11 rounded-xl bg-gradient-to-r from-indigo-600 via-violet-600 to-fuchsia-600 shadow-lg shadow-indigo-500/30"
             onClick={handleRegister} disabled={loading}>
-            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Create Account"}
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : "创建账号"}
           </Button>
 
-          <p className="text-xs text-center text-muted-foreground">
-            Already have an account?{" "}
-            <Link href="/login" className="text-indigo-600 hover:underline font-medium">Sign in</Link>
-          </p>
+          <div className="flex items-center gap-1.5 justify-center text-[11px] text-muted-foreground">
+            <CheckCircle2 className="w-3 h-3 text-emerald-500" />
+            注册即送 10 积分，每次任务消耗 1 积分
+          </div>
 
-          <Link href="/" className="flex items-center justify-center gap-1 text-xs text-muted-foreground hover:text-foreground">
-            <ArrowLeft className="w-3 h-3" /> Back to home
-          </Link>
+          <p className="text-xs text-center text-muted-foreground">
+            已有账号？{" "}
+            <Link href="/login" className="text-indigo-600 hover:underline font-medium">去登录</Link>
+          </p>
         </CardContent>
       </Card>
     </div>

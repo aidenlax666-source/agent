@@ -47,16 +47,17 @@ async def list_all(limit: int = 20, user=Depends(get_current_user)):
 
 
 @router.get("/mini/tasks/{task_id}")
-async def task_status(task_id: str):
-    status = mini_tasks.get_status(task_id)
+async def task_status(task_id: str, user=Depends(get_current_user)):
+    """查询任务状态（仅本人可见，账号数据独立）。"""
+    status = mini_tasks.get_status(task_id, user_id=user["id"])
     if status is None:
         raise HTTPException(status_code=404, detail="任务不存在")
     return status
 
 
 @router.post("/mini/tasks/{task_id}/cancel")
-async def cancel_task(task_id: str):
-    ok = mini_tasks.cancel_task(task_id)
+async def cancel_task(task_id: str, user=Depends(get_current_user)):
+    ok = mini_tasks.cancel_task(task_id, user["id"])
     return {"cancelled": ok}
 
 
@@ -166,9 +167,9 @@ async def data_qa(data: dict, user=Depends(get_current_user)):
 
 
 @router.get("/mini/tasks/{task_id}/download")
-async def download_output(task_id: str):
-    """下载任务产出的结果文件（report.html / output.xlsx 等）。"""
-    status = mini_tasks.get_status(task_id)
+async def download_output(task_id: str, user=Depends(get_current_user)):
+    """下载任务产出的结果文件（仅本人可见）。"""
+    status = mini_tasks.get_status(task_id, user_id=user["id"])
     if status is None:
         raise HTTPException(status_code=404, detail="任务不存在")
     result = status.get("result") or {}

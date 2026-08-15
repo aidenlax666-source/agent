@@ -811,7 +811,8 @@ async def _run_music_task(task_id: str, requirement: str) -> dict:
             pass
 
 
-def get_status(task_id: str) -> dict | None:
+def get_status(task_id: str, user_id: str = "") -> dict | None:
+    """查询任务状态；user_id 非空时校验归属（账号数据独立）。"""
     rec = _TASKS.get(task_id)
     if rec is None:
         # 内存没有（如重启后）→ 从 SQLite 恢复（同步查询）
@@ -825,6 +826,8 @@ def get_status(task_id: str) -> dict | None:
             if not row:
                 return None
             d = dict(row)
+            if user_id and d.get("user_id") and d["user_id"] != user_id:
+                return None
             if d.get("result"):
                 try:
                     d["result"] = json.loads(d["result"])
@@ -845,6 +848,8 @@ def get_status(task_id: str) -> dict | None:
         except Exception as e:
             logger.warning("从 DB 恢复任务 %s 失败: %s", task_id, str(e)[:100])
             return None
+    if user_id and rec.get("user_id") and rec["user_id"] != user_id:
+        return None
     out = {
         "id": rec["id"],
         "requirement": rec["requirement"],
@@ -904,5 +909,24 @@ def list_tasks(limit: int = 20, user_id: str = "") -> list[dict]:
     return items[:limit]
 
 
-def cancel_task(task_id: str) -> bool:
+def cancel_task(task_id: str, user_id: str = "") -> bool:
+    """取消任务；user_id 非空时校验归属（账号数据独立）。"""
+    if user_id:
+        # 先确认任务属于该用户
+        rec = _TASKS.get(task_id)
+        if rec is None:
+            try:
+                import sqlite3
+                from app.database import DB_PATH
+                conn = sqlite3.connect(str(DB_PATH))
+                conn.row_factory = sqlite3.Row
+                row = conn.execute("SELECT user_id FROM mini_tasks WHERE id=?", (task_id,)).fetchone()
+                conn.close()
+                if not row:
+                    return False
+                rec = dict(row)
+            except Exception:
+                return False
+        if rec.get("user_id") and rec["user_id"] != user_id:
+            return False
     return cancel(task_id)
