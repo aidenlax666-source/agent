@@ -9,6 +9,7 @@ backend/auth_sessions/
 backend/data/automation.db
 backend/tmp/
 backend/script_library/
+backend/uploads/
 
 # ===== Python =====
 __pycache__/
