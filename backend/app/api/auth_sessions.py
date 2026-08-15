@@ -80,9 +80,15 @@ async def start_login(data: dict, user=Depends(get_current_user)):
                 _login_status["status"] = "waiting"
                 _login_status["message"] = "请在浏览器中登录，登录完成后点「我已完成登录」"
 
-                # Wait until the user requests a save, or closes the browser.
+                # Wait until the user requests a save, closes the browser, or times out.
+                # 超时（10 分钟）强制结束：避免"有人打开登录窗口不关"阻塞所有后续登录。
+                wait_started = time.time()
                 while not session["save_requested"].is_set():
                     time.sleep(0.5)
+                    if time.time() - wait_started > 600:
+                        _login_status["status"] = "timeout"
+                        _login_status["message"] = "登录窗口超时，已自动结束"
+                        break
                     try:
                         page.title()
                     except Exception:

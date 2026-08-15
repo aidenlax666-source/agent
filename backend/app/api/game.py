@@ -95,6 +95,8 @@ async def game_ws(websocket: WebSocket, room_id: str):
                 raw = await asyncio.wait_for(websocket.receive_text(), timeout=2)
             except asyncio.TimeoutError:
                 continue
+            if len(raw) > 65536:  # 消息大小限制（防内存滥用）
+                continue
             msg = json.loads(raw)
             if msg.get("type") == "join":
                 name = str(msg.get("name") or "玩家")[:30]  # 玩家名截断防滥用
@@ -119,6 +121,8 @@ async def game_ws(websocket: WebSocket, room_id: str):
         # 转发游戏动作/聊天
         while True:
             raw = await websocket.receive_text()
+            if len(raw) > 65536:  # 消息大小限制（防内存滥用）
+                continue
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
