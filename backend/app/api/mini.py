@@ -1,9 +1,11 @@
 from __future__ import annotations
 """mini_generator 后台任务 API：提交自然语言任务 → 后台执行 → 查询状态/结果。"""
 import os
+import time as _time
+from collections import defaultdict, deque
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from app.api.dependencies import get_current_user
@@ -13,6 +15,20 @@ router = APIRouter()
 
 # 上传文件根目录：只允许引用此目录内的文件（防任意文件读取）
 UPLOAD_DIR = Path(__file__).parent.parent.parent / "uploads"
+
+# 匿名用户提交限速：防止换 ID 无限刷积分/刷任务（内存表，按 IP）
+_ANON_SUBMIT_RATE: dict[str, deque] = defaultdict(deque)
+ANON_MAX_PER_MINUTE = 10
+
+
+def _check_anon_rate(ip: str) -> None:
+    now = _time.time()
+    q = _ANON_SUBMIT_RATE[ip]
+    while q and now - q[0] > 60:
+        q.popleft()
+    if len(q) >= ANON_MAX_PER_MINUTE:
+        raise HTTPException(status_code=429, detail="操作太频繁，请稍后再试")
+    q.append(now)
 
 
 def _ensure_upload_path(path: str) -> str:
@@ -34,11 +50,16 @@ def _ensure_upload_path(path: str) -> str:
 
 
 @router.post("/mini/tasks")
-async def create_task(data: dict, user=Depends(get_current_user)):
+async def create_task(data: dict, request: Request, user=Depends(get_current_user)):
     """提交一个自然语言自动化任务，立即返回 task_id（可带已上传图片路径）。"""
     requirement = (data.get("requirement") or "").strip()
     if not requirement:
         raise HTTPException(status_code=400, detail="requirement 不能为空")
+
+    # 匿名用户按 IP 限速（登录用户不受限），防换 ID 刷积分
+    if (user.get("email") or "").startswith("anon_"):
+        ip = (request.client.host if request.client else "unknown")
+        _check_anon_rate(ip)
 
     # 额度校验（登录/匿名用户默认 10 credits）
     from app.database import get_credits, decrement_credits

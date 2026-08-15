@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ExternalLink, QrCode, RefreshCw, Link2 } from "lucide-react";
 import Link from "next/link";
 import AppNav from "@/components/AppNav";
-import { getAuthToken, getAnonymousId } from "@/lib/api";
+import { getAuthToken, getAnonymousId, ASSETS_BASE } from "@/lib/api";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -46,7 +46,8 @@ export default function GalleryPage() {
       const r = await fetch(`${API_BASE}/api/gallery`, { headers });
       const data = await r.json();
       setItems(data.items || []);
-      setOrigin(typeof window !== "undefined" ? window.location.origin : "");
+      // 分享链接指向产物域（与 API 不同源）
+      setOrigin(ASSETS_BASE);
     } catch {
       setItems([]);
     } finally {

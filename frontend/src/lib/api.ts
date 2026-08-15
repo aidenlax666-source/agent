@@ -2,6 +2,9 @@
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+// 产物静态服务域（与 API 不同源，防止同源 XSS）：生成的游戏/视频/图片/音乐/报告等页面所在
+export const ASSETS_BASE = process.env.NEXT_PUBLIC_ASSETS_URL || "http://localhost:8001";
+
 let authToken: string | null = null;
 
 export function setAuthToken(token: string | null) {

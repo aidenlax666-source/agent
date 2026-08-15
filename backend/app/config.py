@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     # 反爬适配域名（逗号分隔）：这些站点的抓取任务走"有头+人速+验证码等待"模式
     anti_bot_domains: str = "xiaohongshu.com,zhihu.com,weibo.com,douban.com,taobao.com,jd.com"
 
+    # 产物页面（游戏/内容/报告等）需要连接的 API 域（与产物静态服务不同源，防止同源 XSS）
+    public_api_base: str = "http://localhost:8000"
+
     # Sandbox
     sandbox_image: str = "python:3.11-slim"
     sandbox_timeout: int = 60

@@ -4,7 +4,7 @@ from __future__ import annotations
 import time as _time
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from jose import jwt
 import bcrypt
 
@@ -15,8 +15,9 @@ from app.api.dependencies import get_current_user
 router = APIRouter()
 settings = get_settings()
 
-# 登录失败限流（进程内存中实现，无 Redis 依赖）
+# 登录失败限流（进程内存中实现，无 Redis 依赖）：邮箱维度 + IP 维度
 _failed_logins: dict[str, list[float]] = {}
+_failed_logins_by_ip: dict[str, list[float]] = {}
 MAX_LOGIN_ATTEMPTS = 5
 LOGIN_LOCKOUT_SECONDS = 300
 
@@ -32,20 +33,28 @@ def _verify_pwd(password: str, stored: str) -> bool:
         return False
 
 
-def _check_login_rate_limit(email: str) -> None:
+def _check_login_rate_limit(email: str, ip: str) -> None:
     now = _time.time()
+    # 邮箱维度
     attempts = [t for t in _failed_logins.get(email, []) if now - t < LOGIN_LOCKOUT_SECONDS]
     _failed_logins[email] = attempts
     if len(attempts) >= MAX_LOGIN_ATTEMPTS:
         raise HTTPException(429, "尝试次数过多，请稍后再试")
+    # IP 维度（防分布式撞库：同一个 IP 换邮箱狂试）
+    ip_attempts = [t for t in _failed_logins_by_ip.get(ip, []) if now - t < LOGIN_LOCKOUT_SECONDS]
+    _failed_logins_by_ip[ip] = ip_attempts
+    if len(ip_attempts) >= MAX_LOGIN_ATTEMPTS * 3:
+        raise HTTPException(429, "尝试次数过多，请稍后再试")
 
 
-def _record_login_failure(email: str) -> None:
+def _record_login_failure(email: str, ip: str) -> None:
     _failed_logins.setdefault(email, []).append(_time.time())
+    _failed_logins_by_ip.setdefault(ip, []).append(_time.time())
 
 
-def _clear_login_failures(email: str) -> None:
+def _clear_login_failures(email: str, ip: str) -> None:
     _failed_logins.pop(email, None)
+    _failed_logins_by_ip.pop(ip, None)
 
 
 def make_token(user_id: str) -> str:
@@ -80,18 +89,19 @@ async def register(data: dict):
 
 
 @router.post("/login")
-async def login(data: dict):
+async def login(data: dict, request: Request):
     email = data.get("email", "").strip()
     pwd = data.get("password", "").strip()
+    ip = request.client.host if request.client else "unknown"
 
-    _check_login_rate_limit(email)
+    _check_login_rate_limit(email, ip)
 
     user = await get_user_by_email(email)
     if not user or not _verify_pwd(pwd, user["password_hash"]):
-        _record_login_failure(email)
+        _record_login_failure(email, ip)
         raise HTTPException(401, "Email or password incorrect")
 
-    _clear_login_failures(email)
+    _clear_login_failures(email, ip)
     token = make_token(user["id"])
     return {
         "access_token": token,

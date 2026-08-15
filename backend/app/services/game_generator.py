@@ -20,8 +20,8 @@ GAME_SYSTEM = """你是一位联机游戏前端专家。生成一个**多人联�
 
 【房间系统（必须实现）】
 1. 页面顶部有两个模式：🏠 创建房间 / 🔗 加入房间（输入房间号）
-2. 创建房间：fetch POST 到 `${API_BASE}/api/game/rooms`（API_BASE 用 window.location.origin），拿 {room_id}，自动连 ws
-3. 加入房间：输入房间号后连 ws：`${WS_BASE}/api/ws/game/{roomId}`（WS_BASE = API_BASE 的 http→ws）
+2. 创建房间：fetch POST 到 `__API_BASE__/api/game/rooms`，拿 {room_id}，自动连 ws
+3. 加入房间：输入房间号后连 ws：`__WS_BASE__/api/ws/game/{roomId}`
 4. 分享链接：建房后页面显示可复制的完整链接（当前 URL + ?room=房间号）；加载时若有 ?room= 自动进房
 
 【WebSocket 协议（必须遵守）】
@@ -38,7 +38,17 @@ GAME_SYSTEM = """你是一位联机游戏前端专家。生成一个**多人联�
 - 胜负/得分要有明确判定和显示，支持重新开始/下一轮
 
 【视觉要求】现代精美（渐变背景、圆角、按钮），单文件零外链，中文界面。
+【重要】API 地址使用占位符 `__API_BASE__`（建房请求）和 `__WS_BASE__`（WebSocket），不要用 window.location.origin 拼 API 地址。
 【输出】只输出完整 HTML 代码。"""
+
+
+def _inject_bases(html: str, api_base: str) -> str:
+    """把 API/WS 实际地址注入生成的页面（占位符 → 配置的 public_api_base）。
+
+    产物页面与 API 不同源（防同源 XSS），所以不能在页面里用 window.location.origin。
+    """
+    ws_base = api_base.replace("https://", "wss://").replace("http://", "ws://")
+    return html.replace("__API_BASE__", api_base).replace("__WS_BASE__", ws_base)
 
 
 def _complete(html: str) -> tuple[bool, str]:
@@ -80,6 +90,10 @@ async def generate_multiplayer_game(game_desc: str) -> dict:
             html = ""
     if not html:
         return {"success": False, "error": "联机游戏生成失败"}
+
+    # 注入 API/WS 实际地址（产物页与 API 不同源，不能用 window.location.origin）
+    from app.config import get_settings
+    html = _inject_bases(html, get_settings().public_api_base)
 
     game_id = uuid.uuid4().hex[:8]
     fname = f"game_{game_id}.html"

@@ -10,7 +10,6 @@ if sys.platform == "win32":
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.database import init_db
@@ -18,8 +17,6 @@ from app.api import auth, auth_sessions, upload, mini, gallery, game
 from app.services.mini_tasks import mini_scheduler_loop
 
 settings = get_settings()
-
-_WEB_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "web"))
 
 
 @asynccontextmanager
@@ -61,6 +58,7 @@ async def health_check():
     return {"status": "ok", "version": "1.0.0"}
 
 
-# 挂载 web/ 静态目录（游戏/报告/漫剧等页面与 API 同域，页面用 window.location.origin 即可）
-if os.path.isdir(_WEB_DIR):
-    app.mount("/", StaticFiles(directory=_WEB_DIR, html=True), name="web")
+# 安全说明：不再挂载 web/ 静态目录 —— 产物页面（LLM 生成的 HTML）与 API 必须不同源，
+# 否则恶意产物页面可带登录态窃取同源 API 数据（同源 XSS）。
+# 产物由独立静态服务（如 python -m http.server 8001 --directory web）提供，
+# 前端通过 NEXT_PUBLIC_ASSETS_URL / settings.public_assets_base 访问。

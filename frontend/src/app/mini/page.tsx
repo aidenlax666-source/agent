@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { miniApi, uploadApi, type MiniTaskStatus } from "@/lib/api";
+import { miniApi, uploadApi, ASSETS_BASE, type MiniTaskStatus } from "@/lib/api";
 import type { PreviewData } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -416,18 +416,18 @@ export default function MiniPage() {
 
                   {!isQa && <PreviewTable data={toPreviewData(result.preview)} totalEstimate={result.rows} />}
 
-                  {/* 媒体产物 */}
+                  {/* 媒体产物（产物域，与 API 不同源） */}
                   {result.video_url && (
                     <div className="rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-700">
-                      <video src={`${API}${result.video_url}`} controls className="w-full max-h-96 bg-black" />
+                      <video src={`${ASSETS_BASE}${result.video_url}`} controls className="w-full max-h-96 bg-black" />
                     </div>
                   )}
                   {result.image_urls && result.image_urls.length > 0 && (
                     <div className="flex items-start gap-3 flex-wrap">
                       {result.image_urls.map((u, i) => (
-                        <a key={u} href={`${API}${u}`} target="_blank" rel="noreferrer" className="group relative">
+                        <a key={u} href={`${ASSETS_BASE}${u}`} target="_blank" rel="noreferrer" className="group relative">
                           {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={`${API}${u}`} alt={`generated-${i}`} className="w-40 h-40 object-cover rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm group-hover:opacity-85 group-hover:scale-[1.02] transition-all" />
+                          <img src={`${ASSETS_BASE}${u}`} alt={`generated-${i}`} className="w-40 h-40 object-cover rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm group-hover:opacity-85 group-hover:scale-[1.02] transition-all" />
                           <span className="absolute inset-0 rounded-2xl opacity-0 group-hover:opacity-100 bg-black/30 flex items-center justify-center text-white text-xs font-medium transition-opacity">查看大图</span>
                         </a>
                       ))}
@@ -435,7 +435,7 @@ export default function MiniPage() {
                   )}
                   {result.music_url && (
                     <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-gradient-to-r from-amber-50/60 to-rose-50/60 dark:from-amber-950/30 dark:to-rose-950/30 p-4">
-                      <audio src={`${API}${result.music_url}`} controls className="w-full" />
+                      <audio src={`${ASSETS_BASE}${result.music_url}`} controls className="w-full" />
                     </div>
                   )}
 
@@ -448,19 +448,19 @@ export default function MiniPage() {
                       </a>
                     )}
                     {result.report_url && (
-                      <a href={`${API}/api/mini/tasks/${task.id}/download`} target="_blank" rel="noreferrer"
+                      <a href={`${ASSETS_BASE}${result.report_url}`} target="_blank" rel="noreferrer"
                         className="inline-flex items-center gap-1.5 text-sm font-medium text-emerald-600 dark:text-emerald-400 hover:underline rounded-xl border border-emerald-200/60 dark:border-emerald-800 px-3.5 py-2 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 transition-colors">
                         <Sparkles className="w-4 h-4" /> 📊 查看可视化报告
                       </a>
                     )}
                     {result.game_url && (
-                      <a href={`${API}${result.game_url}`} target="_blank" rel="noreferrer"
+                      <a href={`${ASSETS_BASE}${result.game_url}`} target="_blank" rel="noreferrer"
                         className="inline-flex items-center gap-1.5 text-sm font-medium text-violet-600 dark:text-violet-400 hover:underline rounded-xl border border-violet-200/60 dark:border-violet-800 px-3.5 py-2 hover:bg-violet-50 dark:hover:bg-violet-950/50 transition-colors">
                         <Play className="w-4 h-4" /> 🎮 开始联机游戏
                       </a>
                     )}
                     {result.content_url && (
-                      <a href={`${API}${result.content_url}`} target="_blank" rel="noreferrer"
+                      <a href={`${ASSETS_BASE}${result.content_url}`} target="_blank" rel="noreferrer"
                         className="inline-flex items-center gap-1.5 text-sm font-medium text-sky-600 dark:text-sky-400 hover:underline rounded-xl border border-sky-200/60 dark:border-sky-800 px-3.5 py-2 hover:bg-sky-50 dark:hover:bg-sky-950/50 transition-colors">
                         <Play className="w-4 h-4" /> 📄 打开生成的内容
                       </a>
