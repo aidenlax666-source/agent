@@ -303,68 +303,88 @@ def iterate(task_id: str, feedback: str, user_id: str = "") -> dict | None:
 
 
 async def _run_task(task_id: str, requirement: str, url: str | None, record: dict) -> None:
-    """后台执行一个任务（普通模式或报告模式），同步 SQLite。"""
+    """后台执行一个任务（联机游戏/报告/内容生成/代码任务，可组合多模式），同步 SQLite。"""
     from app.database import save_mini_task, update_mini_task
 
     record["status"] = "running"
     record["message"] = "正在执行..."
     image_paths = record.get("image_paths") or []
+
+    # ---- 多模式检测（需求可同时含多种意图，依次执行并合并产物） ----
+    modes: list[str] = []
+    r_low = requirement.lower()
+    if _is_game_request(requirement):
+        modes.append("game")
+    if _is_report_request(requirement):
+        modes.append("report")
+    if _is_content_request(requirement):
+        modes.append("content")
+    if not modes:
+        modes.append("code")
+    # 生成类与"明确要数据文件"意图并存时补代码任务（如"抓XX数据导出Excel，并做成XX网页"）
+    if "code" not in modes and any(k in r_low for k in ("导出excel", "导出csv", "导出xlsx", "下载数据", "输出文件")):
+        modes.append("code")
+
     try:
         await save_mini_task(record)
-        if _is_game_request(requirement):
-            record["message"] = "检测到联机游戏需求，正在生成游戏页面..."
-            await update_mini_task(task_id, status="running", message=record["message"])
-            from app.services.game_generator import generate_multiplayer_game
-            g = await generate_multiplayer_game(requirement)
-            if g.get("success"):
-                result = {
-                    "status": "ok", "rows": 0, "preview": [],
-                    "output_file": g.get("file_path"),
-                    "game_url": g.get("url"),
-                    "elapsed": 0, "script": "", "error": None,
-                }
-                record["message"] = f"游戏已生成：{g.get('url')}"
-            else:
-                result = {"status": "generate_failed", "rows": 0, "preview": [],
-                          "error": g.get("error", "联机游戏生成失败"), "elapsed": 0}
-        elif _is_report_request(requirement):
-            record["message"] = "检测到报告需求，正在生成可视化报告..."
-            await update_mini_task(task_id, status="running", message=record["message"])
-            result = await _run_report_task(task_id, requirement, url)
-        elif _is_content_request(requirement):
-            record["message"] = "检测到内容创作需求，正在生成..."
-            await update_mini_task(task_id, status="running", message=record["message"])
-            from app.services.content_generator import generate_content
-            g = await generate_content(requirement)
-            if g.get("success"):
-                result = {
-                    "status": "ok", "rows": 0, "preview": [],
-                    "output_file": g.get("file_path"),
-                    "content_url": g.get("url"),
-                    "elapsed": 0, "script": "", "error": None,
-                }
-                record["message"] = f"内容已生成：{g.get('url')}"
-            else:
-                result = {"status": "generate_failed", "rows": 0, "preview": [],
-                          "error": g.get("error", "内容生成失败"), "elapsed": 0}
+        record["message"] = f"检测到 {len(modes)} 个执行模式: {'+'.join(modes)}，开始执行..."
+        await update_mini_task(task_id, status="running", message=record["message"])
+
+        merged: dict = {"status": "ok", "rows": 0, "preview": [], "elapsed": 0, "error": None}
+        failed: list[str] = []
+        for mode in modes:
+            if mode == "game":
+                from app.services.game_generator import generate_multiplayer_game
+                g = await generate_multiplayer_game(requirement)
+                if g.get("success"):
+                    merged["game_url"] = g.get("url")
+                    merged["output_file"] = g.get("file_path")
+                    merged["message_game"] = f"联机游戏已生成：{g.get('url')}"
+                else:
+                    failed.append(f"联机游戏: {g.get('error', '失败')}")
+            elif mode == "report":
+                rp = await _run_report_task(task_id, requirement, url)
+                if rp.get("report_url"):
+                    merged["report_url"] = rp.get("report_url")
+                    merged["output_file"] = rp.get("output_file")
+                else:
+                    failed.append(f"报告: {rp.get('error', '失败')}")
+            elif mode == "content":
+                from app.services.content_generator import generate_content
+                g = await generate_content(requirement)
+                if g.get("success"):
+                    merged["content_url"] = g.get("url")
+                    merged["output_file"] = g.get("file_path")
+                else:
+                    failed.append(f"内容: {g.get('error', '失败')}")
+            else:  # code：数据/抓取任务
+                from app.services.mini_generator import generate_and_verify
+                result = await generate_and_verify(requirement, url or None, image_paths=image_paths or None)
+                keep = (
+                    "status", "rows", "preview", "error", "elapsed", "script",
+                    "expected_count", "expected_fields", "missing_fields",
+                    "coverage_missing", "value_issues", "count_heals", "field_heals",
+                    "coverage_heals", "value_heals", "output_file", "report_url",
+                    "image_context",
+                )
+                merged.update({k: result.get(k) for k in keep})
+                if result.get("status") != "ok":
+                    failed.append(f"数据处理: {result.get('error') or result.get('status')}")
+
+        if failed and not any(k in merged for k in ("game_url", "report_url", "content_url")):
+            merged["status"] = "failed"
+            merged["error"] = "；".join(failed)[:300]
         else:
-            record["message"] = "正在执行（生成→试跑→四重校验）..."
-            await update_mini_task(task_id, status="running", message=record["message"])
-            from app.services.mini_generator import generate_and_verify
-            result = await generate_and_verify(requirement, url or None, image_paths=image_paths or None)
-        keep = (
-            "status", "rows", "preview", "error", "elapsed", "script",
-            "expected_count", "expected_fields", "missing_fields",
-            "coverage_missing", "value_issues", "count_heals", "field_heals",
-            "coverage_heals", "value_heals", "output_file", "report_url",
-            "image_context", "game_url", "content_url",
-        )
-        record["result"] = {k: result.get(k) for k in keep}
+            merged["status"] = "ok"
+            if failed:
+                merged["partial_errors"] = failed
+
+        record["result"] = merged
         record["status"] = "done"
         record["message"] = "完成"
         record["progress"] = 100
         await update_mini_task(task_id, status="done", message="完成",
-                               result=json.dumps(record["result"], ensure_ascii=False), error=None)
+                               result=json.dumps(merged, ensure_ascii=False), error=None)
     except asyncio.CancelledError:
         record["status"] = "cancelled"
         record["message"] = "已取消"
