@@ -25,7 +25,7 @@
 | 文生视频 | `doubao-seedance-2-0-260128` | 提示词 → 5s 视频 |
 | 图生视频 | seedance（带参考图） | 图片 → 动态视频 |
 | 文生图 | `doubao-seedream-4-0-250828` | 提示词 → 插画图片 |
-| TTS 配音 | edge-tts（优先）/ Windows SAPI | 文本 → 语音（漫剧旁白等） |
+| TTS 配音 | 豆包语音（`seed-tts-2.0`） | 文本 → 语音 MP3（火山引擎语音控制台 key） |
 
 ### 数据处理（`/mini` 数据问答）
 - 上传 Excel/CSV → 自然语言提问（"哪个产品销量最高？"）→ AI 直接回答

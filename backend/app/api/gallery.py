@@ -68,7 +68,7 @@ def _classify(name: str) -> dict | None:
         return {"name": f"📄 {base}", "type": "html", "desc": "网页"}
     if lower.endswith(".mp4"):
         return {"name": "🎬 AI 视频", "type": "video", "desc": f"{name}（{_size_human(Path(WEB_DIR, name))}）"}
-    if lower.endswith(".wav"):
+    if lower.endswith((".wav", ".mp3")):
         return {"name": "🎵 AI 音乐", "type": "music", "desc": f"{name}（{_size_human(Path(WEB_DIR, name))}）"}
     if lower.endswith((".png", ".jpg", ".jpeg")):
         return {"name": "🖼️ AI 图片", "type": "image", "desc": f"{name}（{_size_human(Path(WEB_DIR, name))}）"}

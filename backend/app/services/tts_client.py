@@ -1,84 +1,139 @@
 from __future__ import annotations
-"""TTS 配音：文本 → 语音 WAV。
+"""豆包（火山引擎）TTS 语音合成：文本 → MP3。
 
-优先 edge-tts（微软神经语音，效果好）；不可用时回退 Windows SAPI（零安装，中文 Huihui）。
+使用豆包语音大模型 V3 HTTP SSE 单向流式接口（openspeech.bytedance.com）：
+- 鉴权：X-Api-Key（火山引擎语音控制台创建的 API Key，与方舟 ark- 不同）
+- 资源：seed-tts-2.0（默认，2.0 音色） / seed-tts-1.0（1.0 音色）
+- 输出：MP3（默认）/ PCM / OGG
 """
-import asyncio
+import base64
+import json
 import logging
 import os
-import subprocess
-import sys
+import uuid
+
+import httpx
+
+from app.config import get_settings
 
 logger = logging.getLogger("app.services.tts_client")
 
+_TTS_URL = "https://openspeech.bytedance.com/api/v3/tts/unidirectional/sse"
 
-def _edge_tts_available() -> bool:
-    try:
-        import importlib.util
-        return importlib.util.find_spec("edge_tts") is not None
-    except Exception:
-        return False
+# 常用中文音色（seed-tts-2.0）
+DEFAULT_VOICE = "zh_female_shuangkuaisisi_uranus_bigtts"  # 爽快思思 2.0
+VOICES = {
+    "cancan": "zh_female_cancan_uranus_bigtts",          # 知性灿灿 2.0
+    "xiaoyuan": "zh_female_tianmeixiaoyuan_uranus_bigtts",  # 甜美小源 2.0
+    "xiaohe": "zh_female_xiaohe_uranus_bigtts",          # 晓荷 2.0
+    "m191": "zh_male_m191_uranus_bigtts",                # 云舟 2.0（男）
+    "taocheng": "zh_male_taocheng_uranus_bigtts",        # 晓田 2.0（男）
+    "kefunv": "zh_female_kefunvsheng_uranus_bigtts",     # 暖阳女声 2.0（客服）
+    "dacey": "en_female_dacey_uranus_bigtts",            # Dacey（英文）
+}
 
 
-async def tts_speak(text: str, output_path: str, voice: str = "zh-CN-XiaoxiaoNeural") -> bool:
-    """文本转语音，保存为 WAV/MP3。
+async def tts_speak(
+    text: str,
+    output_path: str,
+    voice: str = DEFAULT_VOICE,
+    emotion: str | None = None,
+    speech_rate: int = 0,
+    resource_id: str = "seed-tts-2.0",
+) -> dict:
+    """文本 → 语音 MP3，保存到 output_path。
 
     Args:
-        text: 要朗读的文本
-        output_path: 输出文件路径（.wav 或 .mp3）
-        voice: edge-tts 声音（edge 可用时）
+        text: 要朗读的文本（<= 若干千字，按需截断）
+        output_path: 输出文件路径（.mp3）
+        voice: 音色（VOICES 里的别名或完整 voice_type）
+        emotion: 情绪（happy/sad/angry/narrator/storytelling 等，可选）
+        speech_rate: 语速 [-50, 100]，0 默认
+        resource_id: 模型资源（seed-tts-2.0 / seed-tts-1.0）
 
     Returns:
-        成功返回 True。
+        {"success": bool, "file_path": str|None, "error": str}
     """
+    settings = get_settings()
+    api_key = settings.doubao_tts_api_key
+    if not api_key:
+        return {
+            "success": False,
+            "file_path": None,
+            "error": "未配置 DOUBAO_TTS_API_KEY（火山引擎语音控制台 → 语音技术 → API Key 管理）",
+        }
+
+    # 音色别名 → 完整 voice_type
+    full_voice = VOICES.get(str(voice).lower(), voice)
+    if resource_id == "seed-tts-1.0" and not full_voice.startswith("BV"):
+        full_voice = "BV700_streaming"  # 1.0 默认音色
+
+    text = (text or "").strip()[:3000]  # 单次合成上限保护
+    if not text:
+        return {"success": False, "file_path": None, "error": "文本为空"}
+
+    body = {
+        "user": {"uid": "ai-auto-agent", "audiotoken": ""},
+        "request": {
+            "reqid": uuid.uuid4().hex,
+            "text": text,
+            "operation": "submit",
+            "resource_id": resource_id,
+            "model_name": resource_id,
+            "audio": {
+                "voice_type": full_voice,
+                "encoding": "mp3",
+                "speed_ratio": 1.0 + speech_rate / 100.0,
+            },
+        },
+    }
+    if emotion:
+        body["request"]["audio"]["emotion"] = emotion
+
+    headers = {
+        "X-Api-Key": api_key,
+        "Content-Type": "application/json",
+    }
+
     os.makedirs(os.path.dirname(os.path.abspath(output_path)) or ".", exist_ok=True)
-
-    # 优先 edge-tts（效果好）
-    if _edge_tts_available():
-        try:
-            import edge_tts
-            communicate = edge_tts.Communicate(text, voice)
-            await communicate.save(output_path)
-            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                return True
-        except Exception as e:
-            logger.warning("edge-tts 失败，回退 SAPI: %s", str(e)[:150])
-
-    # 回退 Windows SAPI（win32com）
-    if output_path.lower().endswith(".mp3"):
-        output_path = output_path.rsplit(".", 1)[0] + ".wav"
+    chunks: list[bytes] = []
     try:
-        # 线程内 COM 有兼容问题，直接同步调用（阻塞短暂，可接受）
-        return _sapi_speak(text, output_path)
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=30.0), trust_env=False) as client:
+            async with client.stream("POST", _TTS_URL, json=body, headers=headers) as resp:
+                if resp.status_code != 200:
+                    return {"success": False, "file_path": None,
+                            "error": f"豆包 TTS HTTP {resp.status_code}: {(await resp.aread()).decode('utf-8', 'replace')[:200]}"}
+                # SSE 流解析：audio_binary 事件的 data 是 {"data":"<base64>","content_type":"audio/mpeg",...}
+                async for line in resp.aiter_lines():
+                    if not line or line.startswith(":"):
+                        continue
+                    if line.startswith("data:"):
+                        payload = line[5:].strip()
+                        try:
+                            msg = json.loads(payload)
+                        except Exception:
+                            continue
+                        # 错误事件
+                        if msg.get("code") not in (None, 3000) or msg.get("error"):
+                            return {"success": False, "file_path": None,
+                                    "error": f"豆包 TTS 错误: {msg.get('message') or msg.get('error') or str(msg)[:200]}"}
+                        data = msg.get("data") or msg.get("audio") or msg.get("content") or ""
+                        if isinstance(data, str):
+                            try:
+                                chunks.append(base64.b64decode(data))
+                            except Exception:
+                                pass
+    except httpx.TimeoutException:
+        return {"success": False, "file_path": None, "error": "豆包 TTS 请求超时"}
     except Exception as e:
-        logger.warning("SAPI TTS 失败: %s", str(e)[:150])
-        return False
+        logger.warning("豆包 TTS 异常: %s", repr(e)[:200])
+        return {"success": False, "file_path": None, "error": f"豆包 TTS 失败: {str(e)[:150]}"}
 
+    if not chunks:
+        return {"success": False, "file_path": None, "error": "豆包 TTS 未返回音频数据"}
 
-def _sapi_speak(text: str, output_wav: str) -> bool:
-    import win32com.client
-    try:
-        import pythoncom
-        pythoncom.CoInitialize()
-    except Exception:
-        pass
-    try:
-        sapi = win32com.client.Dispatch("SAPI.SpVoice")
-        stream = win32com.client.Dispatch("SAPI.SpFileStream")
-        # 显式指定 16kHz 16bit 单声道格式，避免默认格式不受支持
-        try:
-            stream.Format.Type = 10  # SPSF_16kHz16BitMono
-        except Exception:
-            pass
-        stream.Open(output_wav, 3)  # SSFMCreateForWrite
-        sapi.AudioOutputStream = stream
-        sapi.Rate = 0
-        sapi.Volume = 100
-        sapi.Speak(text)
-        stream.Close()
-    finally:
-        try:
-            pythoncom.CoUninitialize()
-        except Exception:
-            pass
-    return os.path.exists(output_wav) and os.path.getsize(output_wav) > 0
+    with open(output_path, "wb") as f:
+        f.write(b"".join(chunks))
+    if os.path.getsize(output_path) == 0:
+        return {"success": False, "file_path": None, "error": "豆包 TTS 输出为空文件"}
+    return {"success": True, "file_path": output_path, "error": None}

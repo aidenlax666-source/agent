@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     doubao_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     doubao_vision_model: str = "doubao-seed-1-6-vision-250815"  # 视觉模型名或接入点 ep-xxx
 
+    # 豆包 TTS（火山引擎语音控制台，X-Api-Key 鉴权，与方舟 ark- key 不同）
+    doubao_tts_api_key: str = ""
+    doubao_tts_voice: str = "zh_female_shuangkuaisisi_uranus_bigtts"  # 默认音色（爽快思思 2.0）
+
     # 反爬适配域名（逗号分隔）：这些站点的抓取任务走"有头+人速+验证码等待"模式
     anti_bot_domains: str = "xiaohongshu.com,zhihu.com,weibo.com,douban.com,taobao.com,jd.com"
 
