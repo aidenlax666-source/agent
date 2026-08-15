@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ExternalLink, QrCode, RefreshCw, Link2 } from "lucide-react";
 import Link from "next/link";
 import AppNav from "@/components/AppNav";
+import { getAuthToken, getAnonymousId } from "@/lib/api";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -39,7 +40,10 @@ export default function GalleryPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await fetch(`${API_BASE}/api/gallery`);
+      const headers: Record<string, string> = { "X-Anonymous-Id": getAnonymousId() };
+      const token = getAuthToken();
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+      const r = await fetch(`${API_BASE}/api/gallery`, { headers });
       const data = await r.json();
       setItems(data.items || []);
       setOrigin(typeof window !== "undefined" ? window.location.origin : "");
