@@ -586,67 +586,56 @@ async def _run_report_task(task_id: str, requirement: str, url: str | None) -> d
     if not code:
         return {"status": "generate_failed", "error": "报告脚本生成失败", "elapsed": round(time.time() - started, 1)}
 
-    # 2. 写脚本到临时文件，在 web 目录运行（产出 report.html）
-    import tempfile
-    fd, script_path = tempfile.mkstemp(suffix=".py", prefix=f"report_{task_id}_", dir=os.path.dirname(out_dir))
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(code)
+    # 2. 沙箱执行（隔离环境 + 静态扫描 + 超时/资源限制），产物从沙箱工作区复制到 web/
+    from app.sandbox.docker_executor import execute_in_sandbox
+    result = await execute_in_sandbox(code, timeout=180, preview_mode=False)
+    stdout = result.stdout or ""
+    stderr = result.stderr or ""
 
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            sys.executable, script_path,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            cwd=out_dir,
-        )
-        try:
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=180)
-        except asyncio.TimeoutError:
-            proc.kill()
-            return {"status": "failed", "error": "报告生成超时（180s）", "elapsed": round(time.time() - started, 1)}
-        stdout = stdout_b.decode("utf-8", errors="replace")
-        stderr = stderr_b.decode("utf-8", errors="replace")
-
-        report_path = os.path.join(out_dir, report_name)
-        # 脚本产出 report.html → 改名为唯一名
-        generated = os.path.join(out_dir, "report.html")
-        if os.path.exists(generated):
-            os.replace(generated, report_path)
-        elif not os.path.exists(report_path):
-            return {
-                "status": "failed",
-                "error": f"未生成 report.html: {(stderr or stdout)[-300:]}",
-                "elapsed": round(time.time() - started, 1),
-                "script": code,
-            }
-
-        rows = 0
-        m = re.search(r"DATA_ROWS:(\d+)", stdout)
-        if m:
-            rows = int(m.group(1))
-        preview = []
-        m = re.search(r"PREVIEW_DATA:(\[.*\]|\{.*\})", stdout)
-        if m:
-            try:
-                import json as _json
-                preview = _json.loads(m.group(1))
-            except Exception:
-                preview = []
-
+    if not result.success:
         return {
-            "status": "ok" if rows >= 0 else "ok",
-            "rows": rows,
-            "preview": preview,
-            "output_file": report_path,
-            "report_url": f"/{report_name}",
+            "status": "failed",
+            "error": f"脚本执行失败: {(stderr or stdout)[-300:]}",
             "elapsed": round(time.time() - started, 1),
             "script": code,
-            "error": None,
         }
-    finally:
+
+    report_path = os.path.join(out_dir, report_name)
+    if result.output_file_path and os.path.exists(result.output_file_path):
+        os.makedirs(out_dir, exist_ok=True)
+        import shutil as _shutil
+        _shutil.copyfile(result.output_file_path, report_path)
+    elif not os.path.exists(report_path):
+        return {
+            "status": "failed",
+            "error": f"未生成 report.html: {(stderr or stdout)[-300:]}",
+            "elapsed": round(time.time() - started, 1),
+            "script": code,
+        }
+
+    rows = 0
+    m = re.search(r"DATA_ROWS:(\d+)", stdout)
+    if m:
+        rows = int(m.group(1))
+    preview = []
+    m = re.search(r"PREVIEW_DATA:(\[.*\]|\{.*\})", stdout)
+    if m:
         try:
-            os.unlink(script_path)
-        except OSError:
-            pass
+            import json as _json
+            preview = _json.loads(m.group(1))
+        except Exception:
+            preview = []
+
+    return {
+        "status": "ok" if rows >= 0 else "ok",
+        "rows": rows,
+        "preview": preview,
+        "output_file": report_path,
+        "report_url": f"/{report_name}",
+        "elapsed": round(time.time() - started, 1),
+        "script": code,
+        "error": None,
+    }
 
 
 QA_SYSTEM_PROMPT = """你是一位数据分析师。根据用户上传的数据文件的摘要信息，回答用户的自然语言问题。
@@ -763,52 +752,42 @@ async def _run_music_task(task_id: str, requirement: str) -> dict:
     if not code:
         return {"status": "generate_failed", "error": "音乐合成脚本生成失败", "elapsed": round(time.time() - started, 1)}
 
-    # 2. 写脚本到临时文件，在 web 目录运行（产出 melody.wav → 改名唯一名）
-    import tempfile
-    fd, script_path = tempfile.mkstemp(suffix=".py", prefix=f"music_{task_id}_", dir=os.path.dirname(out_dir))
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(code)
+    # 2. 沙箱执行（隔离环境 + 静态扫描 + 超时/资源限制），产物从沙箱工作区复制到 web/
+    from app.sandbox.docker_executor import execute_in_sandbox
+    result = await execute_in_sandbox(code, timeout=180, preview_mode=False)
+    stdout = result.stdout or ""
+    stderr = result.stderr or ""
 
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            sys.executable, script_path,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            cwd=out_dir,
-        )
-        try:
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=180)
-        except asyncio.TimeoutError:
-            proc.kill()
-            return {"status": "failed", "error": "音乐生成超时（180s）", "elapsed": round(time.time() - started, 1)}
-        stdout = stdout_b.decode("utf-8", errors="replace")
-        stderr = stderr_b.decode("utf-8", errors="replace")
-
-        music_name = f"music_{task_id}.wav"
-        music_path = os.path.join(out_dir, music_name)
-        generated = os.path.join(out_dir, "melody.wav")
-        if os.path.exists(generated):
-            os.replace(generated, music_path)
-        elif not os.path.exists(music_path):
-            return {
-                "status": "failed",
-                "error": f"未生成 WAV: {(stderr or stdout)[-300:]}",
-                "elapsed": round(time.time() - started, 1),
-                "script": code,
-            }
-
+    if not result.success:
         return {
-            "status": "ok",
-            "output_file": music_path,
-            "music_url": f"/{music_name}",
+            "status": "failed",
+            "error": f"脚本执行失败: {(stderr or stdout)[-300:]}",
             "elapsed": round(time.time() - started, 1),
             "script": code,
-            "error": None,
         }
-    finally:
-        try:
-            os.unlink(script_path)
-        except OSError:
-            pass
+
+    music_name = f"music_{task_id}.wav"
+    music_path = os.path.join(out_dir, music_name)
+    if result.output_file_path and os.path.exists(result.output_file_path):
+        os.makedirs(out_dir, exist_ok=True)
+        import shutil as _shutil
+        _shutil.copyfile(result.output_file_path, music_path)
+    elif not os.path.exists(music_path):
+        return {
+            "status": "failed",
+            "error": f"未生成 WAV: {(stderr or stdout)[-300:]}",
+            "elapsed": round(time.time() - started, 1),
+            "script": code,
+        }
+
+    return {
+        "status": "ok",
+        "output_file": music_path,
+        "music_url": f"/{music_name}",
+        "elapsed": round(time.time() - started, 1),
+        "script": code,
+        "error": None,
+    }
 
 
 def get_status(task_id: str, user_id: str = "") -> dict | None:

@@ -26,7 +26,7 @@ _SANDBOX_TMP = os.path.join(os.path.dirname(__file__), "..", "..", "tmp")
 os.makedirs(_SANDBOX_TMP, exist_ok=True)
 
 # Output extensions we care about when locating the script's result file.
-_OUTPUT_EXTS = (".xlsx", ".xls", ".docx", ".pptx", ".csv", ".txt", ".json", ".html", ".png", ".pdf")
+_OUTPUT_EXTS = (".xlsx", ".xls", ".docx", ".pptx", ".csv", ".txt", ".json", ".html", ".png", ".pdf", ".wav", ".mp3", ".mp4")
 _OUTPUT_NAMES = ("output.xlsx", "output.xls", "output.docx", "output.pptx", "output.csv")
 
 # Environment variables that must never be passed to an untrusted subprocess.

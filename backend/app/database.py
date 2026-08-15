@@ -224,7 +224,13 @@ def _save_mini_task(record: dict) -> None:
         )
 
 
+# mini_tasks 允许动态更新的列白名单（防 SQL 注入：字段名只能来自白名单）
+_ALLOWED_MINI_UPDATE_FIELDS = {"status", "message", "result", "error", "progress", "url", "requirement", "updated_at"}
+
+
 def _update_mini_task(task_id: str, **fields) -> None:
+    # 只保留白名单内的列，键名不可由外部输入控制
+    fields = {k: v for k, v in fields.items() if k in _ALLOWED_MINI_UPDATE_FIELDS}
     if not fields:
         return
     import time as _t

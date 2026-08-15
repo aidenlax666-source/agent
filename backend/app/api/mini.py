@@ -1,6 +1,7 @@
 from __future__ import annotations
 """mini_generator 后台任务 API：提交自然语言任务 → 后台执行 → 查询状态/结果。"""
 import os
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -9,6 +10,27 @@ from app.api.dependencies import get_current_user
 from app.services import mini_tasks
 
 router = APIRouter()
+
+# 上传文件根目录：只允许引用此目录内的文件（防任意文件读取）
+UPLOAD_DIR = Path(__file__).parent.parent.parent / "uploads"
+
+
+def _ensure_upload_path(path: str) -> str:
+    """校验路径位于 uploads 目录内，防止读取服务器任意文件。"""
+    if not path:
+        return path
+    try:
+        resolved = Path(path).resolve()
+        root = UPLOAD_DIR.resolve()
+        if not (str(resolved).startswith(str(root) + os.sep) or resolved == root):
+            raise HTTPException(status_code=400, detail="文件路径必须在上传目录内")
+        if not resolved.is_file():
+            raise HTTPException(status_code=404, detail=f"文件不存在: {path}")
+        return str(resolved)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=400, detail="文件路径不合法")
 
 
 @router.post("/mini/tasks")
@@ -32,6 +54,8 @@ async def create_task(data: dict, user=Depends(get_current_user)):
     data_paths = data.get("data_paths") or []
     if not isinstance(data_paths, list):
         data_paths = []
+    # 数据文件必须是上传目录内的文件（防任意文件读取）
+    data_paths = [_ensure_upload_path(p) for p in data_paths]
     record = mini_tasks.submit(requirement, url, user["id"], image_paths=image_paths, data_paths=data_paths)
     return {
         "task_id": record["id"],
@@ -122,8 +146,8 @@ async def data_qa(data: dict, user=Depends(get_current_user)):
     question = (data.get("question") or "").strip()
     if not file_path or not question:
         raise HTTPException(status_code=400, detail="file_path 和 question 不能为空")
-    if not _os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail=f"文件不存在: {file_path}")
+    # 只能分析上传目录内的文件（防任意文件读取）
+    file_path = _ensure_upload_path(file_path)
 
     # 1. 读取数据摘要（线程池避免阻塞）
     import asyncio as _a
