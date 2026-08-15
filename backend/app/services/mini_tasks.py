@@ -99,6 +99,9 @@ def _is_tts_request(requirement: str) -> bool:
     # 排除"看朗读视频"等非合成意图
     if any(k in r for k in ("看朗读", "朗读视频")):
         return False
+    # "朗读网页/朗读练习/朗读器" 等是内容制作（HTML），不是配音
+    if "朗读" in r and any(k in r for k in ("网页", "页面", "网站", "练习", "工具", "应用", "程序")):
+        return False
     return any(k in r for k in _TTS_HINTS)
 
 
