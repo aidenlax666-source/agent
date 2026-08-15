@@ -156,6 +156,7 @@ export interface MiniTaskResult {
   video_url?: string;
   image_url?: string;
   image_urls?: string[];
+  music_url?: string;
 }
 
 export interface MiniTaskStatus {

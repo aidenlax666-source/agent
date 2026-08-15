@@ -81,9 +81,19 @@ def _is_image_request(requirement: str) -> bool:
     return any(k in r for k in _IMAGE_HINTS)
 
 
+# 音乐生成意图：LLM 作曲 + 标准库合成 WAV（不含裸"音乐"，避免误伤音乐播放页等 HTML 内容）
+_MUSIC_HINTS = ["生成音乐", "作曲", "做一首歌", "生成一首歌", "写一首歌", "背景音乐", "配乐", "编曲", "合成音乐"]
+
+
+def _is_music_request(requirement: str) -> bool:
+    r = requirement.lower()
+    return any(k in r for k in _MUSIC_HINTS)
+
+
 def _is_content_request(requirement: str) -> bool:
     r = requirement.lower()
-    if _is_game_request(r) or _is_report_request(r) or _is_video_request(r) or _is_image_request(r):
+    if (_is_game_request(r) or _is_report_request(r) or _is_video_request(r)
+            or _is_image_request(r) or _is_music_request(r)):
         return False
     if any(k in r for k in ("导出excel", "导出csv", "抓取", "爬取", "统计", "汇总", "数据", "接口")):
         return False
@@ -104,6 +114,28 @@ REPORT_SYSTEM_PROMPT = """你是一位 Python 脚本专家 + 数据可视化设�
 【输出】
 - 报告保存为 report.html 到当前目录
 - 打印 SUCCESS:DATA_ROWS:N（N=统计行数）和 PREVIEW_DATA:JSON（前5行）
+
+只输出完整 Python 代码，不要解释。"""
+
+
+MUSIC_SYSTEM_PROMPT = """你是一位作曲家 + Python 音频合成专家。用 Python **标准库**（wave / math / struct，禁止 numpy/pygame/mido/任何第三方库）编写一个脚本，合成一首契合主题的音乐并保存为 WAV。
+
+【作曲要求（按给定主题创作）】
+1. 主题情绪要贴合（如"星空"→空灵慢速、"夏日海边"→轻快明亮、"森林"→悠扬自然）
+2. 用 C 大调/A 小调等音阶设计旋律：主旋律 + 低音和声（可叠加两个音轨让声音更饱满）
+3. 节奏：主旋律音符序列（音符名+八度+时值+休止），速度/时值体现情绪
+4. 时长 30-60 秒
+
+【合成技术（必须）】
+1. 采样率 44100，16-bit 单声道（或双声道）
+2. 正弦波合成，音符频率用公式 f = 440 * 2^((midi-69)/12)
+3. 每个音符加**衰减包络**（attack/decay），音符间无爆音
+4. 整体淡入淡出（开头 0.5s 渐入、结尾渐出）
+5. 音量适中（峰值 ~0.5 避免削波）
+
+【输出】
+- 保存 melody.wav 到当前目录
+- 打印 DURATION:秒数、NOTES:音符数
 
 只输出完整 Python 代码，不要解释。"""
 
@@ -354,6 +386,8 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
         modes.append("video")
     if _is_image_request(requirement):
         modes.append("image")
+    if _is_music_request(requirement):
+        modes.append("music")
     if not modes:
         modes.append("code")
     # 生成类与"明确要数据文件"意图并存时补代码任务（如"抓XX数据导出Excel，并做成XX网页"）
@@ -393,9 +427,11 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
                 else:
                     failed.append(f"内容: {g.get('error', '失败')}")
             elif mode == "video":
-                # 豆包 Seedance 文生视频：提交异步任务 → 轮询 → 下载到 web/ 目录（公网可访问）
+                # 豆包 Seedance 文生视频/图生视频：提交异步任务 → 轮询 → 下载到 web/ 目录
                 from app.services.video_client import generate_video, download_video
-                v = await generate_video(requirement, max_wait=600)
+                # 用户上传了参考图 → 图生视频（第一张作为首帧/参考）
+                ref_img = image_paths[0] if image_paths else None
+                v = await generate_video(requirement, max_wait=600, image_path=ref_img)
                 if v.get("success") and v.get("video_url"):
                     merged["message_video"] = "视频已生成，正在下载..."
                     fname = f"video_{task_id}.mp4"
@@ -430,6 +466,15 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
                         failed.append("图片已生成但下载失败")
                 else:
                     failed.append(f"图片: {img.get('detail', '失败')}")
+            elif mode == "music":
+                # LLM 作曲 + 标准库合成 WAV → web/ 目录（公网可访问）
+                ms = await _run_music_task(task_id, requirement)
+                if ms.get("music_url"):
+                    merged["music_url"] = ms.get("music_url")
+                    merged["output_file"] = ms.get("output_file")
+                    merged["message_music"] = f"音乐已生成：{ms.get('music_url')}"
+                else:
+                    failed.append(f"音乐: {ms.get('error', '失败')}")
             else:  # code：数据/抓取任务
                 from app.services.mini_generator import generate_and_verify
                 result = await generate_and_verify(requirement, url or None, image_paths=image_paths or None)
@@ -444,7 +489,7 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
                 if result.get("status") != "ok":
                     failed.append(f"数据处理: {result.get('error') or result.get('status')}")
 
-        if failed and not any(k in merged for k in ("game_url", "report_url", "content_url", "video_url", "image_url", "image_urls")):
+        if failed and not any(k in merged for k in ("game_url", "report_url", "content_url", "video_url", "image_url", "image_urls", "music_url")):
             merged["status"] = "failed"
             merged["error"] = "；".join(failed)[:300]
         else:
@@ -559,6 +604,89 @@ async def _run_report_task(task_id: str, requirement: str, url: str | None) -> d
             "preview": preview,
             "output_file": report_path,
             "report_url": f"/{report_name}",
+            "elapsed": round(time.time() - started, 1),
+            "script": code,
+            "error": None,
+        }
+    finally:
+        try:
+            os.unlink(script_path)
+        except OSError:
+            pass
+
+
+async def _run_music_task(task_id: str, requirement: str) -> dict:
+    """音乐模式：LLM 作曲脚本 → 本地运行 → WAV 落 web 目录（公网可访问）。"""
+    from app.services.llm_client import chat_completion
+
+    started = time.time()
+    out_dir = _WEB_DIR
+    os.makedirs(out_dir, exist_ok=True)
+
+    # 1. 生成合成脚本（带需求主题）
+    code = ""
+    for attempt in range(3):
+        try:
+            code = await chat_completion(
+                MUSIC_SYSTEM_PROMPT,
+                f"【音乐主题】{requirement}\n请生成合成脚本，保存为 melody.wav",
+                temperature=0.4, max_tokens=8000,
+            )
+            code = code.strip()
+            if code.startswith("```python"):
+                code = code[9:]
+            elif code.startswith("```"):
+                code = code[3:]
+            if code.endswith("```"):
+                code = code[:-3]
+            code = code.strip()
+            compile(code, "<script>", "exec")
+            if "wav" in code:
+                break
+        except Exception as e:
+            logger.warning("音乐脚本生成第 %d 次失败: %s", attempt + 1, str(e)[:120])
+            code = ""
+
+    if not code:
+        return {"status": "generate_failed", "error": "音乐合成脚本生成失败", "elapsed": round(time.time() - started, 1)}
+
+    # 2. 写脚本到临时文件，在 web 目录运行（产出 melody.wav → 改名唯一名）
+    import tempfile
+    fd, script_path = tempfile.mkstemp(suffix=".py", prefix=f"music_{task_id}_", dir=os.path.dirname(out_dir))
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(code)
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, script_path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            cwd=out_dir,
+        )
+        try:
+            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=180)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return {"status": "failed", "error": "音乐生成超时（180s）", "elapsed": round(time.time() - started, 1)}
+        stdout = stdout_b.decode("utf-8", errors="replace")
+        stderr = stderr_b.decode("utf-8", errors="replace")
+
+        music_name = f"music_{task_id}.wav"
+        music_path = os.path.join(out_dir, music_name)
+        generated = os.path.join(out_dir, "melody.wav")
+        if os.path.exists(generated):
+            os.replace(generated, music_path)
+        elif not os.path.exists(music_path):
+            return {
+                "status": "failed",
+                "error": f"未生成 WAV: {(stderr or stdout)[-300:]}",
+                "elapsed": round(time.time() - started, 1),
+                "script": code,
+            }
+
+        return {
+            "status": "ok",
+            "output_file": music_path,
+            "music_url": f"/{music_name}",
             "elapsed": round(time.time() - started, 1),
             "script": code,
             "error": None,
