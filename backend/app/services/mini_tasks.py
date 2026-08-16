@@ -633,18 +633,10 @@ async def _run_monitor_check(monitor: dict) -> None:
         except Exception as e:
             logger.warning("[监控] %s 通知失败: %s", mid[:8], str(e)[:120])
         logger.info("[监控] %s 触发: %s", user_id[:8], what)
-        # "提醒/通知我xxx"语义 = 仅通知；其余才作为动作任务执行（扣 1 积分防无限免费跑）
+        # "提醒/通知我xxx"语义 = 仅通知；其余作为动作任务执行（本地使用不扣积分）
         notify_only = (not action_req or action_req in ("仅提醒", "提醒", "通知")
                        or action_req.startswith(("提醒", "通知")))
         if action_req and not notify_only:
-            try:
-                from app.database import try_decrement_credits
-                if not await try_decrement_credits(user_id, 1):
-                    await _add_note(user_id, "额度不足",
-                                    f"监控触发的动作任务因余额不足未执行：{what}")
-                    continue
-            except Exception:
-                pass
             submit(action_req, None, user_id)
 
 
@@ -672,18 +664,8 @@ def _next_mini_run(task: dict, now_ts: float) -> float | None:
 
 
 async def _run_scheduled(mtask: dict) -> None:
-    """执行一次定时重跑：扣 1 积分（余额不足跳过+通知），再提交任务。
-
-    注册在稳定 key mini_sched:{tid} 下，运行期间调度器跳过该任务（防重叠并发）。
-    """
-    from app.database import add_notification as _add_note, try_decrement_credits
+    """执行一次定时重跑（注册在稳定 key mini_sched:{tid} 下，运行期间调度器跳过，防重叠并发）。"""
     user_id = mtask.get("user_id") or ""
-    try:
-        if user_id and not await try_decrement_credits(user_id, 1):
-            await _add_note(user_id, "额度不足", "定时任务因余额不足未执行，请充值后重试")
-            return
-    except Exception as e:
-        logger.warning("[调度器] %s 扣积分失败: %s", user_id[:8], str(e)[:100])
     submit(mtask.get("requirement") or "", mtask.get("url") or None, user_id,
            image_paths=_json_list(mtask.get("image_paths")),
            data_paths=_json_list(mtask.get("data_paths")))
@@ -1358,7 +1340,12 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
             files_map = info.get("files") or {}
             summary = str(info.get("summary") or "")
             if not files_map:
-                return {"status": "failed", "error": "模型未返回任何文件改动", "elapsed": round(time.time() - started, 1)}
+                # 模型返回空 files：带纠正提示重试（可能是"无需改动"误判或格式偏差），最后才失败
+                if attempt < 2:
+                    await asyncio.sleep(2)
+                    continue
+                return {"status": "failed", "error": "模型未返回任何文件改动（已重试 3 次，请尝试更明确的需求）",
+                        "elapsed": round(time.time() - started, 1)}
             errors = _dev_validate(files_map, workspace)
             if not errors:
                 break

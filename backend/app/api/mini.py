@@ -111,12 +111,10 @@ async def _dev_zip_from_form(file: UploadFile) -> bytes:
 
 
 async def _charge_dev_credit(user: dict, request: Request) -> int:
-    """dev/qa 接口：匿名用户按 IP 限速 + 原子扣 1 积分（防无限刷 LLM 成本）。"""
+    """dev/iterate 接口：匿名用户按 IP 限速（防刷）。本地使用不扣积分，避免额度卡住日常改码。"""
     if (user.get("email") or "").startswith("anon_"):
         _check_anon_rate(_client_ip(request))
-    from app.database import get_credits, try_decrement_credits
-    if not await try_decrement_credits(user["id"], 1):
-        raise HTTPException(status_code=402, detail="额度不足，无法执行该操作")
+    from app.database import get_credits
     return await get_credits(user["id"])
 
 

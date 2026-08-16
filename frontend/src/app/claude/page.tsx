@@ -277,51 +277,54 @@ export default function ClaudePage() {
         diff: data.dev_diff || "",
         zipB64: data.dev_modified_zip || "",
       });
-    } catch (e) {
-      push({ role: "ai", kind: "error", text: e instanceof Error ? e.message : String(e) });
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, zipBlob, feedback, postDev, push]);
-
-  const applyToFolder = useCallback(async (bubble: Bubble) => {
-    if (!bubble.zipB64) return;
-    setBusy(true);
-    setError(null);
-    try {
-      if (!dir) throw new Error("兼容模式下不能写回文件夹，请用「下载修改后 zip」");
-      const zip = await JSZip.loadAsync(base64ToUint8(bubble.zipB64));
-      let count = 0;
-      for (const rel of Object.keys(zip.files)) {
-        const entry = zip.files[rel];
-        if (entry.dir) continue;
-        if (rel.split("/").includes("..") || /^[A-Za-z]:/.test(rel)) continue; // 防穿越
-        const parts = rel.split("/").filter(Boolean);
-        if (parts.length === 0) continue;
-        let cur = dir;
-        for (let i = 0; i < parts.length - 1; i++) {
-          cur = await cur.getDirectoryHandle(parts[i], { create: true });
+      // 改码成功后直接应用回本地文件夹（无需再次确认）；兼容模式提示下载
+      if (data.dev_modified_zip) {
+        if (dir) {
+          const applied = await writeZipToFolderRef.current(data.dev_modified_zip);
+          // 重新打包（下一轮包含本次改动）
+          const { blob, count: c2 } = await buildZipRef.current(dir, null);
+          setZipBlob(blob);
+          setFileCount(c2);
+          push({ role: "ai", kind: "apply", text: `✅ 已自动应用 ${applied} 个文件到本地文件夹（${dirName}）`, applied });
+        } else {
+          push({ role: "ai", kind: "apply", text: "改码完成（兼容模式不能写回文件夹，可用下方「下载修改后 zip」应用）" });
         }
-        const fh = await cur.getFileHandle(parts[parts.length - 1], { create: true });
-        const w = await fh.createWritable();
-        try {
-          await w.write(await entry.async("arraybuffer"));
-        } finally {
-          try { await w.close(); } catch { /* 关闭失败不阻塞 */ }
-        }
-        count++;
       }
-      // 重新打包（下一轮包含本次改动）
-      const { blob, count: c2 } = await buildZipRef.current(dir, null);
-      setZipBlob(blob);
-      setFileCount(c2);
-      push({ role: "ai", kind: "apply", text: `已应用 ${count} 个文件到本地文件夹（${dirName}）`, applied: count });
     } catch (e) {
       push({ role: "ai", kind: "error", text: e instanceof Error ? e.message : String(e) });
     } finally {
       setBusy(false);
     }
-  }, [dir, dirName, push]);
+  }, [busy, zipBlob, feedback, postDev, push, dir, dirName]);
+
+  // 把修改后 zip 写回本地文件夹，返回写入文件数
+  const writeZipToFolder = useCallback(async (zipB64: string): Promise<number> => {
+    if (!dir) throw new Error("兼容模式下不能写回文件夹，请用「下载修改后 zip」");
+    const zip = await JSZip.loadAsync(base64ToUint8(zipB64));
+    let count = 0;
+    for (const rel of Object.keys(zip.files)) {
+      const entry = zip.files[rel];
+      if (entry.dir) continue;
+      if (rel.split("/").includes("..") || /^[A-Za-z]:/.test(rel)) continue; // 防穿越
+      const parts = rel.split("/").filter(Boolean);
+      if (parts.length === 0) continue;
+      let cur = dir;
+      for (let i = 0; i < parts.length - 1; i++) {
+        cur = await cur.getDirectoryHandle(parts[i], { create: true });
+      }
+      const fh = await cur.getFileHandle(parts[parts.length - 1], { create: true });
+      const w = await fh.createWritable();
+      try {
+        await w.write(await entry.async("arraybuffer"));
+      } finally {
+        try { await w.close(); } catch { /* 关闭失败不阻塞 */ }
+      }
+      count++;
+    }
+    return count;
+  }, [dir]);
+  const writeZipToFolderRef = useRef(writeZipToFolder);
+  writeZipToFolderRef.current = writeZipToFolder;
 
   const downloadZip = useCallback((bubble: Bubble) => {
     if (!bubble.zipB64) return;
@@ -480,12 +483,8 @@ export default function ClaudePage() {
                           <pre className="mt-2 max-h-72 overflow-auto rounded-xl bg-slate-950 text-slate-100 p-4 text-[11px] leading-relaxed whitespace-pre-wrap">{b.diff}</pre>
                         </details>
                       )}
-                      {b.applied === undefined && b.zipB64 && (
+                      {b.zipB64 && (
                         <div className="flex flex-wrap gap-2">
-                          <Button size="sm" onClick={() => applyToFolder(b)} disabled={busy} className="gap-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:opacity-90 text-white">
-                            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <FolderGit2 className="w-4 h-4" />}
-                            {busy ? "正在写入…" : "应用到本地文件夹"}
-                          </Button>
                           <Button size="sm" variant="outline" onClick={() => downloadZip(b)} className="gap-1.5 rounded-xl text-emerald-600 dark:text-emerald-400">
                             <Download className="w-4 h-4" /> 下载修改后 zip
                           </Button>
