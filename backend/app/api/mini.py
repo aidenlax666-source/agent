@@ -297,18 +297,113 @@ async def create_task(data: dict, request: Request, user=Depends(get_current_use
     data_paths = [_ensure_upload_path(p) for p in data_paths]
 
     # 额度校验：原子扣减（防并发竞态），余额不足返回 402
-    from app.database import get_credits, try_decrement_credits
+    from app.database import (get_credits, try_decrement_credits, add_reminder as _db_add_reminder,
+                              add_monitor as _db_add_monitor, update_mini_task as _db_update_task)
     if not await try_decrement_credits(user["id"], 1):
         raise HTTPException(status_code=402, detail="额度不足，无法提交任务")
     credits = await get_credits(user["id"])
 
+    # 自动化意图解析（提醒 / 监控 / 循环执行，纯正则零成本）
+    auto = mini_tasks.parse_automation(requirement)
+
+    # ---- 定时提醒：创建提醒项 + 落一条"设置型"历史记录（不跑任务引擎）----
+    if auto.get("kind") == "reminder" and auto.get("reminders"):
+        record = mini_tasks.submit(requirement, url, user["id"], image_paths=image_paths,
+                                   data_paths=data_paths, skip_run=True)
+        for it in auto["reminders"]:
+            await _db_add_reminder(user["id"], it["time"], it["text"], source_task=record["id"])
+        import json as _json
+        await _db_update_task(record["id"], status="done", message="已设置定时提醒",
+                              result=_json.dumps({"status": "ok", "kind": "reminder",
+                                                  "reminders": auto["reminders"]}, ensure_ascii=False))
+        return {
+            "task_id": record["id"], "status": "done", "message": f"已设置 {len(auto['reminders'])} 条定时提醒",
+            "credits_left": credits, "automation": "reminder", "reminders": auto["reminders"],
+        }
+
+    # ---- 监控任务：创建监控项 + 落"设置型"历史记录 ----
+    if auto.get("kind") == "monitor" and auto.get("monitor"):
+        record = mini_tasks.submit(requirement, url, user["id"], image_paths=image_paths,
+                                   data_paths=data_paths, skip_run=True)
+        m = auto["monitor"]
+        mid = await _db_add_monitor(user["id"], m["type"], m["keywords"], m["condition"],
+                                    m["action_requirement"], m["check_interval"], source_task=record["id"])
+        import json as _json
+        await _db_update_task(record["id"], status="done", message="已设置监控任务",
+                              result=_json.dumps({"status": "ok", "kind": "monitor",
+                                                  "monitor_id": mid, "monitor": m}, ensure_ascii=False))
+        return {
+            "task_id": record["id"], "status": "done", "message": "已设置监控任务",
+            "credits_left": credits, "automation": "monitor", "monitor": {**m, "id": mid},
+        }
+
+    # ---- 普通任务（可带显式 schedule 或自然语言解析出的循环执行）----
     record = mini_tasks.submit(requirement, url, user["id"], image_paths=image_paths, data_paths=data_paths)
+    schedule = auto.get("schedule") or data.get("schedule")
+    automation_note = ""
+    if isinstance(schedule, dict) and schedule.get("type") in ("interval", "daily"):
+        sval = str(schedule.get("value") or "")
+        sres = mini_tasks.schedule_task(record["id"], schedule["type"], sval, True, user["id"])
+        if sres and not sres.get("error"):
+            automation_note = f"{schedule['type']}:{sval}"
     return {
         "task_id": record["id"],
         "status": record["status"],
         "message": record["message"],
         "credits_left": credits,
+        "automation": "schedule" if automation_note else "task",
+        "schedule": automation_note or None,
     }
+
+
+# ============================================================
+# 站内通知（定时提醒 / 监控触发）
+# ============================================================
+
+@router.get("/notifications")
+async def get_notifications(limit: int = 20, user=Depends(get_current_user)):
+    from app.database import list_notifications, unread_notification_count
+    items = await list_notifications(user["id"], min(max(limit, 1), 50))
+    unread = await unread_notification_count(user["id"])
+    return {"items": items, "unread": unread}
+
+
+@router.post("/notifications/read")
+async def mark_notifications_read(data: dict, user=Depends(get_current_user)):
+    from app.database import mark_notifications_read as _db_mark
+    ids = data.get("ids")
+    await _db_mark(user["id"], ids if isinstance(ids, list) else None)
+    return {"ok": True}
+
+
+# ============================================================
+# 定时提醒 / 监控任务管理
+# ============================================================
+
+@router.get("/automations")
+async def list_automations(user=Depends(get_current_user)):
+    from app.database import list_reminders, list_monitors
+    reminders = await list_reminders(user["id"])
+    monitors = await list_monitors(user["id"])
+    return {"reminders": reminders, "monitors": monitors}
+
+
+@router.delete("/reminders/{rid}")
+async def delete_reminder(rid: str, user=Depends(get_current_user)):
+    from app.database import delete_reminder as _db_del_rem
+    ok = await _db_del_rem(user["id"], rid)
+    if not ok:
+        raise HTTPException(status_code=404, detail="提醒不存在")
+    return {"ok": True}
+
+
+@router.delete("/monitors/{mid}")
+async def delete_monitor(mid: str, user=Depends(get_current_user)):
+    from app.database import delete_monitor as _db_del_mon
+    ok = await _db_del_mon(user["id"], mid)
+    if not ok:
+        raise HTTPException(status_code=404, detail="监控不存在")
+    return {"ok": True}
 
 
 @router.get("/mini/tasks")

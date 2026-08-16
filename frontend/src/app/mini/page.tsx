@@ -64,6 +64,7 @@ export default function MiniPage() {
   const [submitting, setSubmitting] = useState(false);
   const [task, setTask] = useState<MiniTaskStatus | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitNote, setSubmitNote] = useState<string | null>(null);
   const [feedback, setFeedback] = useState("");
   const [acting, setActing] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -134,10 +135,27 @@ export default function MiniPage() {
     if (!requirement.trim() || submitting) return;
     setSubmitting(true);
     setSubmitError(null);
+    setSubmitNote(null);
     setTask(null);
     stopPolling();
     try {
       const res = await miniApi.submit(requirement.trim(), undefined, imagePaths, dataPaths);
+      // 自动化任务（提醒/监控/循环执行）直接展示说明，不轮询执行状态
+      if (res.automation === "reminder" && res.reminders?.length) {
+        setSubmitNote(`⏰ 已设置 ${res.reminders.length} 条定时提醒：${res.reminders.map((r) => `每天 ${r.time} ${r.text}`).join("；")}`);
+        setTask({ ...(await miniApi.get(res.task_id)) });
+        return;
+      }
+      if (res.automation === "monitor" && res.monitor) {
+        const m = res.monitor;
+        const action = m.action_requirement && !/^(提醒|通知)/.test(m.action_requirement) ? m.action_requirement : "仅提醒";
+        setSubmitNote(`👁️ 已设置监控任务：${m.type === "window" ? `检测到窗口「${m.keywords}」` : "屏幕画面变化"}时 → ${action}`);
+        setTask({ ...(await miniApi.get(res.task_id)) });
+        return;
+      }
+      if (res.automation === "schedule" && res.schedule) {
+        setSubmitNote(`🔄 已设置循环执行：${res.schedule}，到点自动重跑`);
+      }
       const initial = await miniApi.get(res.task_id);
       setTask(initial);
       pollTask(res.task_id);
@@ -390,6 +408,9 @@ export default function MiniPage() {
 
             {submitError && (
               <p className="text-sm text-red-500 bg-red-50 dark:bg-red-950 rounded-xl px-4 py-2.5">{submitError}</p>
+            )}
+            {submitNote && (
+              <p className="text-sm text-emerald-600 bg-emerald-50 dark:bg-emerald-950/50 rounded-xl px-4 py-2.5">{submitNote}</p>
             )}
           </CardContent>
         </Card>

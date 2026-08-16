@@ -275,10 +275,11 @@ def _json_list(v) -> list:
 
 
 def submit(requirement: str, url: str | None = None, user_id: str = "", image_paths: list[str] | None = None,
-           data_paths: list[str] | None = None) -> dict:
+           data_paths: list[str] | None = None, skip_run: bool = False) -> dict:
     """提交一个后台任务，立即返回任务信息（持久化到 SQLite，重启不丢）。
 
     统一入口：LLM 自动判断"数据问答"还是"任务执行"，无需用户选择。
+    skip_run=True：只落库不执行（用于提醒/监控等"设置型"任务，由调度器驱动）。
     """
     task_id = uuid.uuid4().hex[:12]
     record = {
@@ -303,6 +304,11 @@ def submit(requirement: str, url: str | None = None, user_id: str = "", image_pa
             if not is_running(tid):
                 _TASKS.pop(tid, None)
 
+    if skip_run:
+        record["status"] = "done"
+        record["message"] = "已设置"
+        record["progress"] = 100
+        return record
     started = start_background(task_id, _run_task(task_id, requirement, url, record))
     if not started:
         record["status"] = "error"
@@ -380,8 +386,207 @@ def schedule_task(task_id: str, schedule_type: str, schedule_value: str, enabled
 
 
 # ============================================================
-# mini 定时调度循环（原 scheduler.py 的 mini 部分迁移至此）
+# 自动化意图解析（定时提醒 / 循环执行 / 监控触发）——纯正则，零 LLM 成本
 # ============================================================
+
+def parse_automation(requirement: str) -> dict:
+    """从自然语言需求解析自动化意图，返回:
+    {"kind": "task"|"reminder"|"monitor",
+     "reminders": [{"time": "HH:MM", "text": "..."}],
+     "monitor": {"type": "window"|"screen", "keywords": "...", "condition": "...",
+                 "action_requirement": "...", "check_interval": int},
+     "schedule": {"type": "interval"|"daily", "value": ...} | None}
+    """
+    req = (requirement or "").strip()
+    out: dict = {"kind": "task", "reminders": [], "monitor": None, "schedule": None}
+    if not req:
+        return out
+
+    # ---- 1) 定时提醒：每天X点(分)提醒我Y ----
+    reminders = []
+    pat = re.compile(r"(?:每天|每日|天天)?\s*(\d{1,2})\s*[点时:：]\s*(?:(\d{1,2})\s*分?)?\s*提醒(?:我)?\s*([^，,。；;]+)")
+    for m in pat.finditer(req):
+        hh = int(m.group(1))
+        mm = int(m.group(2) or 0)
+        if 0 <= hh <= 23 and 0 <= mm <= 59:
+            text = (m.group(3) or "").strip()
+            if text and "每隔" not in text[:6]:
+                reminders.append({"time": f"{hh:02d}:{mm:02d}", "text": text})
+    if reminders and "提醒" in req:
+        out["kind"] = "reminder"
+        out["reminders"] = reminders
+
+    # ---- 2) 监控任务：监控屏幕 / 当打开XX时 ----
+    monitor = None
+    # 2a) 屏幕监控：监控屏幕[，]当[画面/出现]X时Y
+    m_screen = re.search(r"监控(?:屏幕|电脑屏幕|显示器)[，,]?(?:当|如果)?(?:画面|屏幕|出现)?(.{0,30}?)(?:时|就)(?:[，,]?)(.+)", req)
+    if m_screen:
+        monitor = {
+            "type": "screen",
+            "keywords": "",
+            "condition": (m_screen.group(1) or "").strip()[:60],
+            "action_requirement": (m_screen.group(2) or "").strip(),
+            "check_interval": 30,
+        }
+    # 2b) 软件/窗口监控：当打开/启动XX时Y
+    m_win = re.search(r"(?:当|如果|一旦)?(?:我)?(?:打开|开启|启动|运行|切到)([^，,。；;]{1,30}?)(?:时|后)(?:[，,]?)(.+)", req)
+    if not monitor and m_win:
+        monitor = {
+            "type": "window",
+            "keywords": (m_win.group(1) or "").strip(),
+            "condition": "",
+            "action_requirement": (m_win.group(2) or "").strip(),
+            "check_interval": 20,
+        }
+    if monitor and ("监控" in req or "时" in req or "打开" in req or "启动" in req):
+        out["kind"] = "monitor"
+        out["monitor"] = monitor
+
+    # ---- 3) 循环执行：每隔N分钟 / 每天X点执行 ----
+    schedule = None
+    m_int = re.search(r"每隔\s*(\d+)\s*分钟", req)
+    if m_int:
+        val = int(m_int.group(1))
+        if val > 0:
+            schedule = {"type": "interval", "value": min(val, 24 * 60)}
+    else:
+        m_daily = re.search(r"每天\s*(\d{1,2})\s*[点时:：]\s*(?:(\d{1,2})\s*分?)?\s*(?:执行|跑|运行|查看|更新)", req)
+        if m_daily:
+            hh, mm = int(m_daily.group(1)), int(m_daily.group(2) or 0)
+            if 0 <= hh <= 23 and 0 <= mm <= 59:
+                schedule = {"type": "daily", "value": f"{hh:02d}:{mm:02d}"}
+    if schedule and out["kind"] == "task":
+        out["kind"] = "task"  # 普通任务 + 定时重跑
+        out["schedule"] = schedule
+    return out
+
+
+# 提醒/监控触发去重（进程内：同一提醒项同一分钟只发一次；同一监控关键词 5 分钟冷却）
+_fire_memory: dict[str, float] = {}
+
+
+def _fire_reminder(reminder: dict, user_id: str) -> None:
+    """定时提醒到点 → 写站内通知（去重：同 id 同分钟只发一次）。"""
+    from app.database import add_notification
+    key = f"rem:{reminder['id']}:{time.strftime('%Y%m%d%H%M')}"
+    if key in _fire_memory:
+        return
+    _fire_memory[key] = time.time()
+    if len(_fire_memory) > 2000:
+        for k in list(_fire_memory)[:1000]:
+            _fire_memory.pop(k, None)
+    asyncio.create_task(add_notification(
+        user_id, "⏰ 定时提醒",
+        f"{reminder.get('time', '')} - {reminder.get('text', '')}"))
+    logger.info("[提醒] %s 触发: %s", user_id[:8], reminder.get("text", ""))
+
+
+def _window_titles() -> list[str]:
+    """枚举当前可见窗口标题（Windows，零依赖 ctypes）。"""
+    import ctypes
+    titles: list[str] = []
+    try:
+        user32 = ctypes.windll.user32
+        enum_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+        def _cb(hwnd, _lp):
+            if user32.IsWindowVisible(hwnd):
+                length = user32.GetWindowTextLengthW(hwnd)
+                if length > 0:
+                    buf = ctypes.create_unicode_buffer(length + 1)
+                    user32.GetWindowTextW(hwnd, buf, length + 1)
+                    t = (buf.value or "").strip()
+                    if t:
+                        titles.append(t)
+            return True
+
+        user32.EnumWindows(enum_proc(_cb), 0)
+    except Exception:
+        pass
+    return titles
+
+
+def _screen_hash() -> str:
+    """截屏并计算感知哈希（16x16 灰度 → md5），用于画面变化检测。"""
+    from PIL import ImageGrab
+    img = ImageGrab.grab()
+    small = img.convert("L").resize((16, 16))
+    import hashlib
+    return hashlib.md5(small.tobytes()).hexdigest()
+
+
+async def _run_monitor_check(monitor: dict) -> None:
+    """执行一次监控检查：条件满足 → 通知 +（可选）执行动作任务。"""
+    from app.database import add_notification as _add_note, update_monitor_state
+    mid = monitor["id"]
+    user_id = monitor["user_id"]
+    mtype = monitor.get("monitor_type", "window")
+    keywords = (monitor.get("keywords") or "").strip()
+    condition = (monitor.get("condition") or "").strip()
+    action_req = (monitor.get("action_requirement") or "").strip()
+
+    try:
+        fired: list[str] = []
+        if mtype == "window":
+            titles = _window_titles()
+            joined = " ".join(titles).lower()
+            for kw in [k for k in keywords.replace("，", ",").split(",") if k.strip()]:
+                kw = kw.strip().lower()
+                if kw and kw in joined:
+                    key = f"mon:{mid}:{kw}"
+                    now = time.time()
+                    if _fire_memory.get(key, 0) > now - 300:  # 5 分钟冷却
+                        continue
+                    _fire_memory[key] = now
+                    fired.append(kw)
+        else:  # screen
+            cur = _screen_hash()
+            prev = monitor.get("last_state") or ""
+            changed = bool(prev) and cur != prev
+            # 条件：默认"画面发生变化"；"静止X分钟"由调度器传 condition 数字
+            if "静止" in condition or "没变化" in condition or "不动" in condition:
+                m_min = re.search(r"(\d+)\s*分钟", condition)
+                mins = int(m_min.group(1)) if m_min else 5
+                # 由 last_state 记录"变化时刻"：简单实现为连续 2 次不变才触发
+                key = f"screen:{mid}"
+                if changed:
+                    _fire_memory.pop(key, None)  # 画面动了，重置
+                else:
+                    prev_t = _fire_memory.get(key, 0)
+                    if prev_t and now - prev_t >= mins * 60:
+                        _fire_memory.pop(key, None)
+                        fired.append(f"屏幕静止超过 {mins} 分钟")
+                    elif not prev_t:
+                        _fire_memory[key] = time.time()  # 开始计时
+            else:  # 默认：画面变化触发（冷却 60s）
+                if changed:
+                    key = f"mon:{mid}:change"
+                    now = time.time()
+                    if _fire_memory.get(key, 0) > now - 60:
+                        pass
+                    else:
+                        _fire_memory[key] = now
+                        fired.append("屏幕画面发生变化")
+            # 更新状态哈希（无论触发与否）
+            await update_monitor_state(mid, time.time(), cur)
+            return  # screen 分支已更新状态
+
+        # window 分支更新状态
+        await update_monitor_state(mid, time.time(), monitor.get("last_state") or "")
+
+        for what in fired:
+            await _add_note(user_id, "👁️ 监控触发",
+                            f"{what} → {action_req or '（仅提醒）'}")
+            logger.info("[监控] %s 触发: %s", user_id[:8], what)
+            # "提醒/通知我xxx"语义 = 仅通知；其余才作为动作任务执行
+            notify_only = (not action_req or action_req in ("仅提醒", "提醒", "通知")
+                           or action_req.startswith(("提醒", "通知")))
+            if action_req and not notify_only:
+                submit(action_req, None, user_id)
+    except Exception as e:
+        logger.warning("[监控] %s 检查异常: %s", mid[:8], str(e)[:150])
+
+
 
 def _next_mini_run(task: dict, now_ts: float) -> float | None:
     """计算 mini 定时任务的下次执行时间（epoch 秒）。"""
@@ -406,13 +611,15 @@ def _next_mini_run(task: dict, now_ts: float) -> float | None:
 
 
 async def mini_scheduler_loop() -> None:
-    """调度循环：每分钟检查一次到期的 mini 定时任务，到点重新提交；每天清理超期产物。"""
+    """调度循环：每分钟检查一次到期的 mini 定时任务、定时提醒、监控任务；每天清理超期产物。"""
     logger.info("[mini调度器] 启动，每 60 秒检查一次")
     _last_cleanup_day = -1
     while True:
         try:
             import time as _t
-            from app.database import claim_mini_run, get_due_mini_tasks
+            from app.database import (claim_mini_run, get_due_mini_tasks, list_reminders,
+                                      list_monitors, get_mini_task)
+            # 1) 定时任务重跑
             due = await get_due_mini_tasks(_t.time())
             for mtask in due:
                 tid = mtask["id"]
@@ -429,6 +636,32 @@ async def mini_scheduler_loop() -> None:
                        image_paths=_json_list(mtask.get("image_paths")),
                        data_paths=_json_list(mtask.get("data_paths")))
                 logger.info(f"[mini调度器] 定时触发: {tid[:8]} - {(mtask.get('requirement') or '')[:40]}")
+
+            # 2) 定时提醒：当前 HH:MM 匹配 → 发通知（去重，同一分钟只发一次）
+            now_local = time.localtime()
+            cur_hhmm = f"{now_local.tm_hour:02d}:{now_local.tm_min:02d}"
+            try:
+                rems = await list_reminders("*", enabled_only=True)
+                for r in rems:
+                    if str(r.get("time", "")).strip() == cur_hhmm:
+                        _fire_reminder(r, r.get("user_id", ""))
+            except Exception as e:
+                logger.warning("[调度器] 提醒检查异常: %s", str(e)[:120])
+
+            # 3) 监控任务：到期检查（截屏/窗口），检查逻辑放后台协程避免阻塞
+            try:
+                mons = await list_monitors("*", enabled_only=True)
+                for m in mons:
+                    interval = max(5, int(m.get("check_interval") or 60))
+                    last = float(m.get("last_checked_at") or 0)
+                    if _t.time() - last >= interval:
+                        key = f"monitor:{m['id']}"
+                        if is_running(key):
+                            continue
+                        start_background(key, _run_monitor_check(m))
+            except Exception as e:
+                logger.warning("[调度器] 监控检查调度异常: %s", str(e)[:120])
+
             # 每天清理一次超期产物（配置 asset_cleanup_days>0 时启用）
             day = int(_t.time() // 86400)
             if day != _last_cleanup_day:

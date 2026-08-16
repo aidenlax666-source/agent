@@ -75,6 +75,43 @@ def _init_db():
                 data_paths TEXT DEFAULT ''          -- JSON 数组（上传数据文件路径）
             );
 
+            -- 站内通知（定时提醒 / 监控触发 / 任务完成提醒）
+            CREATE TABLE IF NOT EXISTS notifications (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT DEFAULT '',
+                created_at REAL NOT NULL,
+                read INTEGER DEFAULT 0
+            );
+
+            -- 定时提醒项（"每天8点提醒我打卡" → time='08:00', text='打卡'）
+            CREATE TABLE IF NOT EXISTS reminders (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                time TEXT NOT NULL,                 -- HH:MM
+                text TEXT NOT NULL,
+                enabled INTEGER DEFAULT 1,
+                source_task TEXT DEFAULT '',        -- 来源任务 id（可空）
+                created_at REAL NOT NULL
+            );
+
+            -- 监控任务（软件/窗口/屏幕变化，条件满足触发）
+            CREATE TABLE IF NOT EXISTS monitors (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                monitor_type TEXT NOT NULL,         -- window | screen
+                keywords TEXT DEFAULT '',           -- 窗口标题关键词（逗号分隔）
+                condition TEXT DEFAULT '',          -- 画面变化条件（screen）
+                action_requirement TEXT DEFAULT '', -- 触发后要执行的任务需求（可空=仅提醒）
+                enabled INTEGER DEFAULT 1,
+                check_interval INTEGER DEFAULT 60,  -- 检查间隔（秒）
+                last_checked_at REAL,
+                last_state TEXT DEFAULT '',         -- 屏幕哈希等状态
+                source_task TEXT DEFAULT '',
+                created_at REAL NOT NULL
+            );
+
             -- Guest user created by API on first request if needed
         """)
     # 老库迁移：补 image_paths/data_paths 列（不存在才加）
@@ -374,6 +411,167 @@ def _log_audit(user_id: str, action: str, detail: str = "", project_id: str | No
 
 async def log_audit(user_id: str, action: str, detail: str = "", project_id: str | None = None) -> None:
     return await _run_async(_log_audit, user_id, action, detail, project_id)
+
+
+# ============================================================
+# Notifications（站内消息：定时提醒/监控触发/任务完成）
+# ============================================================
+
+def _add_notification(user_id: str, title: str, content: str = "") -> None:
+    with _get_conn() as conn:
+        conn.execute(
+            "INSERT INTO notifications (id, user_id, title, content, created_at) VALUES (?,?,?,?,?)",
+            (_uid(), user_id, title, content, time.time()),
+        )
+
+
+def _list_notifications(user_id: str, limit: int = 20) -> list[dict]:
+    with _get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
+            (user_id, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _unread_notification_count(user_id: str) -> int:
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM notifications WHERE user_id=? AND read=0", (user_id,)
+        ).fetchone()
+    return int(row["c"]) if row else 0
+
+
+def _mark_notifications_read(user_id: str, ids: list[str] | None = None) -> None:
+    with _get_conn() as conn:
+        if ids:
+            conn.executemany(
+                "UPDATE notifications SET read=1 WHERE id=? AND user_id=?", [(i, user_id) for i in ids]
+            )
+        else:
+            conn.execute("UPDATE notifications SET read=1 WHERE user_id=?", (user_id,))
+
+
+async def add_notification(user_id: str, title: str, content: str = "") -> None:
+    return await _run_async(_add_notification, user_id, title, content)
+
+
+async def list_notifications(user_id: str, limit: int = 20) -> list[dict]:
+    return await _run_async(_list_notifications, user_id, limit)
+
+
+async def unread_notification_count(user_id: str) -> int:
+    return await _run_async(_unread_notification_count, user_id)
+
+
+async def mark_notifications_read(user_id: str, ids: list[str] | None = None) -> None:
+    return await _run_async(_mark_notifications_read, user_id, ids)
+
+
+# ============================================================
+# Reminders（定时提醒项）
+# ============================================================
+
+def _add_reminder(user_id: str, time_str: str, text: str, source_task: str = "") -> None:
+    with _get_conn() as conn:
+        conn.execute(
+            "INSERT INTO reminders (id, user_id, time, text, enabled, source_task, created_at) VALUES (?,?,?,?,1,?,?)",
+            (_uid(), user_id, time_str, text, source_task, time.time()),
+        )
+
+
+def _list_reminders(user_id: str, enabled_only: bool = False) -> list[dict]:
+    with _get_conn() as conn:
+        if enabled_only:
+            rows = conn.execute(
+                "SELECT * FROM reminders WHERE user_id=? AND enabled=1 ORDER BY time", (user_id,)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM reminders WHERE user_id=? ORDER BY created_at DESC", (user_id,)
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _delete_reminder(user_id: str, reminder_id: str) -> bool:
+    with _get_conn() as conn:
+        cur = conn.execute("DELETE FROM reminders WHERE id=? AND user_id=?", (reminder_id, user_id))
+        return cur.rowcount > 0
+
+
+async def add_reminder(user_id: str, time_str: str, text: str, source_task: str = "") -> None:
+    return await _run_async(_add_reminder, user_id, time_str, text, source_task)
+
+
+async def list_reminders(user_id: str, enabled_only: bool = False) -> list[dict]:
+    return await _run_async(_list_reminders, user_id, enabled_only)
+
+
+async def delete_reminder(user_id: str, reminder_id: str) -> bool:
+    return await _run_async(_delete_reminder, user_id, reminder_id)
+
+
+# ============================================================
+# Monitors（监控任务：软件/窗口/屏幕变化）
+# ============================================================
+
+def _add_monitor(user_id: str, monitor_type: str, keywords: str = "", condition: str = "",
+                 action_requirement: str = "", check_interval: int = 60, source_task: str = "") -> str:
+    mid = _uid()
+    with _get_conn() as conn:
+        conn.execute(
+            """INSERT INTO monitors (id, user_id, monitor_type, keywords, condition, action_requirement,
+                                     enabled, check_interval, source_task, created_at)
+               VALUES (?,?,?,?,?,?,1,?,?,?)""",
+            (mid, user_id, monitor_type, keywords, condition, action_requirement,
+             max(5, int(check_interval)), source_task, time.time()),
+        )
+    return mid
+
+
+def _list_monitors(user_id: str, enabled_only: bool = False) -> list[dict]:
+    with _get_conn() as conn:
+        if enabled_only:
+            rows = conn.execute(
+                "SELECT * FROM monitors WHERE user_id=? AND enabled=1 ORDER BY created_at DESC", (user_id,)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM monitors WHERE user_id=? ORDER BY created_at DESC", (user_id,)
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _update_monitor_state(monitor_id: str, last_checked_at: float, last_state: str) -> None:
+    with _get_conn() as conn:
+        conn.execute(
+            "UPDATE monitors SET last_checked_at=?, last_state=? WHERE id=?",
+            (last_checked_at, last_state, monitor_id),
+        )
+
+
+def _delete_monitor(user_id: str, monitor_id: str) -> bool:
+    with _get_conn() as conn:
+        cur = conn.execute("DELETE FROM monitors WHERE id=? AND user_id=?", (monitor_id, user_id))
+        return cur.rowcount > 0
+
+
+async def add_monitor(user_id: str, monitor_type: str, keywords: str = "", condition: str = "",
+                      action_requirement: str = "", check_interval: int = 60, source_task: str = "") -> str:
+    return await _run_async(_add_monitor, user_id, monitor_type, keywords, condition,
+                            action_requirement, check_interval, source_task)
+
+
+async def list_monitors(user_id: str, enabled_only: bool = False) -> list[dict]:
+    return await _run_async(_list_monitors, user_id, enabled_only)
+
+
+async def update_monitor_state(monitor_id: str, last_checked_at: float, last_state: str) -> None:
+    return await _run_async(_update_monitor_state, monitor_id, last_checked_at, last_state)
+
+
+async def delete_monitor(user_id: str, monitor_id: str) -> bool:
+    return await _run_async(_delete_monitor, user_id, monitor_id)
 
 
 # ============================================================

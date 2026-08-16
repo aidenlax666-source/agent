@@ -184,7 +184,13 @@ export interface MiniTaskStatus {
 
 export const miniApi = {
   submit: (requirement: string, url?: string, image_paths?: string[], data_paths?: string[]) =>
-    request<{ task_id: string; status: string; message: string }>("/api/mini/tasks", {
+    request<{
+      task_id: string; status: string; message: string; credits_left?: number;
+      automation?: "task" | "reminder" | "monitor" | "schedule";
+      reminders?: { time: string; text: string }[];
+      monitor?: { id?: string; type?: string; keywords?: string; condition?: string; action_requirement?: string };
+      schedule?: string | null;
+    }>("/api/mini/tasks", {
       method: "POST",
       body: JSON.stringify({
         requirement,
@@ -242,4 +248,32 @@ export const miniApi = {
     }
     return res.blob();
   },
+};
+
+// ---- 站内通知（定时提醒 / 监控触发）----
+export interface NotificationItem { id: string; title: string; content: string; created_at: number; read: number }
+export interface ReminderItem { id: string; time: string; text: string; enabled: number; created_at: number }
+export interface MonitorItem {
+  id: string; monitor_type: string; keywords: string; condition: string;
+  action_requirement: string; enabled: number; check_interval: number; created_at: number;
+}
+
+export const notificationsApi = {
+  list: (limit = 30) =>
+    request<{ items: NotificationItem[]; unread: number }>(`/api/notifications?limit=${limit}`),
+
+  markRead: (ids?: string[]) =>
+    request<{ ok: boolean }>("/api/notifications/read", {
+      method: "POST",
+      body: JSON.stringify({ ids }),
+    }),
+
+  automations: () =>
+    request<{ reminders: ReminderItem[]; monitors: MonitorItem[] }>("/api/automations"),
+
+  deleteReminder: (id: string) =>
+    request<{ ok: boolean }>(`/api/reminders/${id}`, { method: "DELETE" }),
+
+  deleteMonitor: (id: string) =>
+    request<{ ok: boolean }>(`/api/monitors/${id}`, { method: "DELETE" }),
 };
