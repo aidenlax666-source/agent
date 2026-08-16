@@ -739,11 +739,11 @@ DEV_EXCLUDE_DIRS = {"node_modules", ".next", "__pycache__", ".git", "web", "data
 
 DEV_MODIFY_PROMPT = """你是一位资深软件工程师。用户需求：{requirement}
 
-项目源码已经复制到你的工作区，以下是目录结构：
-{tree}
+以下是项目源码（文件路径 + 内容）：
+{context}
 {plan_part}
 
-请完成需求：读取相关文件、理解现有代码逻辑，然后**修改/新增文件**实现该需求。
+请基于上述真实源码完成需求：理解现有代码逻辑，然后**修改/新增文件**实现该需求。
 
 只输出一个 JSON（不要输出其他内容）：
 {{"files": {{"相对路径": "该文件的完整新内容"}}, "summary": "一句话说明你改了什么"}}
@@ -759,10 +759,10 @@ DEV_MODIFY_PROMPT = """你是一位资深软件工程师。用户需求：{requi
 # 第一步：只读代码、出修改方案（不写文件）——让用户确认后再动手
 DEV_PLAN_PROMPT = """你是一位资深软件工程师。用户需求：{requirement}
 
-项目源码已经复制到你的工作区，以下是目录结构：
-{tree}
+以下是项目源码（文件路径 + 内容）：
+{context}
 
-请阅读相关代码，制定**修改方案**（只分析和规划，不要动手改代码），输出 JSON：
+请基于上述真实源码制定**修改方案**（只分析和规划，不要动手改代码），输出 JSON：
 {{"plan": "详细方案：要改哪些文件、每个文件怎么改、实现思路、涉及的风险或影响",
   "files": ["将要修改/新增的文件相对路径", ...],
   "questions": ["需要用户确认或决定的事项（有则列出，没有则空数组）"]}}
@@ -781,8 +781,32 @@ DEV_VALIDATE_PROMPT = """你是软件工程师。下面是上一个 AI 按需求
 只列出需要修改的文件（其他文件不用重复输出）。直接输出修复后的完整代码。"""
 
 
-def _dev_tree(files: list[str], max_items: int = 80) -> str:
-    return "\n".join(sorted(files)[:max_items])
+def _dev_context(workspace: str, files: list[str], max_items: int = 80,
+                 per_file: int = 4000, total_cap: int = 40000) -> str:
+    """文件树 + 每个文件的内容（Claude Code 风格：让模型看到真实代码而非只看到文件名）。
+
+    每个文件内容截断到 per_file 字符；总上下文上限 total_cap 字符（控成本）。
+    读取失败（二进制/编码问题）的文件跳过。
+    """
+    parts: list[str] = []
+    total = 0
+    for rel in sorted(files)[:max_items]:
+        try:
+            with open(os.path.join(workspace, rel), encoding="utf-8") as f:
+                content = f.read(per_file + 1)
+        except Exception:
+            continue
+        if len(content) > per_file:
+            content = content[:per_file] + "\n...(内容过长已截断)"
+        block = f"=== {rel} ===\n{content}"
+        if total + len(block) > total_cap:
+            parts.append("...(上下文已达上限，其余文件省略)")
+            break
+        parts.append(block)
+        total += len(block)
+    if not parts:
+        return "(无可用源码内容)"
+    return "\n\n".join(parts)
 
 
 def _dev_validate(files_map: dict, workspace: str) -> list[str]:
@@ -852,7 +876,7 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
             except Exception:
                 pass
 
-        tree = _dev_tree(files)
+        tree = _dev_context(workspace, files)
         plan_part = ""
         if plan:
             plan_part = (
@@ -866,11 +890,14 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
         for attempt in range(3):
             try:
                 info = await chat_completion_json(
-                    DEV_MODIFY_PROMPT.format(requirement=requirement[:8000], tree=tree, plan_part=plan_part),
+                    DEV_MODIFY_PROMPT.format(requirement=requirement[:8000], context=tree, plan_part=plan_part),
                     requirement, temperature=0.2, max_tokens=8000,
                     model=get_settings().ai_model_reasoning,
                 )
             except Exception as e:
+                if attempt < 2:
+                    await asyncio.sleep(2)  # 偶发网络/JSON 错误 → 重试
+                    continue
                 return {"status": "failed", "error": f"开发模型调用失败: {str(e)[:120]}", "elapsed": round(time.time() - started, 1)}
             files_map = info.get("files") or {}
             summary = str(info.get("summary") or "")
@@ -942,16 +969,22 @@ async def _plan_dev_task(requirement: str, code_dir: str, feedback: str | None =
     files = _walk_files(workspace)
     if not files:
         return {"status": "failed", "error": "未找到项目源码目录"}
-    tree = _dev_tree(files)
+    tree = _dev_context(workspace, files)
     fb_part = f"\n【用户对上一版方案的意见】\n{feedback}\n请根据意见重新调整方案。" if feedback else ""
-    try:
-        info = await chat_completion_json(
-            DEV_PLAN_PROMPT.format(requirement=requirement[:8000], tree=tree) + fb_part,
-            requirement, temperature=0.2, max_tokens=3000,
-            model=get_settings().ai_model_reasoning,
-        )
-    except Exception as e:
-        return {"status": "failed", "error": f"方案生成失败: {str(e)[:120]}"}
+    info = None
+    for attempt in range(3):
+        try:
+            info = await chat_completion_json(
+                DEV_PLAN_PROMPT.format(requirement=requirement[:8000], context=tree) + fb_part,
+                requirement, temperature=0.2, max_tokens=3000,
+                model=get_settings().ai_model_reasoning,
+            )
+            break
+        except Exception as e:
+            if attempt < 2:
+                await asyncio.sleep(2)  # 偶发网络/JSON 错误 → 重试
+                continue
+            return {"status": "failed", "error": f"方案生成失败: {str(e)[:120]}"}
     return {
         "status": "ok",
         "plan": str(info.get("plan") or ""),

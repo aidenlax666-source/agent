@@ -1,15 +1,17 @@
 #!/usr/bin/env python
-"""AI 自动化 Agent 本地 CLI —— 像 Claude Code 一样改你的项目（交互式：先方案，后落地）。
+"""AI 自动化 Agent 本地 CLI —— 像 Claude Code 一样持续对话改你的项目。
 
 用法：
-    python agent-cli.py "给项目加一个导出PDF的功能"          # 在当前目录的项目上改
-    python agent-cli.py "加个XX接口" C:\path\to\project      # 指定项目目录
-    python agent-cli.py --api http://localhost:8000 "需求"    # 指定后端地址
+    python agent-cli.py                        # 在当前目录进入交互会话
+    python agent-cli.py C:\path\to\project     # 在指定项目进入交互会话
+    python agent-cli.py --api http://localhost:8000   # 指定后端地址
+    python agent-cli.py --yes                  # 自动确认模式（每轮直接改码并应用）
 
-流程：打包项目(排除 node_modules/.git 等) → 调 /api/dev/plan 生成修改方案
-      → 展示方案，Enter 确认 / 输入意见重新规划 / q 退出
-      → 确认后调 /api/dev/apply 落地改动 → 展示 diff
-      → 输入 y 应用到本地（+git commit 可选）/ n 放弃
+进入会话后持续交互（每轮循环，可连续提多个需求）：
+    你> 输入需求
+    AI 出修改方案（不改代码）→ Enter 确认 / 输入意见重新规划 / q 放弃本轮
+    AI 按方案改码 → 展示 diff → y 应用 / n 跳过
+    改完后回到 你> 继续下一个需求；输入 exit 或 q 退出会话
 """
 from __future__ import annotations
 
@@ -113,127 +115,167 @@ def apply_changes(root: str, modified_zip_b64: str) -> list[str]:
     return applied
 
 
+HELP_TEXT = """支持指令:
+  exit / quit / q   退出会话
+  help / h          显示本帮助
+其余输入都会被当作改码需求提交给 AI（先出方案，确认后改码）。
+"""
+
+
 def main() -> None:
-    ap = argparse.ArgumentParser(description="AI 自动化 Agent 本地 CLI：像 Claude Code 一样改你的项目")
-    ap.add_argument("requirement", help='需求，如"给项目加一个导出PDF的功能"')
+    ap = argparse.ArgumentParser(description="AI 自动化 Agent 本地 CLI：像 Claude Code 一样持续对话改你的项目")
     ap.add_argument("project", nargs="?", default=".", help="项目目录（默认当前目录）")
     ap.add_argument("--api", default="http://localhost:8000", help="后端地址")
-    ap.add_argument("--commit", action="store_true", help="应用改动后自动 git commit")
+    ap.add_argument("--commit", action="store_true", help="每轮应用改动后自动 git commit")
     ap.add_argument("--yes", "-y", action="store_true", help="自动确认方案并应用改动（跳过交互）")
     args = ap.parse_args()
-
-    if not args.requirement.strip():
-        print("请提供需求描述", file=sys.stderr)
-        sys.exit(1)
 
     root = os.path.abspath(args.project)
     if not os.path.isdir(root):
         print(f"项目目录不存在: {root}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"[收集] 收集项目: {root}")
-    files = collect_files(root)
-    if not files:
-        print("未收集到任何代码文件（可能目录为空或全被排除）", file=sys.stderr)
+    print("=" * 60)
+    print(" AI 通用 Agent · 交互改码会话（像 Claude Code）")
+    print(f" 项目目录: {root}")
+    print(" 输入需求开始改码；输入 exit 或 q 退出；help 查看指令")
+    print("=" * 60)
+
+    def collect() -> bytes:
+        """重新收集项目文件并打包 zip（包含之前已应用的改动）。"""
+        files = collect_files(root)
+        if not files:
+            raise RuntimeError("未收集到任何代码文件（可能目录为空或全被排除）")
+        print(f"[收集] 共 {len(files)} 个文件")
+        return build_zip(files)
+
+    try:
+        zdata = collect()
+    except RuntimeError as e:
+        print(f"[错误] {e}", file=sys.stderr)
         sys.exit(1)
-    print(f"   共 {len(files)} 个文件")
-    zdata = build_zip(files)
 
-    # ---- 第一步：AI 出修改方案（不改代码） ----
-    print("[方案] AI 分析代码并生成修改方案（DeepSeek）...")
-    feedback = ""
-    plan_text = ""
     while True:
+        print()
         try:
-            data = post_dev(args.api, "/plan", args.requirement, zdata, feedback=feedback)
-        except Exception as e:
-            print(f"[错误] 方案生成失败: {e}", file=sys.stderr)
-            sys.exit(1)
+            requirement = input("你> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n再见！")
+            break
+        if not requirement:
+            continue
+        low = requirement.lower()
+        if low in ("exit", "quit", "q"):
+            print("再见！")
+            break
+        if low in ("help", "h"):
+            print(HELP_TEXT)
+            continue
 
-        plan_text = (data.get("plan") or "").strip()
-        plan_files = data.get("files") or []
-        questions = data.get("questions") or []
+        # ---- 本轮第 1 步：AI 出修改方案（不改代码） ----
+        print("[方案] AI 分析代码并生成修改方案（DeepSeek）...")
+        feedback = ""
+        plan_text = ""
+        while True:
+            try:
+                data = post_dev(args.api, "/plan", requirement, zdata, feedback=feedback)
+            except Exception as e:
+                print(f"[错误] 方案生成失败: {e}", file=sys.stderr)
+                break
 
-        print("\n" + "=" * 60)
-        print("[方案] AI 修改方案:")
-        print("=" * 60)
-        print(plan_text or "(AI 未给出方案文本)")
+            plan_text = (data.get("plan") or "").strip()
+            plan_files = data.get("files") or []
+            questions = data.get("questions") or []
 
-        if plan_files:
-            print("\n[文件] 预计改动文件:")
-            for f in plan_files:
-                if isinstance(f, dict):
-                    print(f"  - {f.get('path', f)}")
-                else:
-                    print(f"  - {f}")
-        if questions:
-            print("\n[问题] AI 需要你确认:")
-            for q in questions:
-                print(f"  ? {q}")
+            print("\n" + "=" * 60)
+            print("[方案] AI 修改方案:")
+            print("=" * 60)
+            print(plan_text or "(AI 未给出方案文本)")
 
-        if args.yes:
+            if plan_files:
+                print("\n[文件] 预计改动文件:")
+                for f in plan_files:
+                    if isinstance(f, dict):
+                        print(f"  - {f.get('path', f)}")
+                    else:
+                        print(f"  - {f}")
+            if questions:
+                print("\n[问题] AI 需要你确认:")
+                for q in questions:
+                    print(f"  ? {q}")
+
+            if args.yes:
+                break
+
+            ans = input(
+                "\n[询问] Enter 确认 / 输入你的意见让 AI 调整方案 / 输入 q 放弃本轮: "
+            ).strip()
+            if ans.lower() in ("q", "quit", "exit"):
+                print("已放弃本轮，未做任何改动。")
+                plan_text = ""
+                break
+            if ans:
+                feedback = ans
+                print(f"[方案] 带着你的意见重新规划（{len(feedback)} 字）...")
+                continue
             break
 
-        ans = input(
-            "\n[询问] 按 Enter 确认并开始改码 / 输入你的意见让 AI 调整方案 / 输入 q 退出: "
-        ).strip()
-        if ans.lower() in ("q", "quit", "exit"):
-            print("已退出，未做任何改动。")
-            sys.exit(0)
-        if ans:
-            feedback = ans
-            print(f"[方案] 带着你的意见重新规划（{len(feedback)} 字）...")
-            continue
-        break
+        if not plan_text:
+            continue  # 放弃本轮，回到主循环
 
-    # ---- 第二步：按确认的方案落地改动 ----
-    print("\n[改码] 按已确认方案执行改动（DeepSeek）...")
-    try:
-        data = post_dev(args.api, "/apply", args.requirement, zdata, plan=plan_text, feedback=feedback)
-    except Exception as e:
-        print(f"[错误] 改码失败: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    print("\n" + "=" * 60)
-    print("[AI] AI 改动说明:", data.get("dev_summary") or "(无)")
-    print("=" * 60)
-    for f in data.get("dev_files") or []:
-        icon = "[新]" if f["status"] == "新增" else "[改]"
-        print(f"  {icon} {f['path']}  ({f['status']}, {f['size']} 字符)")
-    diff = data.get("dev_diff") or ""
-    if diff:
-        print("\n[Diff] Diff 预览（前 3000 字符）:")
-        print(diff[:3000])
-        if len(diff) > 3000:
-            print(f"  ...（共 {len(diff)} 字符）")
-
-    modified_zip = data.get("dev_modified_zip")
-    if not modified_zip:
-        print("[错误] 后端未返回修改后的文件", file=sys.stderr)
-        sys.exit(1)
-
-    if args.yes:
-        ans = "y"
-    else:
-        ans = input("\n[询问] 应用这些改动到本地项目？(y/N): ").strip().lower()
-    if ans not in ("y", "yes"):
-        print("已放弃应用，改动未生效。diff 已展示供参考。")
-        sys.exit(0)
-
-    applied = apply_changes(root, modified_zip)
-    print(f"[完成] 已应用 {len(applied)} 个文件到 {root}")
-
-    if args.commit:
+        # ---- 本轮第 2 步：按确认的方案落地改动 ----
+        print("\n[改码] 按已确认方案执行改动（DeepSeek）...")
         try:
-            import subprocess
-            subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
-            subprocess.run(["git", "commit", "-m", f"AI: {args.requirement[:60]}"],
-                           cwd=root, check=True, capture_output=True)
-            print("[完成] git commit 完成")
+            data = post_dev(args.api, "/apply", requirement, zdata, plan=plan_text, feedback=feedback)
         except Exception as e:
-            print(f"[警告] git commit 失败（手动提交即可）: {str(e)[:120]}")
+            print(f"[错误] 改码失败: {e}", file=sys.stderr)
+            continue
 
-    print("\n完成！改动已应用到你的项目。")
+        print("\n" + "=" * 60)
+        print("[AI] AI 改动说明:", data.get("dev_summary") or "(无)")
+        print("=" * 60)
+        for f in data.get("dev_files") or []:
+            icon = "[新]" if f["status"] == "新增" else "[改]"
+            print(f"  {icon} {f['path']}  ({f['status']}, {f['size']} 字符)")
+        diff = data.get("dev_diff") or ""
+        if diff:
+            print("\n[Diff] Diff 预览（前 3000 字符）:")
+            print(diff[:3000])
+            if len(diff) > 3000:
+                print(f"  ...（共 {len(diff)} 字符）")
+
+        modified_zip = data.get("dev_modified_zip")
+        if not modified_zip:
+            print("[错误] 后端未返回修改后的文件", file=sys.stderr)
+            continue
+
+        if args.yes:
+            ans = "y"
+        else:
+            ans = input("\n[询问] 应用这些改动到本地项目？(y/N): ").strip().lower()
+        if ans not in ("y", "yes"):
+            print("已放弃应用，改动未生效。diff 已展示供参考。")
+            continue
+
+        applied = apply_changes(root, modified_zip)
+        print(f"[完成] 已应用 {len(applied)} 个文件到 {root}")
+
+        if args.commit:
+            try:
+                import subprocess
+                subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
+                subprocess.run(["git", "commit", "-m", f"AI: {requirement[:60]}"],
+                               cwd=root, check=True, capture_output=True)
+                print("[完成] git commit 完成")
+            except Exception as e:
+                print(f"[警告] git commit 失败（手动提交即可）: {str(e)[:120]}")
+
+        # 重新收集项目（把刚才的改动纳入下一轮）
+        try:
+            zdata = collect()
+        except RuntimeError as e:
+            print(f"[错误] {e}", file=sys.stderr)
+            break
 
 
 if __name__ == "__main__":
