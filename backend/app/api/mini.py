@@ -397,6 +397,15 @@ async def delete_reminder(rid: str, user=Depends(get_current_user)):
     return {"ok": True}
 
 
+@router.post("/reminders/{rid}/toggle")
+async def toggle_reminder(rid: str, user=Depends(get_current_user)):
+    from app.database import toggle_reminder as _db_toggle
+    enabled = await _db_toggle(user["id"], rid)
+    if enabled is None:
+        raise HTTPException(status_code=404, detail="提醒不存在")
+    return {"ok": True, "enabled": enabled}
+
+
 @router.delete("/monitors/{mid}")
 async def delete_monitor(mid: str, user=Depends(get_current_user)):
     from app.database import delete_monitor as _db_del_mon
@@ -404,6 +413,15 @@ async def delete_monitor(mid: str, user=Depends(get_current_user)):
     if not ok:
         raise HTTPException(status_code=404, detail="监控不存在")
     return {"ok": True}
+
+
+@router.post("/monitors/{mid}/toggle")
+async def toggle_monitor(mid: str, user=Depends(get_current_user)):
+    from app.database import toggle_monitor as _db_toggle
+    enabled = await _db_toggle(user["id"], mid)
+    if enabled is None:
+        raise HTTPException(status_code=404, detail="监控不存在")
+    return {"ok": True, "enabled": enabled}
 
 
 @router.get("/mini/tasks")

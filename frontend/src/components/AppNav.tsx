@@ -96,10 +96,24 @@ export default function AppNav() {
     } catch { /* 忽略 */ }
   };
 
+  const toggleReminder = async (id: string) => {
+    try {
+      const r = await notificationsApi.toggleReminder(id);
+      setReminders((prev) => prev.map((x) => (x.id === id ? { ...x, enabled: r.enabled ? 1 : 0 } : x)));
+    } catch { /* 忽略 */ }
+  };
+
   const removeMonitor = async (id: string) => {
     try {
       await notificationsApi.deleteMonitor(id);
       setMonitors((prev) => prev.filter((m) => m.id !== id));
+    } catch { /* 忽略 */ }
+  };
+
+  const toggleMonitor = async (id: string) => {
+    try {
+      const r = await notificationsApi.toggleMonitor(id);
+      setMonitors((prev) => prev.map((x) => (x.id === id ? { ...x, enabled: r.enabled ? 1 : 0 } : x)));
     } catch { /* 忽略 */ }
   };
 
@@ -235,10 +249,17 @@ export default function AppNav() {
                         <p className="text-xs text-slate-400">无。可在工作台输入「每天8点提醒我打卡」</p>
                       ) : (
                         reminders.map((r) => (
-                          <div key={r.id} className="flex items-center gap-2 rounded-xl border border-violet-200/60 dark:border-violet-800 px-2.5 py-1.5 mb-1 text-xs">
-                            <span className="font-mono text-violet-600 dark:text-violet-300">每天 {r.time}</span>
+                          <div key={r.id} className={`flex items-center gap-2 rounded-xl border px-2.5 py-1.5 mb-1 text-xs ${r.enabled ? "border-violet-200/60 dark:border-violet-800" : "border-slate-200 dark:border-slate-700 opacity-55"}`}>
+                            <span className={`font-mono shrink-0 ${r.enabled ? "text-violet-600 dark:text-violet-300" : "text-slate-400"}`}>每天 {r.time}</span>
                             <span className="flex-1 truncate text-slate-600 dark:text-slate-300">{r.text}</span>
-                            <button onClick={() => removeReminder(r.id)} className="text-muted-foreground hover:text-red-500" title="删除">
+                            <button
+                              onClick={() => toggleReminder(r.id)}
+                              title={r.enabled ? "停用" : "启用"}
+                              className={`relative w-8 h-4.5 rounded-full transition-colors shrink-0 ${r.enabled ? "bg-violet-500" : "bg-slate-300 dark:bg-slate-600"}`}
+                            >
+                              <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white shadow transition-all ${r.enabled ? "left-4" : "left-0.5"}`} />
+                            </button>
+                            <button onClick={() => removeReminder(r.id)} className="text-muted-foreground hover:text-red-500 shrink-0" title="删除">
                               <Trash2 className="w-3 h-3" />
                             </button>
                           </div>
@@ -253,12 +274,19 @@ export default function AppNav() {
                         <p className="text-xs text-slate-400">无。可输入「监控打开浏览器时提醒我」</p>
                       ) : (
                         monitors.map((m) => (
-                          <div key={m.id} className="flex items-center gap-2 rounded-xl border border-emerald-200/60 dark:border-emerald-800 px-2.5 py-1.5 mb-1 text-xs">
-                            <span className="font-mono text-emerald-600 dark:text-emerald-300 shrink-0">{m.monitor_type === "window" ? "窗口" : "屏幕"}</span>
+                          <div key={m.id} className={`flex items-center gap-2 rounded-xl border px-2.5 py-1.5 mb-1 text-xs ${m.enabled ? "border-emerald-200/60 dark:border-emerald-800" : "border-slate-200 dark:border-slate-700 opacity-55"}`}>
+                            <span className={`font-mono shrink-0 ${m.enabled ? "text-emerald-600 dark:text-emerald-300" : "text-slate-400"}`}>{m.monitor_type === "window" ? "窗口" : "屏幕"}</span>
                             <span className="flex-1 truncate text-slate-600 dark:text-slate-300">
                               {m.keywords || m.condition || "（条件未填）"} → {m.action_requirement || "仅提醒"}
                             </span>
-                            <button onClick={() => removeMonitor(m.id)} className="text-muted-foreground hover:text-red-500" title="删除">
+                            <button
+                              onClick={() => toggleMonitor(m.id)}
+                              title={m.enabled ? "停用" : "启用"}
+                              className={`relative w-8 h-4.5 rounded-full transition-colors shrink-0 ${m.enabled ? "bg-emerald-500" : "bg-slate-300 dark:bg-slate-600"}`}
+                            >
+                              <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white shadow transition-all ${m.enabled ? "left-4" : "left-0.5"}`} />
+                            </button>
+                            <button onClick={() => removeMonitor(m.id)} className="text-muted-foreground hover:text-red-500 shrink-0" title="删除">
                               <Trash2 className="w-3 h-3" />
                             </button>
                           </div>

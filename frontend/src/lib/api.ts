@@ -274,6 +274,12 @@ export const notificationsApi = {
   deleteReminder: (id: string) =>
     request<{ ok: boolean }>(`/api/reminders/${id}`, { method: "DELETE" }),
 
+  toggleReminder: (id: string) =>
+    request<{ ok: boolean; enabled: boolean }>(`/api/reminders/${id}/toggle`, { method: "POST" }),
+
   deleteMonitor: (id: string) =>
     request<{ ok: boolean }>(`/api/monitors/${id}`, { method: "DELETE" }),
+
+  toggleMonitor: (id: string) =>
+    request<{ ok: boolean; enabled: boolean }>(`/api/monitors/${id}/toggle`, { method: "POST" }),
 };

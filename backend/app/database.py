@@ -499,6 +499,19 @@ def _delete_reminder(user_id: str, reminder_id: str) -> bool:
         return cur.rowcount > 0
 
 
+def _toggle_reminder(user_id: str, reminder_id: str) -> bool | None:
+    """切换提醒启用状态，返回新状态（True/False）；不存在返回 None。"""
+    with _get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE reminders SET enabled = 1 - enabled WHERE id=? AND user_id=?",
+            (reminder_id, user_id),
+        )
+        if cur.rowcount == 0:
+            return None
+        row = conn.execute("SELECT enabled FROM reminders WHERE id=?", (reminder_id,)).fetchone()
+        return bool(row["enabled"]) if row else None
+
+
 async def add_reminder(user_id: str, time_str: str, text: str, source_task: str = "") -> None:
     return await _run_async(_add_reminder, user_id, time_str, text, source_task)
 
@@ -509,6 +522,10 @@ async def list_reminders(user_id: str, enabled_only: bool = False) -> list[dict]
 
 async def delete_reminder(user_id: str, reminder_id: str) -> bool:
     return await _run_async(_delete_reminder, user_id, reminder_id)
+
+
+async def toggle_reminder(user_id: str, reminder_id: str) -> bool | None:
+    return await _run_async(_toggle_reminder, user_id, reminder_id)
 
 
 # ============================================================
@@ -556,6 +573,19 @@ def _delete_monitor(user_id: str, monitor_id: str) -> bool:
         return cur.rowcount > 0
 
 
+def _toggle_monitor(user_id: str, monitor_id: str) -> bool | None:
+    """切换监控启用状态，返回新状态（True/False）；不存在返回 None。"""
+    with _get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE monitors SET enabled = 1 - enabled WHERE id=? AND user_id=?",
+            (monitor_id, user_id),
+        )
+        if cur.rowcount == 0:
+            return None
+        row = conn.execute("SELECT enabled FROM monitors WHERE id=?", (monitor_id,)).fetchone()
+        return bool(row["enabled"]) if row else None
+
+
 async def add_monitor(user_id: str, monitor_type: str, keywords: str = "", condition: str = "",
                       action_requirement: str = "", check_interval: int = 60, source_task: str = "") -> str:
     return await _run_async(_add_monitor, user_id, monitor_type, keywords, condition,
@@ -572,6 +602,10 @@ async def update_monitor_state(monitor_id: str, last_checked_at: float, last_sta
 
 async def delete_monitor(user_id: str, monitor_id: str) -> bool:
     return await _run_async(_delete_monitor, user_id, monitor_id)
+
+
+async def toggle_monitor(user_id: str, monitor_id: str) -> bool | None:
+    return await _run_async(_toggle_monitor, user_id, monitor_id)
 
 
 # ============================================================
