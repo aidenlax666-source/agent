@@ -1338,7 +1338,7 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
             try:
                 info = await chat_completion_json(
                     DEV_MODIFY_PROMPT.format(requirement=requirement[:8000], context=tree, plan_part=plan_part),
-                    requirement, temperature=0.2, max_tokens=8000,
+                    requirement, temperature=0.2, max_tokens=32000,  # 大项目/长文件：防 JSON 截断
                     model=get_settings().ai_model_reasoning,
                 )
             except Exception as e:
@@ -1357,7 +1357,7 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
             try:
                 info2 = await chat_completion_json(
                     DEV_VALIDATE_PROMPT.format(requirement=requirement[:8000], errors="\n".join(errors)),
-                    requirement, temperature=0.2, max_tokens=8000,
+                    requirement, temperature=0.2, max_tokens=32000,  # 防大文件 JSON 截断
                     model=get_settings().ai_model_reasoning,
                 )
                 files_map = info2.get("files") or files_map
@@ -1431,7 +1431,7 @@ async def _plan_dev_task(requirement: str, code_dir: str, feedback: str | None =
         try:
             info = await chat_completion_json(
                 DEV_PLAN_PROMPT.format(requirement=requirement[:8000], context=tree) + fb_part,
-                requirement, temperature=0.2, max_tokens=3000,
+                requirement, temperature=0.2, max_tokens=5000,
                 model=get_settings().ai_model,  # 方案用便宜模型；改码/修复才用 reasoner
             )
             break
