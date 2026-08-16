@@ -246,11 +246,9 @@ def main() -> None:
     print("=" * 60)
 
     def collect() -> bytes:
-        """重新收集项目文件并打包 zip（包含之前已应用的改动）。"""
+        """重新收集项目文件并打包 zip（包含之前已应用的改动）。空目录也允许（从零建项目）。"""
         files = collect_files(root)
-        if not files:
-            raise RuntimeError("未收集到任何代码文件（可能目录为空或全被排除）")
-        print(f"{c_dim('[收集]')} 共 {len(files)} 个文件")
+        print(f"{c_dim('[收集]')} 共 {len(files)} 个文件" + (c_dim("（空项目，将从零创建）") if not files else ""))
         return build_zip(files)
 
     try:

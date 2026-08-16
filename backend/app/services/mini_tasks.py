@@ -1228,7 +1228,7 @@ def _dev_context(workspace: str, files: list[str], requirement: str | None = Non
         parts.append(block)
         total += len(block)
     if not parts:
-        return "(无可用源码内容)"
+        return "(空项目目录：没有任何文件。请根据需求从零创建所需的项目文件结构。)"
     return "\n\n".join(parts)
 
 
@@ -1311,8 +1311,9 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
     workspace = os.path.normpath(code_dir)  # 外部代码目录本身就是隔离副本
     try:
         files = _walk_files(workspace)
+        # 空文件夹也允许：AI 从零创建项目（像 Claude Code 在空目录建项目）
         if not files:
-            return {"status": "failed", "error": "未找到项目源码目录", "elapsed": round(time.time() - started, 1)}
+            logger.info("[dev_task:%s] 空项目目录，从零创建", task_id)
         # 改前文件内容快照（diff 对比用；写文件前取）
         orig_contents: dict[str, str] = {}
         for rel in _walk_files(workspace):
@@ -1420,8 +1421,9 @@ async def _plan_dev_task(requirement: str, code_dir: str, feedback: str | None =
 
     workspace = os.path.normpath(code_dir)
     files = _walk_files(workspace)
+    # 空文件夹也允许：AI 从零创建项目
     if not files:
-        return {"status": "failed", "error": "未找到项目源码目录"}
+        logger.info("[dev_plan] 空项目目录，从零规划")
     tree = _dev_context(workspace, files, requirement=requirement)
     fb_part = f"\n【用户对上一版方案的意见】\n{feedback}\n请根据意见重新调整方案。" if feedback else ""
     info = None
