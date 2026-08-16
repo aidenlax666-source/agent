@@ -99,15 +99,24 @@ export default function MiniPage() {
 
   const pollTask = useCallback((taskId: string) => {
     stopPolling();
+    let consecutiveErrors = 0;
     pollRef.current = setInterval(async () => {
       try {
         const s = await miniApi.get(taskId);
+        // 竞态防护：只接受当前任务的响应（防旧任务在途响应覆盖新状态）
+        if (s.id !== taskId) return;
+        consecutiveErrors = 0;
         setTask(s);
         if (s.status === "done" || s.status === "error" || s.status === "cancelled" || s.status === "confirmed") {
           stopPolling();
         }
-      } catch {
-        stopPolling();
+      } catch (e) {
+        // 瞬时错误不停止轮询（否则界面永久卡死在旧状态）；连续 10 次失败才放弃
+        consecutiveErrors += 1;
+        if (consecutiveErrors >= 10) {
+          stopPolling();
+          setSubmitError("与服务器连接中断，请刷新页面重试");
+        }
       }
     }, 2000);
   }, [stopPolling]);
@@ -125,7 +134,7 @@ export default function MiniPage() {
     }
   }, [pollTask]);
 
-  // 从 /history 跳转过来时（/mini?task=xxx）自动加载任务
+  // 从 /history 跳转过来时（/mini?task=xxx）自动加载任务；task 参数变化时重新加载
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const tid = params.get("task");
@@ -133,7 +142,7 @@ export default function MiniPage() {
       handleLoadTask(tid);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [handleLoadTask]);
 
   const handleSubmit = async () => {
     if (!requirement.trim() || submitting) return;
@@ -238,6 +247,21 @@ export default function MiniPage() {
     }
   };
 
+  // 下载任务结果文件（fetch + 鉴权头 → blob，替代裸 <a href> 直链）
+  const handleDownloadOutput = async (taskId: string) => {
+    try {
+      const blob = await miniApi.download(taskId);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `result_${taskId.slice(0, 8)}.xlsx`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);  // 等下载启动后再 revoke
+    } catch (e) {
+      setSubmitError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   const handleImages = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     setUploading(true);
@@ -280,8 +304,22 @@ export default function MiniPage() {
 
   const removeImage = (idx: number) => {
     setImagePaths((prev) => prev.filter((_, i) => i !== idx));
-    setImagePreviews((prev) => prev.filter((_, i) => i !== idx));
+    setImagePreviews((prev) => {
+      const next = prev.filter((_, i) => i !== idx);
+      // revoke 被移除的 blob URL（防内存泄漏）
+      const removed = prev[idx];
+      if (removed) URL.revokeObjectURL(removed);
+      return next;
+    });
   };
+
+  // 组件卸载时统一 revoke 全部图片预览 blob URL
+  useEffect(() => {
+    return () => {
+      imagePreviews.forEach((src) => URL.revokeObjectURL(src));
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const removeDataFile = (idx: number) => {
     setDataFiles((prev) => prev.filter((_, i) => i !== idx));
@@ -383,15 +421,15 @@ export default function MiniPage() {
                 {uploading && <Loader2 className="w-4 h-4 animate-spin text-indigo-500" />}
                 <label className="inline-flex items-center gap-1.5 text-xs font-medium text-indigo-600 dark:text-indigo-400 cursor-pointer hover:bg-indigo-50 dark:hover:bg-indigo-950 rounded-lg px-2.5 py-1.5 transition-colors">
                   <Upload className="w-3.5 h-3.5" /> 图片
-                  <input type="file" accept="image/*" multiple className="hidden" disabled={uploading} onChange={(e) => handleImages(e.target.files)} />
+                  <input type="file" accept="image/*" multiple className="hidden" disabled={uploading} onChange={(e) => { handleImages(e.target.files); e.target.value = ""; }} />
                 </label>
                 <label className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-600 dark:text-emerald-400 cursor-pointer hover:bg-emerald-50 dark:hover:bg-emerald-950 rounded-lg px-2.5 py-1.5 transition-colors">
                   <FileSpreadsheet className="w-3.5 h-3.5" /> 数据文件
-                  <input type="file" accept=".xlsx,.xls,.csv" multiple className="hidden" disabled={uploading} onChange={(e) => handleDataFiles(e.target.files)} />
+                  <input type="file" accept=".xlsx,.xls,.csv" multiple className="hidden" disabled={uploading} onChange={(e) => { handleDataFiles(e.target.files); e.target.value = ""; }} />
                 </label>
                 <label className="inline-flex items-center gap-1.5 text-xs font-medium text-violet-600 dark:text-violet-400 cursor-pointer hover:bg-violet-50 dark:hover:bg-violet-950 rounded-lg px-2.5 py-1.5 transition-colors" title="上传项目 zip：AI 先出修改方案，你确认（或提意见重新规划）后再改码">
                   <FolderGit2 className="w-3.5 h-3.5" /> 项目zip（改代码）
-                  <input type="file" accept=".zip" className="hidden" disabled={uploading} onChange={(e) => { const f = e.target.files?.[0] || null; setZipFile(f); if (f) setSubmitError(null); }} />
+                  <input type="file" accept=".zip" className="hidden" disabled={uploading} onChange={(e) => { const f = e.target.files?.[0] || null; setZipFile(f); if (f) setSubmitError(null); e.target.value = ""; }} />
                 </label>
               </div>
             </div>
@@ -574,10 +612,10 @@ export default function MiniPage() {
                   {/* 链接类产物 */}
                   <div className="flex flex-wrap gap-2.5">
                     {result.output_file && (
-                      <a href={`${API}/api/mini/tasks/${task.id}/download`} target="_blank" rel="noreferrer"
+                      <button onClick={() => handleDownloadOutput(task.id)}
                         className="inline-flex items-center gap-1.5 text-sm font-medium text-indigo-600 dark:text-indigo-400 hover:underline rounded-xl border border-indigo-200/60 dark:border-indigo-800 px-3.5 py-2 hover:bg-indigo-50 dark:hover:bg-indigo-950/50 transition-colors">
                         <Download className="w-4 h-4" /> 下载结果文件
-                      </a>
+                      </button>
                     )}
                     {result.report_url && (
                       <a href={`${ASSETS_BASE}${result.report_url}`} target="_blank" rel="noreferrer"

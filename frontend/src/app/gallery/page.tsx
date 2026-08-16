@@ -36,6 +36,7 @@ export default function GalleryPage() {
   const [items, setItems] = useState<GalleryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [origin, setOrigin] = useState("");
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -44,12 +45,16 @@ export default function GalleryPage() {
       const token = getAuthToken();
       if (token) headers["Authorization"] = `Bearer ${token}`;
       const r = await fetch(`${API_BASE}/api/gallery`, { headers });
+      if (!r.ok) {
+        throw new Error(`加载失败: ${r.status}`);
+      }
       const data = await r.json();
       setItems(data.items || []);
       // 分享链接指向产物域（与 API 不同源）
       setOrigin(ASSETS_BASE);
-    } catch {
+    } catch (e) {
       setItems([]);
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
@@ -85,6 +90,10 @@ export default function GalleryPage() {
 
         {loading ? (
           <p className="text-center text-muted-foreground py-12">加载中...</p>
+        ) : error ? (
+          <Card className="rounded-2xl">
+            <CardContent className="p-10 text-center text-red-500">{error}（点击刷新重试）</CardContent>
+          </Card>
         ) : items.length === 0 ? (
           <Card className="rounded-2xl">
             <CardContent className="p-10 text-center text-muted-foreground">

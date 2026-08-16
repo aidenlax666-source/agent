@@ -229,4 +229,17 @@ export const miniApi = {
       method: "POST",
       body: JSON.stringify({ file_path, question }),
     }),
+
+  // 下载任务结果文件：必须带鉴权头（裸 <a href> 不带 token/匿名 id 会 404）
+  download: async (taskId: string) => {
+    const token = getAuthToken();
+    const headers: Record<string, string> = { "X-Anonymous-Id": getAnonymousId() };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    const res = await fetch(`${API_BASE}/api/mini/tasks/${taskId}/download`, { headers });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || `下载失败: ${res.status}`);
+    }
+    return res.blob();
+  },
 };
