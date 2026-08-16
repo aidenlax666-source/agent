@@ -113,6 +113,13 @@ async def analyze_site(url: str, timeout: int = 30, profile_dir: str | None = No
     Returns:
         {"ok": bool, "title": str, "url": str, "cardCandidates": [...], "links": {...}, "error": str}
     """
+    # SSRF/本地文件防护：goto 前强制校验（file:/内网/元数据一律拒绝）
+    try:
+        from app.sandbox.security import validate_public_http_url
+        validate_public_http_url(url)
+    except Exception as e:
+        return {"ok": False, "title": "", "url": url, "cardCandidates": [],
+                "links": {}, "error": str(e)}
     try:
         from app.services.page_capture import _load_storage_state
     except Exception:

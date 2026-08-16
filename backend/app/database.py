@@ -70,11 +70,19 @@ def _init_db():
                 schedule_value TEXT DEFAULT '',
                 enabled INTEGER DEFAULT 0,
                 last_run_at REAL,
-                next_run_at REAL
+                next_run_at REAL,
+                image_paths TEXT DEFAULT '',        -- JSON 数组（上传图片路径，随任务持久化）
+                data_paths TEXT DEFAULT ''          -- JSON 数组（上传数据文件路径）
             );
 
             -- Guest user created by API on first request if needed
         """)
+    # 老库迁移：补 image_paths/data_paths 列（不存在才加）
+    with _get_conn() as conn:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(mini_tasks)").fetchall()}
+        for col in ("image_paths", "data_paths"):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE mini_tasks ADD COLUMN {col} TEXT DEFAULT ''")
 
 
 # ============================================================
@@ -137,22 +145,46 @@ async def create_user(email: str, name: str | None, password_hash: str) -> dict:
 # ============================================================
 
 def _save_mini_task(record: dict) -> None:
+    # INSERT ... ON CONFLICT DO UPDATE：不再用 INSERT OR REPLACE（REPLACE 会先删旧行，
+    # 把 schedule_type/schedule_value/enabled/last_run_at/next_run_at 等列静默清空）。
+    # 新记录同时持久化 image_paths/data_paths（JSON），供 iterate/定时重跑恢复上下文。
     with _get_conn() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO mini_tasks (id, user_id, requirement, url, status, message, created_at, updated_at, result, error) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            """INSERT INTO mini_tasks (id, user_id, requirement, url, status, message, created_at, updated_at,
+                                       result, error, image_paths, data_paths)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(id) DO UPDATE SET
+                 user_id=excluded.user_id, requirement=excluded.requirement, url=excluded.url,
+                 status=excluded.status, message=excluded.message, updated_at=excluded.updated_at,
+                 result=excluded.result, error=excluded.error,
+                 image_paths=excluded.image_paths, data_paths=excluded.data_paths""",
             (
                 record["id"], record.get("user_id", ""), record["requirement"], record.get("url", ""),
                 record.get("status", "queued"), record.get("message", ""),
                 record.get("created_at", 0), time.time(),
                 json.dumps(record.get("result"), ensure_ascii=False) if record.get("result") else None,
                 record.get("error"),
+                json.dumps(record.get("image_paths") or [], ensure_ascii=False),
+                json.dumps(record.get("data_paths") or [], ensure_ascii=False),
             ),
         )
 
 
+def _decode_json_list(v) -> list:
+    if not v:
+        return []
+    try:
+        val = json.loads(v)
+        return val if isinstance(val, list) else []
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
 # mini_tasks 允许动态更新的列白名单（防 SQL 注入：字段名只能来自白名单）
-_ALLOWED_MINI_UPDATE_FIELDS = {"status", "message", "result", "error", "progress", "url", "requirement", "updated_at"}
+_ALLOWED_MINI_UPDATE_FIELDS = {
+    "status", "message", "result", "error", "progress", "url", "requirement",
+    "updated_at", "image_paths", "data_paths",
+}
 
 
 def _update_mini_task(task_id: str, **fields) -> None:
@@ -161,6 +193,10 @@ def _update_mini_task(task_id: str, **fields) -> None:
     if not fields:
         return
     import time as _t
+    # image_paths/data_paths 传 list 时序列化为 JSON
+    for k in ("image_paths", "data_paths"):
+        if k in fields and isinstance(fields[k], list):
+            fields[k] = json.dumps(fields[k], ensure_ascii=False)
     fields["updated_at"] = _t.time()
     sets = ", ".join(f"{k}=?" for k in fields)
     with _get_conn() as conn:
@@ -178,6 +214,8 @@ def _get_mini_task(task_id: str) -> dict | None:
             d["result"] = json.loads(d["result"])
         except (json.JSONDecodeError, TypeError):
             d["result"] = None
+    d["image_paths"] = _decode_json_list(d.get("image_paths"))
+    d["data_paths"] = _decode_json_list(d.get("data_paths"))
     return d
 
 
@@ -261,6 +299,20 @@ def _update_mini_run(task_id: str, last_run_at: float, next_run_at: float | None
         )
 
 
+def _claim_mini_run(task_id: str, now: float, next_run_at: float | None) -> bool:
+    """原子抢占到期定时任务：仅当 next_run_at 仍是到期值（<=now）时才更新并返回 True。
+
+    用于多 worker / 任务运行超时重叠时防止同一任务被重复提交。
+    """
+    with _get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE mini_tasks SET last_run_at=?, next_run_at=?, updated_at=? "
+            "WHERE id=? AND enabled=1 AND next_run_at IS NOT NULL AND next_run_at <= ?",
+            (now, next_run_at, time.time(), task_id, now),
+        )
+        return cur.rowcount > 0
+
+
 async def ensure_mini_schedule_columns() -> None:
     return await _run_async(_ensure_mini_schedule_columns)
 
@@ -275,6 +327,10 @@ async def set_mini_schedule(task_id: str, schedule_type: str, schedule_value: st
 
 async def update_mini_run(task_id: str, last_run_at: float, next_run_at: float | None) -> None:
     return await _run_async(_update_mini_run, task_id, last_run_at, next_run_at)
+
+
+async def claim_mini_run(task_id: str, now: float, next_run_at: float | None) -> bool:
+    return await _run_async(_claim_mini_run, task_id, now, next_run_at)
 
 
 # ============================================================

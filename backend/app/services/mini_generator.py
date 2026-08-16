@@ -695,7 +695,8 @@ async def generate_and_verify(
     info = {}
     for _attempt in range(2):  # LLM 偶发失败时重试一次，避免 info 为空导致目标跑偏
         try:
-            info = await chat_completion_json(STRUCTURE_SYSTEM_PROMPT, requirement[:2000], max_tokens=500)
+            parsed = await chat_completion_json(STRUCTURE_SYSTEM_PROMPT, requirement[:2000], max_tokens=500)
+            info = parsed if isinstance(parsed, dict) else {}  # 防非对象 JSON（数组/字符串）崩溃
             if info:
                 break
         except Exception:
@@ -806,6 +807,8 @@ async def generate_and_verify(
             expected = _parse_expected_count(requirement)
             report["expected_count"] = expected
             if expected and markers["rows"] < expected:
+                best_rows = markers["rows"]
+                best_preview = markers["preview"]
                 for count_round in range(1, MAX_COUNT_HEALS + 1):
                     logger.info("数量不足: 期望 %d 实际 %d，第 %d 次补全...", expected, markers["rows"], count_round)
                     fixed = await _heal_insufficient_count(
@@ -814,20 +817,33 @@ async def generate_and_verify(
                         break
                     code = fixed
                     report["script"] = code
-                    result2 = await execute_in_sandbox(code, timeout=timeout, preview_mode=True)
+                    # 自愈重跑同样带登录态目录（防登录站点丢登录态）
+                    result2 = await execute_in_sandbox(code, timeout=timeout, preview_mode=True,
+                                                       profile_dir=profile_dir or None)
                     report["stdout"] = result2.stdout or ""
                     output2 = (result2.stdout or "") + "\n" + (result2.stderr or "")
                     markers2 = _parse_markers(output2)
+                    # 先看业务标记（修复后遇到登录墙/反爬/无数据如实上报）
+                    if markers2["login"]:
+                        return await _report("login_required")
+                    if markers2["robots"]:
+                        return await _report("robots_blocked")
+                    if markers2["no_data"]:
+                        return await _report("no_data")
+                    if not result2.success:
+                        break  # 修复后脚本崩溃：放弃，走 insufficient_count
                     if markers2["rows"] >= expected:
                         report["rows"] = markers2["rows"]
                         report["preview"] = markers2["preview"]
                         report["count_heals"] = count_round
                         return await _report("ok")
-                    if markers2["rows"] == 0:
-                        return await _report("no_data")
-                report["rows"] = markers["rows"]
+                    if markers2["rows"] > best_rows:
+                        best_rows = markers2["rows"]
+                        best_preview = markers2["preview"]
+                report["rows"] = best_rows
+                report["preview"] = best_preview
                 report["count_heals"] = MAX_COUNT_HEALS
-                report["error"] = f"数量不足: 期望{expected}条，实际仅{report['rows']}条"
+                report["error"] = f"数量不足: 期望{expected}条，实际仅{best_rows}条"
                 return await _report("insufficient_count")
 
             report["count_heals"] = 0
@@ -838,10 +854,12 @@ async def generate_and_verify(
             # 处理键/输入列当输出字段误报）。仅当结构化完全失败（info 无 output_columns）时降级关键词匹配。
             info_cols = info.get("output_columns")
             if isinstance(info_cols, list):
-                expected_fields = info_cols
+                # 强制转字符串（防 LLM 输出数字/布尔元素导致 _check_missing_fields TypeError）
+                expected_fields = [str(f) for f in info_cols if f is not None]
             else:
                 expected_fields = _parse_expected_fields(requirement)
             report["expected_fields"] = expected_fields
+            report["field_heals"] = 0  # 默认 0；自愈成功时在循环内覆盖为实际轮数
             if expected_fields:
                 missing_f = _check_missing_fields(markers["preview"], expected_fields)
                 if missing_f:
@@ -873,9 +891,9 @@ async def generate_and_verify(
                         report["missing_fields"] = missing_f
                         report["error"] = f"缺少字段: {'、'.join(missing_f)}"
                         return await _report("missing_fields")
-                report["field_heals"] = 0
 
             # --- 需求覆盖验证：LLM 检查漏功能，缺则补全 ---
+            report["coverage_heals"] = 0  # 默认 0；自愈成功时覆盖为实际轮数
             missing_items = await _validate_coverage(requirement, code)
             if missing_items:
                 for cov_round in range(1, MAX_COVERAGE_HEALS + 1):
@@ -901,9 +919,9 @@ async def generate_and_verify(
                     report["coverage_missing"] = missing_items
                     report["error"] = f"需求未覆盖: {'、'.join(missing_items)}"
                     return await _report("coverage_gap")
-            report["coverage_heals"] = 0
 
             # --- 字段值正确性校验：LLM 检查输出值是否合理/符合需求 ---
+            report["value_heals"] = 0  # 默认 0；自愈成功时覆盖为实际轮数
             value_issues = await _validate_values(requirement, markers["preview"])
             if value_issues:
                 for v_round in range(1, MAX_VALUE_HEALS + 1):
@@ -933,7 +951,6 @@ async def generate_and_verify(
                     report["value_issues"] = value_issues
                     report["error"] = f"数据值可疑: {'；'.join(value_issues)}"
                     return await _report("value_suspect")
-            report["value_heals"] = 0
 
             return await _report("ok")
 
@@ -952,6 +969,7 @@ async def generate_and_verify(
                 stdout=result.stdout or "", stderr=result.stderr or "",
                 dom_snapshot=dom_snapshot, url=url,
                 attempt_number=seen_errors[key],
+                profile_dir=profile_dir or None,
             )
             if healed.success and healed.fixed_code:
                 code = healed.fixed_code

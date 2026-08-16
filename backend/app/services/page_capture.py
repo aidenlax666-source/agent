@@ -177,8 +177,21 @@ async def capture_page_structure(url: str, timeout: int = 30000, profile_dir: st
 
     profile_dir: 该任务所属用户的登录态目录（按账号隔离）；None 时回退全局目录。
     使用 sync Playwright in executor to avoid Windows asyncio subprocess issues.
+    SSRF 防护：入口强制校验 scheme 为 http/https 且目标非内网/回环/元数据地址。
     """
     import asyncio as _asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    # 强制 URL 校验（防 file:// 本地文件读取 / 内网探测）
+    try:
+        validate_public_http_url(url)
+    except ValueError as e:
+        return {
+            "body": {},
+            "interactiveElements": [],
+            "url": url,
+            "title": f"Error: {str(e)[:200]}",
+        }
 
     try:
         from playwright.sync_api import sync_playwright
@@ -292,8 +305,22 @@ async def capture_page_structure(url: str, timeout: int = 30000, profile_dir: st
                            "redirected_to_login": False, "error": str(e)[:200]},
             }
 
+    # 独立小线程池（不占用同步端点共享的默认池），整次采集有总超时
+    _CAPTURE_EXECUTOR = ThreadPoolExecutor(max_workers=2)
     loop = _asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _capture)
+    total_timeout = min(max(timeout or 30000, 5000), 90000)
+    try:
+        return await _asyncio.wait_for(
+            loop.run_in_executor(_CAPTURE_EXECUTOR, _capture),
+            timeout=total_timeout / 1000 + 5,
+        )
+    except _asyncio.TimeoutError:
+        return {
+            "body": {}, "interactiveElements": [],
+            "url": url, "title": "Error: capture timeout",
+            "probe": {"hasContent": False, "hasLoginForm": False, "hasResults": False,
+                       "redirected_to_login": False, "error": "capture timeout"},
+        }
 
 
 def format_dom_for_prompt(dom_structure: dict, max_chars: int = 8000) -> str:

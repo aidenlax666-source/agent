@@ -30,9 +30,12 @@ CONTENT_SYSTEM = """你是一位 AI 内容创作专家。根据用户需求生�
 
 
 def _complete(html: str) -> tuple[bool, str]:
-    checks = {"</html>": "html 结尾", "<script>": "有 JS"}
+    # 只强制 HTML 结构；<script> 改为软检查（纯静态页面无 JS 也合法）
+    checks = {"</html>": "html 结尾"}
     missing = [d for kw, d in checks.items() if kw not in html]
-    return (not missing), "、".join(missing) if missing else "完整"
+    if missing:
+        return False, "、".join(missing)
+    return True, "完整"
 
 
 async def generate_content(requirement: str) -> dict:

@@ -19,8 +19,13 @@ settings = get_settings()
 _failed_logins: dict[str, list[float]] = {}
 _failed_logins_by_ip: dict[str, list[float]] = {}
 MAX_LOGIN_ATTEMPTS = 5
-LOGIN_LOCKOUT_SECONDS = 300
-_FAILED_LOGIN_MAX_KEYS = 10000  # 限流表键数上限（防伪造输入无限填充内存）
+LOGIN_LOCKOUT_SECONDS = 300      # IP 维度锁定
+EMAIL_LOCKOUT_SECONDS = 60       # 邮箱维度锁定（短一些，防攻击者锁死他人账号）
+_FAILED_LOGIN_MAX_KEYS = 10000   # 限流表键数上限（防伪造输入无限填充内存）
+
+# 注册限速（防批量注册刷 10 积分）：按 IP
+_register_attempts: dict[str, list[float]] = {}
+REGISTER_MAX_PER_MINUTE = 5
 
 
 def _trim_rate_dict(d: dict) -> None:
@@ -40,24 +45,30 @@ def _verify_pwd(password: str, stored: str) -> bool:
         return False
 
 
-def _check_login_rate_limit(email: str, ip: str) -> None:
+def _check_ip_rate(ip: str) -> None:
+    """IP 维度前置检查（登录撞库 / 注册刷号）。"""
     now = _time.time()
-    _trim_rate_dict(_failed_logins)
     _trim_rate_dict(_failed_logins_by_ip)
-    # 邮箱维度
-    attempts = [t for t in _failed_logins.get(email, []) if now - t < LOGIN_LOCKOUT_SECONDS]
-    _failed_logins[email] = attempts
-    if len(attempts) >= MAX_LOGIN_ATTEMPTS:
-        raise HTTPException(429, "尝试次数过多，请稍后再试")
-    # IP 维度（防分布式撞库：同一个 IP 换邮箱狂试）
     ip_attempts = [t for t in _failed_logins_by_ip.get(ip, []) if now - t < LOGIN_LOCKOUT_SECONDS]
     _failed_logins_by_ip[ip] = ip_attempts
     if len(ip_attempts) >= MAX_LOGIN_ATTEMPTS * 3:
         raise HTTPException(429, "尝试次数过多，请稍后再试")
 
 
-def _record_login_failure(email: str, ip: str) -> None:
-    _failed_logins.setdefault(email, []).append(_time.time())
+def _check_email_rate(email: str) -> None:
+    """邮箱维度检查：仅在确实存在失败记录时锁（锁定窗口较短，缓解 DoS）。"""
+    now = _time.time()
+    _trim_rate_dict(_failed_logins)
+    attempts = [t for t in _failed_logins.get(email, []) if now - t < EMAIL_LOCKOUT_SECONDS]
+    _failed_logins[email] = attempts
+    if len(attempts) >= MAX_LOGIN_ATTEMPTS:
+        raise HTTPException(429, "尝试次数过多，请稍后再试")
+
+
+def _record_login_failure(email: str, ip: str, email_exists: bool) -> None:
+    # 邮箱维度只在账号真实存在时记录（避免伪造邮箱灌满限速表 / 只锁真实账号）
+    if email_exists:
+        _failed_logins.setdefault(email, []).append(_time.time())
     _failed_logins_by_ip.setdefault(ip, []).append(_time.time())
 
 
@@ -66,13 +77,22 @@ def _clear_login_failures(email: str, ip: str) -> None:
     _failed_logins_by_ip.pop(ip, None)
 
 
+def _check_register_rate(ip: str) -> None:
+    now = _time.time()
+    _trim_rate_dict(_register_attempts)
+    q = [t for t in _register_attempts.get(ip, []) if now - t < 60]
+    _register_attempts[ip] = q
+    if len(q) >= REGISTER_MAX_PER_MINUTE:
+        raise HTTPException(429, "注册过于频繁，请稍后再试")
+
+
 def make_token(user_id: str) -> str:
     expire = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expire_minutes)
     return jwt.encode({"sub": user_id, "exp": expire}, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
 @router.post("/register")
-async def register(data: dict):
+async def register(data: dict, request: Request):
     if not isinstance(data.get("email"), str) or not isinstance(data.get("password"), str):
         raise HTTPException(400, "Email and password must be text")
     email = data["email"].strip()
@@ -84,6 +104,10 @@ async def register(data: dict):
         raise HTTPException(400, "Email and password required")
     if len(pwd) < 4:
         raise HTTPException(400, "Password too short")
+
+    # 注册限速（防批量注册刷 10 积分）
+    ip = request.client.host if request.client else "unknown"
+    _check_register_rate(ip)
 
     existing = await get_user_by_email(email)
     if existing:
@@ -108,11 +132,13 @@ async def login(data: dict, request: Request):
     pwd = data["password"].strip()
     ip = request.client.host if request.client else "unknown"
 
-    _check_login_rate_limit(email, ip)
+    # IP 维度前置检查（防分布式撞库）
+    _check_ip_rate(ip)
 
     user = await get_user_by_email(email)
     if not user or not _verify_pwd(pwd, user["password_hash"]):
-        _record_login_failure(email, ip)
+        # 邮箱维度失败计数只在账号真实存在时记录（防伪造邮箱锁死他人/灌表）
+        _record_login_failure(email, ip, email_exists=bool(user))
         raise HTTPException(401, "Email or password incorrect")
 
     _clear_login_failures(email, ip)

@@ -84,7 +84,8 @@ async def game_ws(websocket: WebSocket, room_id: str):
             if conn is exclude:
                 continue
             try:
-                await conn.send_json(message)
+                # 发送带超时：慢/挂起消费者不拖死整房间广播（超时即断开）
+                await asyncio.wait_for(conn.send_json(message), timeout=5)
             except Exception:
                 conns.discard(conn)
 

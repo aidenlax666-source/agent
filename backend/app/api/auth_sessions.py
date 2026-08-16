@@ -5,6 +5,7 @@ from __future__ import annotations
 browser_profile/{user_id}/，任务沙箱只加载该用户自己的登录态。
 """
 
+import re
 import threading
 import time
 import json
@@ -22,11 +23,16 @@ PROFILE_DIR.mkdir(exist_ok=True)
 
 _login_status: dict = {"status": "idle", "message": ""}
 
-# Active login session (single concurrent login for simplicity).
-# The worker thread owns the Playwright browser; the API sets `save_requested`
-# to tell it to persist state, and it sets `done` when finished.
+# 每个用户一个登录窗口槽位（不再全局单槽：避免一人开窗阻塞全站）
 _session_lock = threading.Lock()
-_active_session: dict | None = None
+_active_sessions: dict[str, dict] = {}
+
+
+def _safe_domain(url: str) -> str:
+    """提取域名并做文件名安全化（去掉端口/非法字符，防止 Windows 文件名非法）。"""
+    host = (urlparse(url).hostname or "unknown").lower()
+    host = re.sub(r'[\\/:*?"<>|]', "_", host)
+    return host.replace("www.", "") or "unknown"
 
 
 def _save_state(ctx, domain: str, profile_dir: str) -> None:
@@ -44,24 +50,29 @@ async def start_login(data: dict, user=Depends(get_current_user)):
     url = data.get("url", "")
     if not url:
         return {"error": "url required"}
+    # 只允许 http/https（防 file:/data: 等本地文件/命令 scheme 被浏览器加载）
+    low = url.lower()
+    if not low.startswith(("http://", "https://")):
+        return {"error": "仅支持 http/https 协议的登录地址"}
 
-    domain = urlparse(url).netloc.replace("www.", "")
+    domain = _safe_domain(url)
     user_profile = str(PROFILE_DIR / str(user["id"]))
     Path(user_profile).mkdir(parents=True, exist_ok=True)
 
-    global _active_session
+    uid = str(user["id"])
     with _session_lock:
-        # 单窗口互斥：已有登录窗口在跑时拒绝新请求，避免刷出大量浏览器进程
-        if _active_session is not None and not _active_session["done"].is_set():
+        # 每个用户独立窗口槽：该用户已有窗口在跑时拒绝新请求
+        existing = _active_sessions.get(uid)
+        if existing is not None and not existing["done"].is_set():
             return {"error": "已有登录窗口打开，请先完成或等待"}
-        _active_session = {
+        session = {
             "domain": domain,
-            "user_id": user["id"],
+            "user_id": uid,
             "profile_dir": user_profile,
             "save_requested": threading.Event(),
             "done": threading.Event(),
         }
-    session = _active_session
+        _active_sessions[uid] = session
 
     _login_status["status"] = "opening"
     _login_status["message"] = f"Opening {url}..."
@@ -81,11 +92,11 @@ async def start_login(data: dict, user=Depends(get_current_user)):
                 _login_status["message"] = "请在浏览器中登录，登录完成后点「我已完成登录」"
 
                 # Wait until the user requests a save, closes the browser, or times out.
-                # 超时（10 分钟）强制结束：避免"有人打开登录窗口不关"阻塞所有后续登录。
+                # 超时（3 分钟）强制结束：避免"有人打开登录窗口不关"长期占用槽位。
                 wait_started = time.time()
                 while not session["save_requested"].is_set():
                     time.sleep(0.5)
-                    if time.time() - wait_started > 600:
+                    if time.time() - wait_started > 180:
                         _login_status["status"] = "timeout"
                         _login_status["message"] = "登录窗口超时，已自动结束"
                         break
@@ -113,6 +124,9 @@ async def start_login(data: dict, user=Depends(get_current_user)):
             _login_status["message"] = str(e)
         finally:
             session["done"].set()
+            with _session_lock:
+                if _active_sessions.get(uid) is session:
+                    _active_sessions.pop(uid, None)
 
     threading.Thread(target=_worker, daemon=True).start()
     return {"status": "opening", "message": "Browser opening, please login"}
@@ -126,12 +140,11 @@ async def login_status():
 
 @router.get("/sessions/check")
 async def check_profile(user=Depends(get_current_user)):
-    """Check if the current account has any saved login state."""
+    """Check if the current account has any saved login state.（不暴露服务器路径）"""
     user_dir = PROFILE_DIR / str(user["id"])
     files = list(user_dir.glob("*.json")) if user_dir.is_dir() else []
     return {
         "has_profile": any(f.stat().st_size > 100 for f in files),
-        "profile_dir": str(user_dir),
     }
 
 
@@ -141,12 +154,9 @@ async def continue_after_login(data: dict, user=Depends(get_current_user)):
 
     旧版用于恢复 projects 工作流；projects 流程已退役，登录态保存后直接完成。
     """
-    if not _active_session:
-        return {"status": "saved", "message": "没有活动的登录窗口"}
-
-    session = _active_session
-    # 只允许当前用户确认自己的登录窗口（防越权触发他人保存）
-    if str(session.get("user_id", "")) != str(user["id"]):
+    uid = str(user["id"])
+    session = _active_sessions.get(uid)
+    if not session:
         return {"status": "saved", "message": "没有活动的登录窗口"}
     session["save_requested"].set()
     session["done"].wait(timeout=10)

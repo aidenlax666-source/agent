@@ -335,6 +335,7 @@ async def heal_empty_result(
     dom_snapshot: str,
     url: str,
     attempt_number: int = 1,
+    profile_dir: str | None = None,
 ) -> HealingResult:
     """Heal a script that ran without exception but produced 0 rows.
 
@@ -350,7 +351,7 @@ async def heal_empty_result(
     if attempt_number >= 2:
         try:
             from app.services.page_capture import capture_page_structure, format_dom_for_prompt
-            structure = await capture_page_structure(url)
+            structure = await capture_page_structure(url, profile_dir=profile_dir)
             fresh_dom = format_dom_for_prompt(structure)
         except Exception:
             fresh_dom = dom_snapshot  # fall back silently, don't fail the heal on capture error

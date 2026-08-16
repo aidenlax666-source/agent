@@ -263,6 +263,17 @@ async def _classify_intent(requirement: str, has_data_files: bool) -> str:
         return "task"
 
 
+def _json_list(v) -> list:
+    """把 DB 里的 JSON 字符串列安全解码为 list（容错：None/坏 JSON/非 list）。"""
+    if not v:
+        return []
+    try:
+        val = json.loads(v) if isinstance(v, str) else v
+        return val if isinstance(val, list) else []
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
 def submit(requirement: str, url: str | None = None, user_id: str = "", image_paths: list[str] | None = None,
            data_paths: list[str] | None = None) -> dict:
     """提交一个后台任务，立即返回任务信息（持久化到 SQLite，重启不丢）。
@@ -401,17 +412,22 @@ async def mini_scheduler_loop() -> None:
     while True:
         try:
             import time as _t
-            from app.database import get_due_mini_tasks, update_mini_run
+            from app.database import claim_mini_run, get_due_mini_tasks
             due = await get_due_mini_tasks(_t.time())
             for mtask in due:
                 tid = mtask["id"]
                 key = f"mini_sched:{tid}"
                 if is_running(key):
                     continue
-                submit(mtask.get("requirement") or "", mtask.get("url") or None, mtask.get("user_id") or "")
                 now_ts = _t.time()
                 nxt = _next_mini_run(mtask, now_ts)
-                start_background(key, update_mini_run(tid, now_ts, nxt))
+                # 原子抢占：只在 next_run_at 仍是到期值时更新（多 worker 也不会重复执行）
+                if not await claim_mini_run(tid, now_ts, nxt):
+                    continue
+                submit(mtask.get("requirement") or "", mtask.get("url") or None,
+                       mtask.get("user_id") or "",
+                       image_paths=_json_list(mtask.get("image_paths")),
+                       data_paths=_json_list(mtask.get("data_paths")))
                 logger.info(f"[mini调度器] 定时触发: {tid[:8]} - {(mtask.get('requirement') or '')[:40]}")
             # 每天清理一次超期产物（配置 asset_cleanup_days>0 时启用）
             day = int(_t.time() // 86400)
@@ -424,13 +440,19 @@ async def mini_scheduler_loop() -> None:
 
 
 def _cleanup_assets() -> None:
-    """清理超过 asset_cleanup_days 天的 web/ 产物与 uploads/ 上传文件（防磁盘无限增长）。"""
+    """清理超过 asset_cleanup_days 天的 web/ 产物与 uploads/ 上传文件（防磁盘无限增长）。
+
+    只删除已知产物前缀的文件（report_/game_/video_/image_/music_/tts_/dev_/content_/auto_output_），
+    避免误删 index.html/manga.html 等演示资产。
+    """
     try:
         days = get_settings().asset_cleanup_days
         if not days or days <= 0:
             return
         cutoff = time.time() - days * 86400
         removed = 0
+        _PRODUCT_PREFIXES = ("report_", "game_", "video_", "image_", "music_", "tts_",
+                             "dev_", "content_", "auto_output_")
         for d in (_WEB_DIR, os.path.join(os.path.dirname(__file__), "..", "..", "..", "backend", "uploads")):
             d = os.path.normpath(d)
             if not os.path.isdir(d):
@@ -439,6 +461,8 @@ def _cleanup_assets() -> None:
                 p = os.path.join(d, name)
                 if not os.path.isfile(p):
                     continue
+                if d == _WEB_DIR and not name.lower().startswith(_PRODUCT_PREFIXES):
+                    continue  # web/ 只清产物前缀文件，保留演示资产
                 try:
                     if os.path.getmtime(p) < cutoff:
                         os.unlink(p)
@@ -511,7 +535,7 @@ def iterate(task_id: str, feedback: str, user_id: str = "") -> dict | None:
     new_req = f"{base_req}（用户修改意见：{feedback}）"
     url = rec.get("url") or ""
 
-    # 更新内存记录 + 重置状态（保留原图片）
+    # 更新内存记录 + 重置状态（保留原图片/数据路径）
     _TASKS[task_id] = {
         "id": task_id,
         "user_id": rec.get("user_id", ""),
@@ -523,7 +547,8 @@ def iterate(task_id: str, feedback: str, user_id: str = "") -> dict | None:
         "created_at": rec.get("created_at", time.time()),
         "result": None,
         "error": None,
-        "image_paths": rec.get("image_paths") or [],
+        "image_paths": _json_list(rec.get("image_paths")),
+        "data_paths": _json_list(rec.get("data_paths")),
     }
     started = start_background(task_id, _run_task(task_id, new_req, url, _TASKS[task_id]))
     return {"id": task_id, "status": "queued" if started else "error", "message": "迭代修改已提交"}
@@ -542,6 +567,7 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
     intent = await _classify_intent(requirement, bool(data_paths))
     if intent == "qa":
         record["message"] = "识别为数据问答，AI 正在分析..."
+        await save_mini_task(record)  # QA 任务也落库（否则重启即丢）
         await update_mini_task(task_id, status="running", message=record["message"])
         await _run_qa_task(task_id, requirement, data_paths, record)
         return
@@ -854,22 +880,45 @@ def _dev_context(workspace: str, files: list[str], requirement: str | None = Non
     return "\n\n".join(parts)
 
 
+def _safe_dev_rel(rel: str, workspace: str) -> str | None:
+    """校验 LLM 返回的文件相对路径：拒绝绝对路径/盘符/穿越段，且必须落在 workspace 内。
+
+    返回规范化后的相对路径；非法返回 None（调用方应跳过该文件并记错误）。
+    """
+    if not isinstance(rel, str) or not rel.strip():
+        return None
+    rel = rel.strip().replace("\\", "/").lstrip("/")
+    if re.match(r"^[A-Za-z]:", rel):
+        return None
+    if ".." in rel.split("/"):
+        return None
+    ws = os.path.normpath(workspace)
+    norm = os.path.normpath(os.path.join(ws, rel))
+    if norm != ws and not norm.startswith(ws + os.sep):
+        return None
+    return rel
+
+
 def _dev_validate(files_map: dict, workspace: str) -> list[str]:
     """校验改动的 .py 文件语法，返回错误列表（空=通过）。"""
     errors = []
     for rel, content in (files_map or {}).items():
         if not rel.endswith(".py"):
             continue
-        p = os.path.join(workspace, rel)
+        safe = _safe_dev_rel(rel, workspace)
+        if safe is None:
+            errors.append(f"{rel}: 非法路径（不允许越出项目目录）")
+            continue
+        p = os.path.join(workspace, safe)
         try:
             os.makedirs(os.path.dirname(p), exist_ok=True)
             with open(p, "w", encoding="utf-8") as f:
                 f.write(content)
-            compile(content, rel, "exec")
+            compile(content, safe, "exec")
         except SyntaxError as e:
-            errors.append(f"{rel}: 语法错误 line {e.lineno}: {e.msg}")
+            errors.append(f"{safe}: 语法错误 line {e.lineno}: {e.msg}")
         except Exception as e:
-            errors.append(f"{rel}: {str(e)[:120]}")
+            errors.append(f"{safe}: {str(e)[:120]}")
     return errors
 
 
@@ -969,6 +1018,12 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
         if errors:
             return {"status": "failed", "error": f"代码校验未通过: {'；'.join(errors)[:300]}", "elapsed": round(time.time() - started, 1)}
 
+        # 只保留路径合法的文件（防 LLM 返回 ../ 或绝对路径）
+        safe_files: dict[str, str] = {}
+        for rel, content in (files_map or {}).items():
+            if _safe_dev_rel(rel, workspace) is not None:
+                safe_files[rel] = content
+        files_map = safe_files
         diff = _dev_build_diff(files_map, workspace, orig_contents)
         # diff 落 web/ 便于下载/查看（产物域）
         os.makedirs(_WEB_DIR, exist_ok=True)
@@ -1190,17 +1245,26 @@ async def _run_qa_task(task_id: str, requirement: str, data_paths: list[str], re
     started = time.time()
     summary: dict = {}
     last_err = ""
+    # pandas 同步读取放线程池，避免阻塞事件循环
+    import asyncio as _a
+    loop = _a.get_running_loop()
+
+    def _read_summary(fp: str) -> dict:
+        if fp.lower().endswith((".xlsx", ".xls")):
+            import pandas as pd
+            return {"df": pd.read_excel(fp)}
+        if fp.lower().endswith(".csv"):
+            import pandas as pd
+            return {"df": pd.read_csv(fp)}
+        return {}
+
     for fp in data_paths or []:
         if not os.path.exists(fp):
             continue
         try:
-            if fp.lower().endswith((".xlsx", ".xls")):
-                import pandas as pd
-                df = pd.read_excel(fp)
-            elif fp.lower().endswith(".csv"):
-                import pandas as pd
-                df = pd.read_csv(fp)
-            else:
+            loaded = await loop.run_in_executor(None, _read_summary, fp)
+            df = loaded.get("df")
+            if df is None:
                 continue
             summary = {
                 "rows": int(len(df)),
@@ -1231,7 +1295,22 @@ async def _run_qa_task(task_id: str, requirement: str, data_paths: list[str], re
     try:
         answer = await chat_completion(QA_SYSTEM_PROMPT, user_prompt, temperature=0.3, max_tokens=800)
     except Exception as e:
-        answer = f"分析失败: {str(e)[:200]}"
+        # LLM 失败不能伪装成成功：标记 failed 并把错误写入 error 字段
+        merged = {
+            "status": "failed",
+            "answer": "",
+            "rows": summary["rows"],
+            "columns": summary["columns"],
+            "elapsed": round(time.time() - started, 1),
+            "error": f"分析失败: {str(e)[:200]}",
+        }
+        record["result"] = merged
+        record["status"] = "done"
+        record["message"] = "完成（分析失败）"
+        record["progress"] = 100
+        await update_mini_task(task_id, status="done", message=record["message"],
+                               result=_json.dumps(merged, ensure_ascii=False), error=merged["error"])
+        return
 
     merged = {
         "status": "ok",

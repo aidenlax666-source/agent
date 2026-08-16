@@ -1,6 +1,7 @@
 import logging
 import secrets
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings
 
@@ -50,8 +51,13 @@ class Settings(BaseSettings):
     debug: bool = True
     cors_origins: str = "http://localhost:3000"  # 逗号分隔的允许来源
 
+    # 可信代理 IP（逗号分隔）：仅当直连来源在此白名单（含本机回环）时才信任
+    # X-Forwarded-For 头（防伪造 IP 绕过限速）；留空/不含直连 IP 则一律用直连 IP
+    trusted_proxy_ips: str = "127.0.0.1,::1"
+
     class Config:
-        env_file = ".env"
+        # 固定用仓库根目录的 .env（与 start.ps1 的启动目录一致），避免按 CWD 漂移
+        env_file = str(Path(__file__).resolve().parent.parent.parent / ".env")
         case_sensitive = False
         extra = "ignore"  # 忽略 .env 里遗留的旧配置项（如 DATABASE_URL/REDIS_URL）
 

@@ -25,6 +25,9 @@ _sandbox_semaphore = asyncio.Semaphore(settings.sandbox_max_concurrency)
 _SANDBOX_TMP = os.path.join(os.path.dirname(__file__), "..", "..", "tmp")
 os.makedirs(_SANDBOX_TMP, exist_ok=True)
 
+# 最近一次执行注入的登录态宿主目录（Docker 模式把它挂载为 /auth 并改写脚本路径）
+_AUTH_INJECT_DIR: str = ""
+
 # Output extensions we care about when locating the script's result file.
 _OUTPUT_EXTS = (".xlsx", ".xls", ".docx", ".pptx", ".csv", ".txt", ".json", ".html", ".png", ".pdf", ".wav", ".mp3", ".mp4")
 _OUTPUT_NAMES = ("output.xlsx", "output.xls", "output.docx", "output.pptx", "output.csv")
@@ -90,21 +93,28 @@ def _find_output_file(workspace: str) -> str | None:
 
 
 def _finalize_output(workspace: str) -> str | None:
-    """Move the script's output file out of `workspace` to a stable temp path,
-    then remove the (now-empty) workspace. Returns the stable path or None."""
+    """把脚本的全部输出文件搬出 workspace 到稳定目录（不再只留一个、删其余），
+    返回主输出文件路径；随后清理 workspace 中残留的临时文件。"""
     src = _find_output_file(workspace)
     if not src:
         shutil.rmtree(workspace, ignore_errors=True)
         return None
 
-    ext = os.path.splitext(src)[1] or ".xlsx"
-    stable = os.path.join(_SANDBOX_TMP, f"auto_output_{uuid.uuid4().hex}{ext}")
+    stable_dir = os.path.join(_SANDBOX_TMP, f"auto_output_{uuid.uuid4().hex}")
+    os.makedirs(stable_dir, exist_ok=True)
     try:
-        shutil.move(src, stable)
+        for name in os.listdir(workspace):
+            full = os.path.join(workspace, name)
+            if not os.path.isfile(full):
+                continue
+            lower = name.lower()
+            if lower in _OUTPUT_NAMES or lower.endswith(_OUTPUT_EXTS):
+                shutil.move(full, os.path.join(stable_dir, name))
         shutil.rmtree(workspace, ignore_errors=True)
-        return stable
+        main = _find_output_file(stable_dir)
+        return main or src
     except OSError:
-        # Move failed — leave the output in place so the caller can still read it.
+        # Move failed — leave the outputs in place so the caller can still read them.
         return src
 
 
@@ -238,6 +248,8 @@ async def _execute_in_sandbox_impl(
     # (按账号隔离：任务只加载所属用户的登录态；未指定时回退全局目录)
     auth_dir = profile_dir or os.path.join(os.path.dirname(__file__), "..", "..", "browser_profile")
     auth_dir = os.path.normpath(auth_dir)
+    global _AUTH_INJECT_DIR
+    _AUTH_INJECT_DIR = auth_dir if os.path.exists(auth_dir) else ""
     if os.path.exists(auth_dir):
         auth_injection = (
             "\n# === AUTH STATE INJECTION (merge all saved domains) ===\n"
@@ -314,6 +326,8 @@ async def _run_container(
     preview_mode: bool,
 ) -> ScriptResult:
     """Run the script inside a Docker container, or fall back to subprocess."""
+    import logging as _logging
+    _log = _logging.getLogger("app.sandbox.docker_executor")
     script_name = os.path.basename(script_path)
     container_name = f"sandbox_{script_name.replace('.py', '')}"
 
@@ -332,30 +346,33 @@ async def _run_container(
     # Create a writable host output dir that we can read back from.
     output_host_dir = tempfile.mkdtemp(prefix="sandbox_output_", dir=_SANDBOX_TMP)
 
+    container = None
     try:
-        # Ensure base image is available
+        # Ensure base image is available（同步 docker SDK 调用放线程池，避免阻塞事件循环）
         try:
-            client.images.get(settings.sandbox_image)
+            await asyncio.to_thread(client.images.get, settings.sandbox_image)
         except ImageNotFound:
-            client.images.pull(settings.sandbox_image)
+            await asyncio.to_thread(client.images.pull, settings.sandbox_image)
+
+        # 登录态目录挂载进容器 /auth（fallback 路径直接用宿主路径，这里替换成容器内路径）
+        auth_dir = _AUTH_INJECT_DIR  # set by caller (host path)
+        volumes = {
+            os.path.dirname(script_path): {"bind": "/scripts", "mode": "ro"},
+            output_host_dir: {"bind": "/output", "mode": "rw"},
+        }
+        if auth_dir and os.path.isdir(auth_dir):
+            volumes[auth_dir] = {"bind": "/auth", "mode": "ro"}
+            _rewrite_script_auth_dir(script_path, "/auth")
 
         # Create and run container.
         # /scripts is read-only (the script itself); /output is the writable
         # working directory where output.xlsx etc. are written.
-        container = client.containers.run(
+        container = await asyncio.to_thread(
+            client.containers.run,
             image=settings.sandbox_image,
             command=["python", f"/scripts/{script_name}"],
             working_dir="/output",
-            volumes={
-                os.path.dirname(script_path): {
-                    "bind": "/scripts",
-                    "mode": "ro",
-                },
-                output_host_dir: {
-                    "bind": "/output",
-                    "mode": "rw",
-                },
-            },
+            volumes=volumes,
             environment={
                 "PYTHONUNBUFFERED": "1",
                 "PREVIEW_MODE": "true" if preview_mode else "false",
@@ -370,11 +387,11 @@ async def _run_container(
 
         try:
             # Wait for container with timeout
-            exit_result = container.wait(timeout=timeout)
+            exit_result = await asyncio.to_thread(container.wait, timeout=timeout)
 
             # Get logs
-            stdout = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
-            stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
+            stdout = (await asyncio.to_thread(container.logs, stdout=True, stderr=False)).decode("utf-8", errors="replace")
+            stderr = (await asyncio.to_thread(container.logs, stdout=False, stderr=True)).decode("utf-8", errors="replace")
 
             exit_code = exit_result.get("StatusCode", -1)
 
@@ -388,31 +405,50 @@ async def _run_container(
                 output_file_path=output_path,
             )
 
-        except Exception:
-            # Timeout or other issues
-            container.kill()
-            stdout = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
-            stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
+        except Exception as e:
+            # 容器已启动：超时/连接问题不再回退重跑（避免副作用重复执行）
+            try:
+                await asyncio.to_thread(container.kill)
+            except Exception as ke:
+                _log.warning("container kill failed: %s", ke)
+            try:
+                stdout = (await asyncio.to_thread(container.logs, stdout=True, stderr=False)).decode("utf-8", errors="replace")
+                stderr = (await asyncio.to_thread(container.logs, stdout=False, stderr=True)).decode("utf-8", errors="replace")
+            except Exception:
+                stdout, stderr = "", ""
             shutil.rmtree(output_host_dir, ignore_errors=True)
-
             return ScriptResult(
                 success=False,
                 stdout=stdout[:50000],
-                stderr=f"Execution timeout after {timeout}s\n{stderr[:10000]}",
+                stderr=f"Execution failed/timeout after {timeout}s: {str(e)[:120]}\n{stderr[:10000]}",
                 exit_code=-1,
             )
 
         finally:
             # Cleanup container (leave output_host_dir for caller to read).
             try:
-                container.remove(force=True)
+                await asyncio.to_thread(container.remove, force=True)
             except Exception:
                 pass
 
-    except Exception:
-        # Fallback to subprocess
+    except Exception as e:
+        # 容器创建阶段失败（镜像/启动异常）才回退 subprocess；已启动的不再回退
         shutil.rmtree(output_host_dir, ignore_errors=True)
+        _log.warning("docker create failed (%s), falling back to subprocess", str(e)[:120])
         return await _run_fallback(script_path, timeout, inactivity_timeout)
+
+
+def _rewrite_script_auth_dir(script_path: str, container_path: str) -> None:
+    """把脚本里注入的宿主登录目录路径改写为容器内路径（仅 Docker 模式用）。"""
+    try:
+        with open(script_path, encoding="utf-8") as f:
+            content = f.read()
+        import re as _re
+        content = _re.sub(r"_AUTH_DIR = r'[^']*'", f"_AUTH_DIR = r'{container_path}'", content, count=1)
+        with open(script_path, "w", encoding="utf-8") as f:
+            f.write(content)
+    except Exception:
+        pass
 
 
 async def _run_fallback(script_path: str, timeout: int, inactivity_timeout: int) -> ScriptResult:
@@ -421,6 +457,7 @@ async def _run_fallback(script_path: str, timeout: int, inactivity_timeout: int)
     Streams stdout/stderr and monitors for inactivity: if no new output appears
     for `inactivity_timeout` seconds, the script is considered stuck and killed
     (its whole process tree). A total `timeout` remains as the upper bound.
+    输出缓冲有字节预算（防海量输出撑爆内存）；任务取消时确保子进程被杀。
     """
     import subprocess
     import sys
@@ -437,6 +474,7 @@ async def _run_fallback(script_path: str, timeout: int, inactivity_timeout: int)
     else:
         kwargs["start_new_session"] = True
 
+    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             sys.executable, script_path,
@@ -449,18 +487,22 @@ async def _run_fallback(script_path: str, timeout: int, inactivity_timeout: int)
 
         stdout_buf: list[str] = []
         stderr_buf: list[str] = []
+        _OUT_BUDGET = 100 * 1024  # 每流最多缓存 100KB，超出继续读但丢弃（防 OOM）
         last_output = time.monotonic()
         start = time.monotonic()
 
         async def _drain(stream, buf):
             nonlocal last_output
+            size = 0
             try:
                 while True:
                     line = await stream.readline()
                     if not line:
                         break
-                    buf.append(line.decode("utf-8", errors="replace"))
                     last_output = time.monotonic()
+                    size += len(line)
+                    if size <= _OUT_BUDGET:
+                        buf.append(line.decode("utf-8", errors="replace"))
             except Exception:
                 pass
 
@@ -481,20 +523,25 @@ async def _run_fallback(script_path: str, timeout: int, inactivity_timeout: int)
             await asyncio.sleep(0.5)
 
         if kill_reason is not None:
-            _kill_process_tree(proc)
+            await asyncio.to_thread(_kill_process_tree, proc)
 
-        # 收集剩余输出并回收进程
+        # 收集剩余输出并回收进程（wait 带超时，防永久挂起占住沙箱信号量）
         try:
             await asyncio.wait_for(asyncio.gather(stdout_task, stderr_task), timeout=5)
         except Exception:
             pass
         try:
-            await proc.wait()
+            await asyncio.wait_for(proc.wait(), timeout=10)
         except Exception:
-            pass
+            await asyncio.to_thread(_kill_process_tree, proc)
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except Exception:
+                pass
 
         stdout = "".join(stdout_buf)
         stderr = "".join(stderr_buf)
+        rc = proc.returncode
 
         if kill_reason is not None:
             shutil.rmtree(workspace, ignore_errors=True)
@@ -505,21 +552,30 @@ async def _run_fallback(script_path: str, timeout: int, inactivity_timeout: int)
                 exit_code=-1,
             )
 
-        if proc.returncode == 0:
+        if rc == 0:
             output_path = _finalize_output(workspace)
         else:
             shutil.rmtree(workspace, ignore_errors=True)
             output_path = None
 
         return ScriptResult(
-            success=(proc.returncode == 0),
+            success=(rc == 0),
             stdout=stdout[:50000],
             stderr=stderr[:10000],
-            exit_code=proc.returncode or 0,
+            exit_code=rc if rc is not None else -1,
             output_file_path=output_path,
         )
 
+    except asyncio.CancelledError:
+        # 任务被取消：必须杀掉子进程并清理，避免残留进程/文件
+        if proc is not None:
+            await asyncio.to_thread(_kill_process_tree, proc)
+        shutil.rmtree(workspace, ignore_errors=True)
+        raise
     except Exception as e:
+        if proc is not None:
+            await asyncio.to_thread(_kill_process_tree, proc)
+        shutil.rmtree(workspace, ignore_errors=True)
         return ScriptResult(
             success=False,
             stdout="",

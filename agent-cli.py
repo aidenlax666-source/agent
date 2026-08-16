@@ -311,9 +311,14 @@ def main() -> None:
             if args.yes:
                 break
 
-            ans = input(
-                f"\n{c_yellow('[询问]')} Enter 确认 / 输入你的意见让 AI 调整方案 / 输入 q 放弃本轮: "
-            ).strip()
+            try:
+                ans = input(
+                    f"\n{c_yellow('[询问]')} Enter 确认 / 输入你的意见让 AI 调整方案 / 输入 q 放弃本轮: "
+                ).strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\n已放弃本轮，未做任何改动。")
+                plan_text = ""
+                break
             if ans.lower() in ("q", "quit", "exit"):
                 print("已放弃本轮，未做任何改动。")
                 plan_text = ""
@@ -359,11 +364,19 @@ def main() -> None:
         if args.yes:
             ans = "a"
         else:
-            ans = input(f"\n{c_yellow('[询问]')} 应用这些改动？全部 (a) / 逐文件 (f) / 放弃 (n): ").strip().lower()
+            try:
+                ans = input(f"\n{c_yellow('[询问]')} 应用这些改动？全部 (a) / 逐文件 (f) / 放弃 (n): ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print("\n已放弃应用，改动未生效。")
+                continue
         if ans in ("f", "file", "逐文件"):
             only = set()
             for f in dev_files:
-                if input(f"  应用 {f['path']}？(y/N): ").strip().lower() in ("y", "yes"):
+                try:
+                    pick = input(f"  应用 {f['path']}？(y/N): ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    pick = ""
+                if pick in ("y", "yes"):
                     only.add(f["path"])
             if not only:
                 print("未选择任何文件，放弃应用。")

@@ -14,6 +14,7 @@ logger = logging.getLogger("app.services.game_rooms")
 # room = {"id": str, "players": {player_id: name}, "created_at": float, "messages": int}
 _rooms: dict[str, dict] = {}
 _MAX_ROOMS = 200
+_MAX_PLAYERS_PER_ROOM = 20  # 单房间人数上限（防慢速/脚本连接塞满房间）
 _ROOM_TTL = 24 * 3600  # 房间最长存活 24h（防僵尸房间占内存）
 
 
@@ -57,6 +58,8 @@ def add_player(room_id: str, name: str) -> tuple[str, str] | None:
     room = _rooms.get(room_id)
     if not room:
         return None, "房间不存在"
+    if len(room["players"]) >= _MAX_PLAYERS_PER_ROOM:
+        return None, "房间已满（最多 20 人）"
     name = (name or "玩家").strip()[:20] or "玩家"
     # 重名加序号
     names = set(room["players"].values())

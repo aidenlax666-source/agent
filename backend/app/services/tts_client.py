@@ -113,42 +113,52 @@ async def tts_speak(
     }
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)) or ".", exist_ok=True)
-    chunks: list[bytes] = []
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=30.0), trust_env=False) as client:
-            async with client.stream("POST", _TTS_URL, json=body, headers=headers) as resp:
-                if resp.status_code != 200:
-                    err_body = (await resp.aread()).decode("utf-8", "replace")
-                    return {"success": False, "file_path": None,
-                            "error": f"豆包 TTS HTTP {resp.status_code}: {err_body[:200]}"}
-                # SSE 流解析：data: {json}
-                async for line in resp.aiter_lines():
-                    line = line.strip()
-                    if not line or line.startswith(("event:", ":")):
-                        continue
-                    if not line.startswith("data:"):
-                        continue
-                    try:
-                        msg = json.loads(line[5:].strip())
-                    except Exception:
-                        continue
-                    code = msg.get("code", 0)
-                    if code == 20000000:  # 结束帧（含 usage）
-                        continue
-                    if code != 0:  # 错误帧
+    # 瞬时网络错误/空响应重试 2 次（指数退避），避免一次抖动让整段配音任务失败
+    last_err = ""
+    for attempt in range(3):
+        chunks: list[bytes] = []
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=30.0), trust_env=False) as client:
+                async with client.stream("POST", _TTS_URL, json=body, headers=headers) as resp:
+                    if resp.status_code != 200:
+                        err_body = (await resp.aread()).decode("utf-8", "replace")
                         return {"success": False, "file_path": None,
-                                "error": f"豆包 TTS 错误({code}): {msg.get('message') or msg.get('hint') or ''}"}
-                    audio_b64 = msg.get("data")
-                    if audio_b64:
+                                "error": f"豆包 TTS HTTP {resp.status_code}: {err_body[:200]}"}
+                    # SSE 流解析：data: {json}
+                    async for line in resp.aiter_lines():
+                        line = line.strip()
+                        if not line or line.startswith(("event:", ":")):
+                            continue
+                        if not line.startswith("data:"):
+                            continue
                         try:
-                            chunks.append(base64.b64decode(audio_b64))
+                            msg = json.loads(line[5:].strip())
                         except Exception:
-                            pass
-    except httpx.TimeoutException:
-        return {"success": False, "file_path": None, "error": "豆包 TTS 请求超时"}
-    except Exception as e:
-        logger.warning("豆包 TTS 异常: %s", repr(e)[:200])
-        return {"success": False, "file_path": None, "error": f"豆包 TTS 失败: {str(e)[:150]}"}
+                            continue
+                        code = msg.get("code", 0)
+                        if code == 20000000:  # 结束帧（含 usage）
+                            continue
+                        if code != 0:  # 错误帧
+                            return {"success": False, "file_path": None,
+                                    "error": f"豆包 TTS 错误({code}): {msg.get('message') or msg.get('hint') or ''}"}
+                        audio_b64 = msg.get("data")
+                        if audio_b64:
+                            try:
+                                chunks.append(base64.b64decode(audio_b64))
+                            except Exception:
+                                pass
+        except httpx.TimeoutException:
+            last_err = "豆包 TTS 请求超时"
+        except Exception as e:
+            last_err = f"豆包 TTS 失败: {str(e)[:150]}"
+            logger.warning("豆包 TTS 异常: %s", repr(e)[:200])
+        if chunks:
+            break
+        if attempt < 2:
+            import asyncio as _a
+            await _a.sleep(2 ** attempt)
+    if last_err and not chunks:
+        return {"success": False, "file_path": None, "error": last_err}
 
     if not chunks:
         return {"success": False, "file_path": None, "error": "豆包 TTS 未返回音频数据"}

@@ -54,7 +54,8 @@ def _inject_bases(html: str, api_base: str) -> str:
 def _complete(html: str) -> tuple[bool, str]:
     checks = {
         "</html>": "html 结尾",
-        "WebSocket": "WebSocket",
+        "__API_BASE__": "API 占位符(__API_BASE__)",
+        "__WS_BASE__": "WS 占位符(__WS_BASE__)",
         "/api/game/rooms": "建房 API",
         "/api/ws/game/": "房间 WS",
         "welcome": "welcome 处理",

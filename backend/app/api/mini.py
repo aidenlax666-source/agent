@@ -15,10 +15,15 @@ router = APIRouter()
 
 # 开发任务 API：zip 上限 50MB
 MAX_DEV_ZIP_SIZE = 50 * 1024 * 1024
+# 解压后总大小/成员数/单文件大小上限（防 zip 炸弹打爆磁盘/内存）
+MAX_DEV_EXTRACT_TOTAL = 200 * 1024 * 1024
+MAX_DEV_EXTRACT_FILES = 5000
+MAX_DEV_EXTRACT_FILE = 20 * 1024 * 1024
 
 
 @router.post("/dev/tasks")
-async def dev_task(requirement: str = Form(...), file: UploadFile = File(...), user=Depends(get_current_user)):
+async def dev_task(requirement: str = Form(...), file: UploadFile = File(...),
+                   request: Request = None, user=Depends(get_current_user)):
     """开发任务 API（供 CLI/外部调用）：上传项目 zip + 需求 → AI 改码 → 返回 diff + 修改后文件 zip。
 
     返回: {dev_diff, dev_files, dev_summary, dev_modified_zip(base64), dev_diff_url}
@@ -32,12 +37,15 @@ async def dev_task(requirement: str = Form(...), file: UploadFile = File(...), u
     requirement = (requirement or "").strip()
     if not requirement:
         raise HTTPException(status_code=400, detail="requirement 不能为空")
+    if len(requirement) > MAX_REQUIREMENT_LEN:
+        raise HTTPException(status_code=400, detail=f"requirement 过长（最大 {MAX_REQUIREMENT_LEN} 字）")
     content = await file.read(MAX_DEV_ZIP_SIZE + 1)
     if len(content) > MAX_DEV_ZIP_SIZE:
         raise HTTPException(status_code=413, detail="项目 zip 过大（最大 50MB）")
 
     # 安全解压：防 zip-slip 路径穿越
     tmp = _unzip_dev_project(content)
+    await _charge_dev_credit(user, request)
 
     try:
         task_id = _uuid.uuid4().hex[:12]
@@ -59,22 +67,38 @@ async def dev_task(requirement: str = Form(...), file: UploadFile = File(...), u
 
 
 def _unzip_dev_project(content: bytes) -> str:
-    """安全解压用户上传的项目 zip（防 zip-slip 路径穿越），返回解压目录。"""
+    """安全解压用户上传的项目 zip（防 zip-slip 路径穿越 + 防 zip 炸弹），返回解压目录。
+
+    限制：解压后总字节 ≤ MAX_DEV_EXTRACT_TOTAL、成员数 ≤ MAX_DEV_EXTRACT_FILES、
+    单文件 ≤ MAX_DEV_EXTRACT_FILE。任何失败都会清理已创建的临时目录。
+    """
     import io as _io
+    import shutil as _shutil
     import tempfile
     import zipfile as _zip
 
     tmp = tempfile.mkdtemp(prefix="dev_api_")
     try:
         with _zip.ZipFile(_io.BytesIO(content)) as zf:
-            for member in zf.infolist():
+            infos = zf.infolist()
+            if len(infos) > MAX_DEV_EXTRACT_FILES:
+                raise HTTPException(status_code=400, detail=f"项目 zip 文件数过多（最大 {MAX_DEV_EXTRACT_FILES} 个）")
+            total = 0
+            for member in infos:
                 target = os.path.normpath(os.path.join(tmp, member.filename))
                 if not target.startswith(tmp + os.sep) and target != tmp:
                     raise HTTPException(status_code=400, detail="项目 zip 包含非法路径")
+                if member.file_size > MAX_DEV_EXTRACT_FILE:
+                    raise HTTPException(status_code=400, detail=f"项目 zip 内单文件过大（最大 {MAX_DEV_EXTRACT_FILE // (1024 * 1024)}MB）")
+                total += member.file_size
+                if total > MAX_DEV_EXTRACT_TOTAL:
+                    raise HTTPException(status_code=400, detail=f"项目 zip 解压后总大小超限（最大 {MAX_DEV_EXTRACT_TOTAL // (1024 * 1024)}MB）")
             zf.extractall(tmp)
     except HTTPException:
+        _shutil.rmtree(tmp, ignore_errors=True)
         raise
     except Exception as e:
+        _shutil.rmtree(tmp, ignore_errors=True)
         raise HTTPException(status_code=400, detail=f"zip 解压失败: {str(e)[:150]}")
     return tmp
 
@@ -86,9 +110,19 @@ async def _dev_zip_from_form(file: UploadFile) -> bytes:
     return content
 
 
+async def _charge_dev_credit(user: dict, request: Request) -> int:
+    """dev/qa 接口：匿名用户按 IP 限速 + 原子扣 1 积分（防无限刷 LLM 成本）。"""
+    if (user.get("email") or "").startswith("anon_"):
+        _check_anon_rate(_client_ip(request))
+    from app.database import get_credits, try_decrement_credits
+    if not await try_decrement_credits(user["id"], 1):
+        raise HTTPException(status_code=402, detail="额度不足，无法执行该操作")
+    return await get_credits(user["id"])
+
+
 @router.post("/dev/plan")
 async def dev_plan(requirement: str = Form(...), file: UploadFile = File(...),
-                   feedback: str = Form(""), user=Depends(get_current_user)):
+                   feedback: str = Form(""), request: Request = None, user=Depends(get_current_user)):
     """交互式改码第一步：上传项目 zip + 需求 → AI 先出修改方案（不改代码）。
 
     返回: {status, plan, files(改动清单), questions(需用户确认的问题)}
@@ -102,6 +136,7 @@ async def dev_plan(requirement: str = Form(...), file: UploadFile = File(...),
     if len(requirement) > MAX_REQUIREMENT_LEN:
         raise HTTPException(status_code=400, detail=f"requirement 过长（最大 {MAX_REQUIREMENT_LEN} 字）")
     tmp = _unzip_dev_project(await _dev_zip_from_form(file))
+    await _charge_dev_credit(user, request)
     try:
         result = await mini_tasks._plan_dev_task(requirement, code_dir=tmp, feedback=(feedback or "").strip() or None)
         if result.get("status") != "ok":
@@ -120,7 +155,7 @@ async def dev_plan(requirement: str = Form(...), file: UploadFile = File(...),
 @router.post("/dev/apply")
 async def dev_apply(requirement: str = Form(...), plan: str = Form(...),
                     file: UploadFile = File(...), feedback: str = Form(""),
-                    user=Depends(get_current_user)):
+                    request: Request = None, user=Depends(get_current_user)):
     """交互式改码第二步：按用户已确认的方案落地改动。
 
     返回: {task_id, dev_summary, dev_files, dev_diff, dev_diff_url, dev_modified_zip, elapsed}
@@ -136,6 +171,7 @@ async def dev_apply(requirement: str = Form(...), plan: str = Form(...),
     if len(requirement) > MAX_REQUIREMENT_LEN:
         raise HTTPException(status_code=400, detail=f"requirement 过长（最大 {MAX_REQUIREMENT_LEN} 字）")
     tmp = _unzip_dev_project(await _dev_zip_from_form(file))
+    await _charge_dev_credit(user, request)
     try:
         task_id = _uuid.uuid4().hex[:12]
         result = await mini_tasks._run_dev_task(task_id, requirement, code_dir=tmp,
@@ -168,13 +204,22 @@ _ANON_RATE_MAX_KEYS = 10000  # 限速表键数上限（防伪造 XFF 无限填�
 
 
 def _client_ip(request: Request) -> str:
-    """取客户端真实 IP：优先 X-Forwarded-For（cloudflared 等隧道/代理场景），否则直连 IP。"""
+    """取客户端真实 IP：仅当直连来源是可信代理（本机回环/白名单）时才信任 XFF，否则用直连 IP。
+
+    防伪造 X-Forwarded-For 绕过匿名限速：客户端可随意改 XFF 头，但只要
+    直连 peer 不在可信白名单里，就按直连 IP 限速。
+    """
+    from app.config import get_settings
+
+    peer = request.client.host if request.client else "unknown"
     xff = request.headers.get("x-forwarded-for")
-    if xff:
-        first = xff.split(",")[0].strip()
-        if first:
-            return first
-    return request.client.host if request.client else "unknown"
+    if not xff:
+        return peer
+    trusted = {s.strip().lower() for s in (get_settings().trusted_proxy_ips or "").split(",") if s.strip()}
+    if peer.lower() not in trusted:
+        return peer
+    first = xff.split(",")[0].strip()
+    return first if first else peer
 
 
 def _check_anon_rate(ip: str) -> None:
@@ -238,12 +283,7 @@ async def create_task(data: dict, request: Request, user=Depends(get_current_use
     if (user.get("email") or "").startswith("anon_"):
         _check_anon_rate(_client_ip(request))
 
-    # 额度校验：原子扣减（防并发竞态），余额不足返回 402
-    from app.database import get_credits, try_decrement_credits
-    if not await try_decrement_credits(user["id"], 1):
-        raise HTTPException(status_code=402, detail="额度不足，无法提交任务")
-    credits = await get_credits(user["id"])
-
+    # 先完成全部入参校验（url/图片/数据路径），通过后再扣积分，避免校验失败白扣分
     url = _check_url(data.get("url"))
     image_paths = data.get("image_paths") or []
     if not isinstance(image_paths, list):
@@ -255,6 +295,13 @@ async def create_task(data: dict, request: Request, user=Depends(get_current_use
         data_paths = []
     # 数据文件必须是上传目录内的文件（防任意文件读取）
     data_paths = [_ensure_upload_path(p) for p in data_paths]
+
+    # 额度校验：原子扣减（防并发竞态），余额不足返回 402
+    from app.database import get_credits, try_decrement_credits
+    if not await try_decrement_credits(user["id"], 1):
+        raise HTTPException(status_code=402, detail="额度不足，无法提交任务")
+    credits = await get_credits(user["id"])
+
     record = mini_tasks.submit(requirement, url, user["id"], image_paths=image_paths, data_paths=data_paths)
     return {
         "task_id": record["id"],
@@ -312,11 +359,16 @@ async def confirm_task(task_id: str, user=Depends(get_current_user)):
 @router.post("/mini/tasks/{task_id}/schedule")
 async def schedule_task(task_id: str, data: dict, user=Depends(get_current_user)):
     """设置任务定时执行：{schedule_type: interval|daily, schedule_value: 分钟数|HH:MM, enabled: bool}"""
+    raw_enabled = data.get("enabled", True)
+    if isinstance(raw_enabled, bool):
+        enabled = raw_enabled
+    else:
+        enabled = str(raw_enabled).strip().lower() in ("1", "true", "yes", "on")  # "false"→False
     result = mini_tasks.schedule_task(
         task_id,
         data.get("schedule_type", "interval"),
         data.get("schedule_value", ""),
-        bool(data.get("enabled", True)),
+        enabled,
         user["id"],
     )
     if result is None:
@@ -338,7 +390,7 @@ QA_SYSTEM_PROMPT = """你是一位数据分析师。根据用户上传的数据�
 
 
 @router.post("/mini/qa")
-async def data_qa(data: dict, user=Depends(get_current_user)):
+async def data_qa(data: dict, request: Request, user=Depends(get_current_user)):
     """上传的 Excel/CSV 数据 → 自然语言问答分析。"""
     import json as _json
     import os as _os
@@ -355,6 +407,8 @@ async def data_qa(data: dict, user=Depends(get_current_user)):
         raise HTTPException(status_code=400, detail=f"问题过长（最多 {MAX_REQUIREMENT_LEN} 字）")
     # 只能分析上传目录内的文件（防任意文件读取）
     file_path = _ensure_upload_path(file_path)
+    # 匿名限速 + 扣 1 积分（防无限刷 LLM 成本）
+    await _charge_dev_credit(user, request)
 
     # 1. 读取数据摘要（线程池避免阻塞）
     import asyncio as _a

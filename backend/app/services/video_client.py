@@ -99,19 +99,32 @@ async def generate_video(
         "duration": 5,
         "watermark": False,
     }
-    created = await _api("POST", "/contents/generations/tasks", body, timeout=60)
+    try:
+        created = await _api("POST", "/contents/generations/tasks", body, timeout=60)
+    except Exception as e:
+        return {"success": False, "video_url": None, "status": "submit_failed",
+                "detail": f"任务提交失败: {str(e)[:120]}"}
     if not created:
         return {"success": False, "video_url": None, "status": "submit_failed", "detail": "任务提交失败"}
     task_id = created.get("id")
     if not task_id:
         return {"success": False, "video_url": None, "status": "submit_failed", "detail": str(created)[:200]}
 
-    # 轮询任务状态
+    # 轮询任务状态（网络/解析异常不终止任务：记录并继续轮询，防一次抖动杀掉整个任务）
     waited = 0
+    _poll_errors = 0
     while waited < max_wait:
         await asyncio.sleep(poll_interval)
         waited += poll_interval
-        state = await _api("GET", f"/contents/generations/tasks/{task_id}", timeout=30)
+        try:
+            state = await _api("GET", f"/contents/generations/tasks/{task_id}", timeout=30)
+        except Exception as e:
+            _poll_errors += 1
+            logger.warning("[video:%s] 轮询异常(%d): %s", task_id, _poll_errors, str(e)[:120])
+            if _poll_errors >= 5:
+                return {"success": False, "video_url": None, "status": "poll_error",
+                        "detail": f"轮询任务状态连续失败: {str(e)[:120]}"}
+            continue
         if not state:
             continue
         status = state.get("status", "")
