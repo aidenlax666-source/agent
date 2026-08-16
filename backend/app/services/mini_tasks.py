@@ -1173,6 +1173,23 @@ DEV_VALIDATE_PROMPT = """你是软件工程师。下面是上一个 AI 按需求
 只列出需要修改的文件（其他文件不用重复输出）。行号必须与上面的内容一致，只输出改动附近的几行，不要重写整个文件。"""
 
 
+# 两阶段上下文第 1 阶段：只给文件清单，让模型挑要读的文件（省去无关文件全文的输入 token）
+DEV_SELECT_PROMPT = """你是一位资深软件工程师。用户需求：{requirement}
+{plan_part}
+以下是项目**全部文件的清单**（路径 + 大小 + 首行预览，不是完整内容）：
+{index}
+
+要正确完成修改，你需要先决定读哪些文件的完整内容。只输出一个 JSON 对象：
+{{"files_to_read": ["需要读取完整内容的文件相对路径", ...]}}
+
+选择原则：
+1. **必选**：本次要修改/新增的文件，以及修改会直接影响的文件（被 import 的模块、被模板引用的文件、依赖的配置）
+2. 拿不准是否相关的文件**宁可选中**（多读一个文件比漏读导致改错便宜）
+3. 与需求明显无关的文件（如其它模块的测试、文档）不要选
+4. 如果这是空项目（清单为空）或项目极小，files_to_read 可为空数组——你会基于需求从零创建
+禁止输出任何其他内容（不要 markdown 围栏、不要解释）。"""
+
+
 # 关键词打分时忽略的常见词（英文 + 中文 2-gram）
 _DEV_STOPWORDS = {
     "the", "and", "for", "with", "from", "this", "that", "project", "code",
@@ -1198,6 +1215,60 @@ def _requirement_keywords(requirement: str, limit: int = 24) -> set[str]:
     return set(list(words)[:limit])
 
 
+def _dev_file_index(workspace: str, files: list[str], max_items: int = 200,
+                    preview: int = 100) -> str:
+    """极简文件清单：路径 + 字符数 + 首行预览（每文件 ≤ preview+20 字符）。
+
+    供两阶段上下文的第 1 阶段：模型先看清单决定要读哪些文件（省去无关文件全文的输入 token）。
+    """
+    parts: list[str] = []
+    for rel in sorted(files)[:max_items]:
+        try:
+            with open(os.path.join(workspace, rel), encoding="utf-8-sig") as f:
+                content = f.read()
+        except Exception:
+            continue
+        first = content.splitlines()[0].strip() if content.splitlines() else ""
+        if len(first) > preview:
+            first = first[:preview] + "..."
+        parts.append(f"=== {rel} ({len(content)} 字符) === {first}")
+    if not parts:
+        return "(空项目目录：没有任何文件。请根据需求从零创建所需的项目文件结构。)"
+    return "\n".join(parts)
+
+
+def _dev_read_files(workspace: str, rels: list[str], per_file: int = 4000,
+                    total_cap: int = 40000) -> str:
+    """读取指定文件的完整内容（带截断），供两阶段上下文的第 2 阶段。
+
+    只读模型选中的文件；读取失败（二进制/编码问题）跳过。
+    """
+    parts: list[str] = []
+    total = 0
+    for rel in rels or []:
+        safe = _safe_dev_rel(rel, workspace)
+        if safe is None:
+            continue
+        try:
+            with open(os.path.join(workspace, safe), encoding="utf-8-sig") as f:
+                content = f.read()
+        except Exception:
+            continue
+        if len(content) > per_file:
+            body = content[:per_file] + "\n...(内容过长已截断)"
+        else:
+            body = content
+        block = f"=== {safe} ===\n{body}"
+        if total + len(block) > total_cap:
+            parts.append("...(已读文件上下文达上限，其余省略)")
+            break
+        parts.append(block)
+        total += len(block)
+    if not parts:
+        return "(未能读取任何文件)"
+    return "\n\n".join(parts)
+
+
 def _dev_context(workspace: str, files: list[str], requirement: str | None = None,
                  max_items: int = 80, per_file: int = 4000, total_cap: int = 40000) -> str:
     """文件树 + 每个文件的内容（Claude Code 风格：让模型看到真实代码而非只看到文件名）。
@@ -1212,7 +1283,7 @@ def _dev_context(workspace: str, files: list[str], requirement: str | None = Non
     entries: list[tuple[str, str, int]] = []
     for rel in sorted(files)[:max_items]:
         try:
-            with open(os.path.join(workspace, rel), encoding="utf-8") as f:
+            with open(os.path.join(workspace, rel), encoding="utf-8-sig") as f:
                 content = f.read()
         except Exception:
             continue
@@ -1417,7 +1488,7 @@ def _dev_apply_patch(patch_text: str, workspace: str) -> tuple[dict, list[str]]:
         fp = os.path.join(workspace, safe)
         if os.path.isfile(fp):
             try:
-                with open(fp, encoding="utf-8") as f:
+                with open(fp, encoding="utf-8-sig") as f:
                     old_text = f.read()
             except Exception as e:
                 errors.append(f"{safe}: 读取原文件失败 {str(e)[:80]}")
@@ -1460,7 +1531,7 @@ def _dev_errors_context(errors: list[str], workspace: str, max_chars: int = 6000
         seen.add(rel)
         p = os.path.join(workspace, rel)
         try:
-            with open(p, encoding="utf-8") as f:
+            with open(p, encoding="utf-8-sig") as f:
                 content = f.read()
         except Exception:
             continue
@@ -1631,11 +1702,11 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
         # 空文件夹也允许：AI 从零创建项目（像 Claude Code 在空目录建项目）
         if not files:
             logger.info("[dev_task:%s] 空项目目录，从零创建", task_id)
-        # 改前文件内容快照（diff 对比用；写文件前取）
+        # 改前文件内容快照（diff 对比用；写文件前取；utf-8-sig 去 BOM，与上下文/patch 定位一致）
         orig_contents: dict[str, str] = {}
         for rel in _walk_files(workspace):
             try:
-                with open(os.path.join(workspace, rel), encoding="utf-8") as _f:
+                with open(os.path.join(workspace, rel), encoding="utf-8-sig") as _f:
                     orig_contents[rel] = _f.read()
             except Exception:
                 pass
@@ -1648,6 +1719,28 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
                 f"【用户调整意见】\n{feedback or '无，按方案执行'}\n"
                 "请严格按此方案实现，不要擅自扩大改动范围。"
             )
+        # 两阶段上下文：项目文件多时，先让模型从清单里挑要读的文件（省无关文件全文的输入 token）
+        two_stage = len(files) > 12
+        if two_stage:
+            index_text = _dev_file_index(workspace, files)
+            try:
+                sel = await chat_completion_json(
+                    DEV_SELECT_PROMPT.format(requirement=requirement[:8000], plan_part=plan_part, index=index_text),
+                    requirement, temperature=0.2, max_tokens=3000,
+                    model=get_settings().dev_modify_model or get_settings().ai_model,
+                )
+                rels = [r for r in (sel.get("files_to_read") or []) if isinstance(r, str) and _safe_dev_rel(r, workspace)]
+                if rels:
+                    tree = _dev_read_files(workspace, rels)
+                    # 附上完整清单：模型知道还有哪些文件没读（需要时可在 files_to_read 里要求）
+                    tree += "\n\n【项目全部文件清单（未读取的文件未显示内容）】\n" + index_text
+                    logger.warning("[dev_task:%s] 两阶段：选中 %d/%d 个文件读取: %s", task_id, len(rels), len(files), rels[:10])
+                else:
+                    tree = _dev_context(workspace, files, requirement=requirement)  # 回退全给
+                    logger.warning("[dev_task:%s] 两阶段：模型未选择文件，回退全量上下文", task_id)
+            except Exception as e:
+                tree = _dev_context(workspace, files, requirement=requirement)  # 选择失败回退全给
+                logger.warning("[dev_task:%s] 两阶段选择失败，回退全量上下文: %s", task_id, str(e)[:100])
         files_map: dict = {}
         summary = ""
         errors: list[str] = []
@@ -1801,10 +1894,10 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
             logger.warning("[dev_task:%s] 命令第 %d 次失败: %s", task_id, fix_round + 1, last_error[:150])
             if fix_round >= 2:
                 break
-            # 失败 → 让模型自我修复：改代码（换实现方案）或换命令
+            # 失败 → 让模型自我修复：改代码（换实现方案）或换命令；模型可判断该继续还是放弃
             try:
                 fix_prompt = (
-                    f"你在项目里执行命令 `{dev_command}` 失败了（第 {fix_round + 1} 次）。\n"
+                    f"你在项目里执行命令 `{dev_command}` 失败了（第 {fix_round + 1} 次，共可尝试 {3 - fix_round} 次）。\n"
                     f"命令输出/错误如下（重点看依赖安装、编译、端口占用等）:\n{last_error[:2500]}\n\n"
                     "【请自我修复】\n"
                     "1. 如果依赖安装失败（如 better-sqlite3 等需要 C++ 编译工具链/node-gyp/Visual Studio，"
@@ -1812,7 +1905,10 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
                     "（如 sql.js 纯 JS、node:sqlite 内置模块、JSON 文件存储等），并同步更新 package.json 依赖；\n"
                     "2. 如果是代码/端口/路径问题：修改相关文件（patch 或 files）或给出修正后的命令（command）；\n"
                     "3. 必须给出修复：patch（unified diff，只写改动行）/ files（完整内容）或 command（新命令），至少一个。\n"
-                    "只输出 JSON（patch/files/command/summary，analysis 可为空）。")
+                    "4. 如果你认为**换个实现思路**更好（当前方案本身有缺陷），直接给出新方案的文件改动，不要硬修。\n"
+                    "5. 如果这个问题**无法用改代码/换命令解决**（如环境本身缺失、需求与现有代码根本冲突），"
+                    "输出 {\"give_up\": true, \"reason\": \"简短中文原因\"} 明确放弃，不要瞎改。\n"
+                    "只输出 JSON（patch/files/command/summary 或 give_up/reason）。")
                 fix_info = await chat_completion_json(
                     fix_prompt, requirement, temperature=0.2, max_tokens=32000,
                     model=get_settings().ai_model_reasoning,
@@ -1845,6 +1941,11 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
                 if new_cmd:
                     dev_command = new_cmd
                     fixed_any = True
+                if fix_info.get("give_up"):
+                    # 模型明确放弃（环境问题/需求冲突）：不再瞎试，把原因返回给用户
+                    logger.warning("[dev_task:%s] 模型放弃修复: %s", task_id, str(fix_info.get("reason") or "")[:150])
+                    dev_output = dev_output + "\n\n⚠️ AI 判断此问题无法通过改代码/换命令解决: " + str(fix_info.get("reason") or "")
+                    break
                 if not fixed_any:
                     break  # 模型没给出任何修复
                 await asyncio.sleep(2)  # 给文件系统/进程一点时间
@@ -1888,6 +1989,24 @@ async def _plan_dev_task(requirement: str, code_dir: str, feedback: str | None =
     if not files:
         logger.info("[dev_plan] 空项目目录，从零规划")
     tree = _dev_context(workspace, files, requirement=requirement)
+    # 两阶段：文件多时先让模型挑要读的文件（方案阶段同样省输入 token）
+    if len(files) > 12:
+        index_text = _dev_file_index(workspace, files)
+        try:
+            sel = await chat_completion_json(
+                DEV_SELECT_PROMPT.format(requirement=requirement[:8000], plan_part="", index=index_text),
+                requirement, temperature=0.2, max_tokens=3000,
+                model=get_settings().ai_model,
+            )
+            rels = [r for r in (sel.get("files_to_read") or []) if isinstance(r, str) and _safe_dev_rel(r, workspace)]
+            if rels:
+                tree = _dev_read_files(workspace, rels) + "\n\n【项目全部文件清单（未读取的文件未显示内容）】\n" + index_text
+                logger.warning("[dev_plan] 两阶段：选中 %d/%d 个文件读取: %s", len(rels), len(files), rels[:10])
+            else:
+                tree = _dev_context(workspace, files, requirement=requirement)  # 回退全给
+        except Exception as e:
+            tree = _dev_context(workspace, files, requirement=requirement)
+            logger.warning("[dev_plan] 两阶段选择失败，回退全量上下文: %s", str(e)[:100])
     fb_part = f"\n【用户对上一版方案的意见】\n{feedback}\n请根据意见重新调整方案。" if feedback else ""
     info = None
     for attempt in range(3):
