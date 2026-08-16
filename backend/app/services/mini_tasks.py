@@ -1533,12 +1533,15 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
                 zf.writestr(rel, content)
         modified_zip_b64 = _b64.b64encode(buf.getvalue()).decode()
 
-        # 操作型需求：执行模型返回的命令（在项目目录运行），输出带回结果
+# 操作型需求：执行模型返回的命令（在项目目录运行），失败则让模型自我修复（最多 3 轮）
         dev_command = command or ""
         dev_output = ""
         dev_output_ok = True
         dev_keep_dir = False  # 后台进程在运行 → 保留项目目录（否则进程的文件会被清理）
-        if dev_command:
+        last_error = ""
+        for fix_round in range(3):
+            if not dev_command:
+                break
             if background:
                 # 长驻服务（web 服务器等）：后台启动 + 存活探测，不等待结束；保留目录让进程持续运行
                 bg = await asyncio.to_thread(_run_dev_command_background, workspace, dev_command)
@@ -1551,42 +1554,61 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
                 cmd_result = await asyncio.to_thread(_run_dev_command, workspace, dev_command)
                 dev_output_ok = bool(cmd_result.get("ok"))
                 dev_output = cmd_result.get("output") or cmd_result.get("error") or ""
-                if not cmd_result.get("ok"):
-                    logger.warning("[dev_task:%s] 命令执行失败: %s", task_id, (cmd_result.get("error") or "")[:150])
-                    # 命令失败 → 反馈输出给模型修一次（改代码或换命令）
-                    try:
-                        fix_prompt = (
-                            f"你刚才在项目里执行命令 `{dev_command}` 失败了。输出如下：\n{dev_output[:1500]}\n\n"
-                            "请修复：修改相关文件（files）或给出修正后的命令（command），让命令能成功执行。"
-                            "只输出 JSON（files/command/summary，analysis 可为空）。")
-                        fix_info = await chat_completion_json(
-                            fix_prompt, requirement, temperature=0.2, max_tokens=32000,
-                            model=get_settings().ai_model_reasoning,
-                        )
-                        if fix_info.get("files"):
-                            files_map = {}
-                            for rel, content in (fix_info.get("files") or {}).items():
-                                safe = _safe_dev_rel(rel, workspace)
-                                if safe is not None:
-                                    files_map[safe] = content
-                            _dev_validate(files_map, workspace)  # 写盘
-                            # 重新打包（改动后）
-                            _buf2 = _io.BytesIO()
-                            with _zip.ZipFile(_buf2, "w", _zip.ZIP_DEFLATED) as zf2:
-                                for rel2, c2 in files_map.items():
-                                    zf2.writestr(rel2, c2)
-                            modified_zip_b64 = _b64.b64encode(_buf2.getvalue()).decode()
+            if dev_output_ok:
+                break
+            last_error = dev_output
+            logger.warning("[dev_task:%s] 命令第 %d 次失败: %s", task_id, fix_round + 1, last_error[:150])
+            if fix_round >= 2:
+                break
+            # 失败 → 让模型自我修复：改代码（换实现方案）或换命令
+            try:
+                fix_prompt = (
+                    f"你在项目里执行命令 `{dev_command}` 失败了（第 {fix_round + 1} 次）。\n"
+                    f"命令输出/错误如下（重点看依赖安装、编译、端口占用等）:\n{last_error[:2500]}\n\n"
+                    "【请自我修复】\n"
+                    "1. 如果依赖安装失败（如 better-sqlite3 等需要 C++ 编译工具链/node-gyp/Visual Studio，"
+                    "或 prebuild-install 下载失败）：**修改代码改用不需要编译的替代方案**"
+                    "（如 sql.js 纯 JS、node:sqlite 内置模块、JSON 文件存储等），并同步更新 package.json 依赖；\n"
+                    "2. 如果是代码/端口/路径问题：修改相关文件（files）或给出修正后的命令（command）；\n"
+                    "3. 必须给出修复：files（改代码/依赖）或 command（新命令），至少一个。\n"
+                    "只输出 JSON（files/command/summary，analysis 可为空）。")
+                fix_info = await chat_completion_json(
+                    fix_prompt, requirement, temperature=0.2, max_tokens=32000,
+                    model=get_settings().ai_model_reasoning,
+                )
+                fixed_any = False
+                if fix_info.get("files"):
+                    fix_map = {}
+                    for rel, content in (fix_info.get("files") or {}).items():
+                        safe = _safe_dev_rel(rel, workspace)
+                        if safe is not None:
+                            fix_map[safe] = content
+                    if fix_map:
+                        _dev_validate(fix_map, workspace)  # 写盘
+                        files_map = {**files_map, **fix_map}
+                        # 重新打包（改动后）
+                        _buf2 = _io.BytesIO()
+                        with _zip.ZipFile(_buf2, "w", _zip.ZIP_DEFLATED) as zf2:
                             for rel2, c2 in files_map.items():
-                                if {"path": rel2, "status": "新增" if rel2 not in orig_contents else "修改", "size": len(c2)} not in dev_files:
-                                    dev_files.append({"path": rel2, "status": "新增" if rel2 not in orig_contents else "修改", "size": len(c2)})
-                        new_cmd = str(fix_info.get("command") or "").strip()
-                        if new_cmd and new_cmd != dev_command:
-                            cmd2 = await asyncio.to_thread(_run_dev_command, workspace, new_cmd)
-                            dev_command = new_cmd
-                            dev_output_ok = bool(cmd2.get("ok"))
-                            dev_output = cmd2.get("output") or cmd2.get("error") or ""
-                    except Exception as e:
-                        logger.warning("[dev_task:%s] 命令修复重试失败: %s", task_id, str(e)[:120])
+                                zf2.writestr(rel2, c2)
+                        modified_zip_b64 = _b64.b64encode(_buf2.getvalue()).decode()
+                        for rel2, c2 in fix_map.items():
+                            entry = {"path": rel2, "status": "新增" if rel2 not in orig_contents else "修改", "size": len(c2)}
+                            if entry not in dev_files:
+                                dev_files.append(entry)
+                        fixed_any = True
+                new_cmd = str(fix_info.get("command") or "").strip()
+                if new_cmd:
+                    dev_command = new_cmd
+                    fixed_any = True
+                if not fixed_any:
+                    break  # 模型没给出任何修复
+                await asyncio.sleep(2)  # 给文件系统/进程一点时间
+            except Exception as e:
+                logger.warning("[dev_task:%s] 命令修复重试异常: %s", task_id, str(e)[:120])
+                break
+        if not dev_output_ok:
+            logger.warning("[dev_task:%s] 命令最终失败: %s", task_id, last_error[:150])
 
         return {
             "status": "ok",
