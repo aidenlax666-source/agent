@@ -59,11 +59,18 @@ async def dev_task(requirement: str = Form(...), file: UploadFile = File(...),
             "dev_diff": result.get("dev_diff"),
             "dev_diff_url": result.get("dev_diff_url"),
             "dev_modified_zip": result.get("dev_modified_zip"),
+            "dev_command": result.get("dev_command"),
+            "dev_output": result.get("dev_output"),
+            "dev_output_ok": result.get("dev_output_ok"),
+            "dev_running": result.get("dev_running"),
+            "dev_analysis": result.get("dev_analysis"),
             "elapsed": result.get("elapsed"),
         }
     finally:
         import shutil as _shutil
-        _shutil.rmtree(tmp, ignore_errors=True)
+        # 后台进程在运行 → 保留项目目录（否则进程文件被删）；由清理任务按 mtime 回收
+        if not result.get("dev_keep_dir"):
+            _shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _unzip_dev_project(content: bytes) -> str:
@@ -183,11 +190,18 @@ async def dev_apply(requirement: str = Form(...), plan: str = Form(...),
             "dev_diff": result.get("dev_diff"),
             "dev_diff_url": result.get("dev_diff_url"),
             "dev_modified_zip": result.get("dev_modified_zip"),
+            "dev_command": result.get("dev_command"),
+            "dev_output": result.get("dev_output"),
+            "dev_output_ok": result.get("dev_output_ok"),
+            "dev_running": result.get("dev_running"),
+            "dev_analysis": result.get("dev_analysis"),
             "elapsed": result.get("elapsed"),
         }
     finally:
         import shutil as _shutil
-        _shutil.rmtree(tmp, ignore_errors=True)
+        # 后台进程在运行 → 保留项目目录（否则进程文件被删）；由清理任务按 mtime 回收
+        if not result.get("dev_keep_dir"):
+            _shutil.rmtree(tmp, ignore_errors=True)
 
 # 上传文件根目录：只允许引用此目录内的文件（防任意文件读取/外泄）
 UPLOAD_DIR = Path(__file__).parent.parent.parent / "uploads"

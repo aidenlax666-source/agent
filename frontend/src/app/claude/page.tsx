@@ -334,21 +334,6 @@ export default function ClaudePage() {
   const writeZipToFolderRef = useRef(writeZipToFolder);
   writeZipToFolderRef.current = writeZipToFolder;
 
-  const downloadZip = useCallback((bubble: Bubble) => {
-    if (!bubble.zipB64) return;
-    try {
-      const blob = uint8ToBlob(base64ToUint8(bubble.zipB64), "application/zip");
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "modified_project.zip";
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "下载失败");
-    }
-  }, []);
-
   const clearAll = () => {
     setBubbles([]);
     setRequirement("");
@@ -505,13 +490,6 @@ export default function ClaudePage() {
                           {b.devOutput && (
                             <pre className="max-h-48 overflow-auto whitespace-pre-wrap text-[11px] text-slate-600 dark:text-slate-300">{b.devOutput}</pre>
                           )}
-                        </div>
-                      )}
-                      {b.zipB64 && (
-                        <div className="flex flex-wrap gap-2">
-                          <Button size="sm" variant="outline" onClick={() => downloadZip(b)} className="gap-1.5 rounded-xl text-emerald-600 dark:text-emerald-400">
-                            <Download className="w-4 h-4" /> 下载修改后 zip
-                          </Button>
                         </div>
                       )}
                     </div>

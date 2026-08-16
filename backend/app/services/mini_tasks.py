@@ -763,14 +763,16 @@ def _cleanup_assets() -> None:
                         removed += 1
                 except Exception:
                     pass
-        # 沙箱稳定产物目录（auto_output_*/sandbox_output_*）：产物已复制到 web/，按 mtime 清超期目录
+        # 沙箱稳定产物目录（auto_output_*/sandbox_output_*）+ 后台运行保留目录（dev_api_*）：
+        # 产物已复制到 web/，运行进程结束后的旧目录按 mtime 清超期
         _tmp_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "tmp"))
         if os.path.isdir(_tmp_dir):
             for name in os.listdir(_tmp_dir):
                 p = os.path.join(_tmp_dir, name)
                 if not os.path.isdir(p):
                     continue
-                if not (name.startswith("auto_output_") or name.startswith("sandbox_output_")):
+                if not (name.startswith("auto_output_") or name.startswith("sandbox_output_")
+                        or name.startswith("dev_api_")):
                     continue
                 try:
                     if os.path.getmtime(p) < cutoff:
@@ -1105,10 +1107,11 @@ DEV_MODIFY_PROMPT = """你是一位资深软件工程师。用户需求：{requi
 
 根据需求类型选择执行方式（可以组合）：
 1. **写代码/创建文件**：修改或新增文件 → 填 `files`
-2. **运行/测试**：执行命令（如 "python main.py"、"pytest"、"npm test"）→ 填 `command`
+2. **运行/测试/启动**：执行命令（如 "python main.py"、"pytest"、"pip install -r requirements.txt"）→ 填 `command`
    - 普通命令（测试/一次性脚本）：直接填 command
    - **启动服务/长驻进程**（如 "python app.py"、"npm run dev" 这类不会自己结束的命令）：
-     填 `command` 且 `background=true`，系统会后台启动并探测是否成功启动
+     填 `command` 且 `background=true`，系统会后台启动并持续运行
+   - **注意**：需求只要涉及"启动/运行/安装依赖/测试"就必须填 command（不能只写 summary 描述而不执行）
 3. **分析代码**：用户要你解释/审查/找问题（不写文件、不执行）→ 填 `analysis`（详细的分析结论文本）
 4. 如果先改代码再运行测试（如"修复测试"），files 和 command 一起填
 
@@ -1490,14 +1493,16 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
         dev_command = command or ""
         dev_output = ""
         dev_output_ok = True
+        dev_keep_dir = False  # 后台进程在运行 → 保留项目目录（否则进程的文件会被清理）
         if dev_command:
             if background:
-                # 长驻服务（web 服务器等）：后台启动 + 存活探测，不等待结束
+                # 长驻服务（web 服务器等）：后台启动 + 存活探测，不等待结束；保留目录让进程持续运行
                 bg = await asyncio.to_thread(_run_dev_command_background, workspace, dev_command)
                 dev_output_ok = bool(bg.get("ok"))
                 dev_output = bg.get("output") or bg.get("error") or ""
                 if bg.get("pid"):
-                    dev_output = (f"已在后台启动（PID {bg['pid']}），进程存活中。\n" + dev_output).strip()
+                    dev_keep_dir = True
+                    dev_output = (f"✅ 服务器已在后台运行（PID {bg['pid']}）\n" + dev_output).strip()
             else:
                 cmd_result = await asyncio.to_thread(_run_dev_command, workspace, dev_command)
                 dev_output_ok = bool(cmd_result.get("ok"))
@@ -1549,6 +1554,7 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
             "dev_command": dev_command,
             "dev_output": dev_output[:8000],
             "dev_output_ok": dev_output_ok,
+            "dev_running": dev_keep_dir,
             "dev_analysis": analysis,
             "output_file": diff_path,
             "elapsed": round(time.time() - started, 1),
