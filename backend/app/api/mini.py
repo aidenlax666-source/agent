@@ -37,6 +37,33 @@ async def dev_task(requirement: str = Form(...), file: UploadFile = File(...), u
         raise HTTPException(status_code=413, detail="项目 zip 过大（最大 50MB）")
 
     # 安全解压：防 zip-slip 路径穿越
+    tmp = _unzip_dev_project(content)
+
+    try:
+        task_id = _uuid.uuid4().hex[:12]
+        result = await mini_tasks._run_dev_task(task_id, requirement, code_dir=tmp)
+        if result.get("status") != "ok":
+            raise HTTPException(status_code=422, detail=result.get("error") or "开发任务失败")
+        return {
+            "task_id": task_id,
+            "dev_summary": result.get("dev_summary"),
+            "dev_files": result.get("dev_files"),
+            "dev_diff": result.get("dev_diff"),
+            "dev_diff_url": result.get("dev_diff_url"),
+            "dev_modified_zip": result.get("dev_modified_zip"),
+            "elapsed": result.get("elapsed"),
+        }
+    finally:
+        import shutil as _shutil
+        _shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _unzip_dev_project(content: bytes) -> str:
+    """安全解压用户上传的项目 zip（防 zip-slip 路径穿越），返回解压目录。"""
+    import io as _io
+    import tempfile
+    import zipfile as _zip
+
     tmp = tempfile.mkdtemp(prefix="dev_api_")
     try:
         with _zip.ZipFile(_io.BytesIO(content)) as zf:
@@ -49,10 +76,70 @@ async def dev_task(requirement: str = Form(...), file: UploadFile = File(...), u
         raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"zip 解压失败: {str(e)[:150]}")
+    return tmp
 
+
+async def _dev_zip_from_form(file: UploadFile) -> bytes:
+    content = await file.read(MAX_DEV_ZIP_SIZE + 1)
+    if len(content) > MAX_DEV_ZIP_SIZE:
+        raise HTTPException(status_code=413, detail="项目 zip 过大（最大 50MB）")
+    return content
+
+
+@router.post("/dev/plan")
+async def dev_plan(requirement: str = Form(...), file: UploadFile = File(...),
+                   feedback: str = Form(""), user=Depends(get_current_user)):
+    """交互式改码第一步：上传项目 zip + 需求 → AI 先出修改方案（不改代码）。
+
+    返回: {status, plan, files(改动清单), questions(需用户确认的问题)}
+    用户确认/提意见后调 /api/dev/apply 落地改动。
+    """
+    import uuid as _uuid
+
+    requirement = (requirement or "").strip()
+    if not requirement:
+        raise HTTPException(status_code=400, detail="requirement 不能为空")
+    if len(requirement) > MAX_REQUIREMENT_LEN:
+        raise HTTPException(status_code=400, detail=f"requirement 过长（最大 {MAX_REQUIREMENT_LEN} 字）")
+    tmp = _unzip_dev_project(await _dev_zip_from_form(file))
+    try:
+        result = await mini_tasks._plan_dev_task(requirement, code_dir=tmp, feedback=(feedback or "").strip() or None)
+        if result.get("status") != "ok":
+            raise HTTPException(status_code=422, detail=result.get("error") or "方案生成失败")
+        return {
+            "plan_id": _uuid.uuid4().hex[:12],
+            "plan": result.get("plan"),
+            "files": result.get("files"),
+            "questions": result.get("questions"),
+        }
+    finally:
+        import shutil as _shutil
+        _shutil.rmtree(tmp, ignore_errors=True)
+
+
+@router.post("/dev/apply")
+async def dev_apply(requirement: str = Form(...), plan: str = Form(...),
+                    file: UploadFile = File(...), feedback: str = Form(""),
+                    user=Depends(get_current_user)):
+    """交互式改码第二步：按用户已确认的方案落地改动。
+
+    返回: {task_id, dev_summary, dev_files, dev_diff, dev_diff_url, dev_modified_zip, elapsed}
+    """
+    import uuid as _uuid
+
+    requirement = (requirement or "").strip()
+    plan = (plan or "").strip()
+    if not requirement:
+        raise HTTPException(status_code=400, detail="requirement 不能为空")
+    if not plan:
+        raise HTTPException(status_code=400, detail="plan 不能为空（请先调用 /api/dev/plan）")
+    if len(requirement) > MAX_REQUIREMENT_LEN:
+        raise HTTPException(status_code=400, detail=f"requirement 过长（最大 {MAX_REQUIREMENT_LEN} 字）")
+    tmp = _unzip_dev_project(await _dev_zip_from_form(file))
     try:
         task_id = _uuid.uuid4().hex[:12]
-        result = await mini_tasks._run_dev_task(task_id, requirement, code_dir=tmp)
+        result = await mini_tasks._run_dev_task(task_id, requirement, code_dir=tmp,
+                                                plan=plan, feedback=(feedback or "").strip() or None)
         if result.get("status") != "ok":
             raise HTTPException(status_code=422, detail=result.get("error") or "开发任务失败")
         return {

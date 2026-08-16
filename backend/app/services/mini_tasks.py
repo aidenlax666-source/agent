@@ -741,6 +741,7 @@ DEV_MODIFY_PROMPT = """你是一位资深软件工程师。用户需求：{requi
 
 项目源码已经复制到你的工作区，以下是目录结构：
 {tree}
+{plan_part}
 
 请完成需求：读取相关文件、理解现有代码逻辑，然后**修改/新增文件**实现该需求。
 
@@ -753,6 +754,24 @@ DEV_MODIFY_PROMPT = """你是一位资深软件工程师。用户需求：{requi
 3. 改动必须真实可用：import、函数定义、调用关系完整，逻辑自洽
 4. 优先小步改动：能加一个函数/文件解决的不要大改
 5. 中文 summary 说明改动内容
+"""
+
+# 第一步：只读代码、出修改方案（不写文件）——让用户确认后再动手
+DEV_PLAN_PROMPT = """你是一位资深软件工程师。用户需求：{requirement}
+
+项目源码已经复制到你的工作区，以下是目录结构：
+{tree}
+
+请阅读相关代码，制定**修改方案**（只分析和规划，不要动手改代码），输出 JSON：
+{{"plan": "详细方案：要改哪些文件、每个文件怎么改、实现思路、涉及的风险或影响",
+  "files": ["将要修改/新增的文件相对路径", ...],
+  "questions": ["需要用户确认或决定的事项（有则列出，没有则空数组）"]}}
+
+【要求】
+1. 方案具体到文件级别：每个文件改什么、加什么
+2. 指出潜在风险和影响（比如会动公共函数、影响其他调用方）
+3. 如果需求有多种实现方式，在 questions 里让用户选择
+4. 中文
 """
 
 DEV_VALIDATE_PROMPT = """你是软件工程师。下面是上一个 AI 按需求 {requirement} 改的代码，但校验报错：
@@ -805,9 +824,11 @@ def _dev_build_diff(files_map: dict, workspace: str, orig_contents: dict) -> str
     return "\n".join(lines)
 
 
-async def _run_dev_task(task_id: str, requirement: str, code_dir: str) -> dict:
+async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str | None = None,
+                        feedback: str | None = None) -> dict:
     """开发任务：外部代码目录（API/CLI 上传解压的隔离副本）→ DeepSeek 改码 → 校验 → diff。
 
+    plan/feedback: 用户确认的修改方案与调整意见（交互式流程第二步）。
     产物：dev_diff（diff 文本）、dev_files（改动清单）、dev_summary、dev_modified_zip（修改后文件 base64）、output_file（.diff）
     """
     import base64 as _b64
@@ -832,13 +853,20 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str) -> dict:
                 pass
 
         tree = _dev_tree(files)
+        plan_part = ""
+        if plan:
+            plan_part = (
+                f"\n【已确认的修改方案】\n{plan}\n"
+                f"【用户调整意见】\n{feedback or '无，按方案执行'}\n"
+                "请严格按此方案实现，不要擅自扩大改动范围。"
+            )
         files_map: dict = {}
         summary = ""
         errors: list[str] = []
         for attempt in range(3):
             try:
                 info = await chat_completion_json(
-                    DEV_MODIFY_PROMPT.format(requirement=requirement[:800], tree=tree),
+                    DEV_MODIFY_PROMPT.format(requirement=requirement[:800], tree=tree, plan_part=plan_part),
                     requirement, temperature=0.2, max_tokens=8000,
                     model=get_settings().ai_model_reasoning,
                 )
@@ -901,6 +929,35 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str) -> dict:
     except Exception as e:
         logger.exception("[dev_task:%s] failed", task_id)
         return {"status": "failed", "error": f"开发任务执行出错: {str(e)[:200]}", "elapsed": round(time.time() - started, 1)}
+
+
+async def _plan_dev_task(requirement: str, code_dir: str, feedback: str | None = None) -> dict:
+    """开发任务第一步：读代码 → 修改方案（不写文件），供用户确认/调整。
+
+    feedback: 用户对上一版方案的意见（带意见重新规划）。
+    """
+    from app.services.llm_client import chat_completion_json
+
+    workspace = os.path.normpath(code_dir)
+    files = _walk_files(workspace)
+    if not files:
+        return {"status": "failed", "error": "未找到项目源码目录"}
+    tree = _dev_tree(files)
+    fb_part = f"\n【用户对上一版方案的意见】\n{feedback}\n请根据意见重新调整方案。" if feedback else ""
+    try:
+        info = await chat_completion_json(
+            DEV_PLAN_PROMPT.format(requirement=requirement[:800], tree=tree) + fb_part,
+            requirement, temperature=0.2, max_tokens=3000,
+            model=get_settings().ai_model_reasoning,
+        )
+    except Exception as e:
+        return {"status": "failed", "error": f"方案生成失败: {str(e)[:120]}"}
+    return {
+        "status": "ok",
+        "plan": str(info.get("plan") or ""),
+        "files": info.get("files") or [],
+        "questions": info.get("questions") or [],
+    }
 
 
 def _walk_files(root: str) -> list[str]:

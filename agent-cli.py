@@ -1,13 +1,15 @@
 #!/usr/bin/env python
-"""AI 自动化 Agent 本地 CLI —— 像 Claude Code 一样改你的项目。
+"""AI 自动化 Agent 本地 CLI —— 像 Claude Code 一样改你的项目（交互式：先方案，后落地）。
 
 用法：
     python agent-cli.py "给项目加一个导出PDF的功能"          # 在当前目录的项目上改
     python agent-cli.py "加个XX接口" C:\path\to\project      # 指定项目目录
     python agent-cli.py --api http://localhost:8000 "需求"    # 指定后端地址
 
-流程：打包项目(排除 node_modules/.git 等) → 调后端 dev API → 显示 diff
-      → 输入 y 应用改动到本地（+git commit 可选）/ n 放弃
+流程：打包项目(排除 node_modules/.git 等) → 调 /api/dev/plan 生成修改方案
+      → 展示方案，Enter 确认 / 输入意见重新规划 / q 退出
+      → 确认后调 /api/dev/apply 落地改动 → 展示 diff
+      → 输入 y 应用到本地（+git commit 可选）/ n 放弃
 """
 from __future__ import annotations
 
@@ -73,6 +75,29 @@ def build_zip(files: dict[str, bytes]) -> bytes:
     return buf.getvalue()
 
 
+def post_dev(api: str, path: str, requirement: str, zdata: bytes,
+             plan: str = "", feedback: str = "") -> dict:
+    """POST 后端开发接口，返回 JSON 或抛错。"""
+    data = {"requirement": requirement}
+    if plan:
+        data["plan"] = plan
+    if feedback:
+        data["feedback"] = feedback
+    with httpx.Client(timeout=600, trust_env=False) as client:
+        resp = client.post(
+            f"{api}/api/dev{path}",
+            data=data,
+            files={"file": ("project.zip", zdata, "application/zip")},
+        )
+    if resp.status_code != 200:
+        try:
+            detail = resp.json().get("detail", resp.text)
+        except Exception:
+            detail = resp.text
+        raise RuntimeError(f"后端返回 {resp.status_code}: {detail}")
+    return resp.json()
+
+
 def apply_changes(root: str, modified_zip_b64: str) -> list[str]:
     """把后端返回的修改后文件 zip 应用回本地项目，返回应用的文件列表。"""
     data = base64.b64decode(modified_zip_b64)
@@ -89,12 +114,12 @@ def apply_changes(root: str, modified_zip_b64: str) -> list[str]:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="AI 自动化 Agent 本地 CLI：改你的项目代码")
+    ap = argparse.ArgumentParser(description="AI 自动化 Agent 本地 CLI：像 Claude Code 一样改你的项目")
     ap.add_argument("requirement", help='需求，如"给项目加一个导出PDF的功能"')
     ap.add_argument("project", nargs="?", default=".", help="项目目录（默认当前目录）")
     ap.add_argument("--api", default="http://localhost:8000", help="后端地址")
     ap.add_argument("--commit", action="store_true", help="应用改动后自动 git commit")
-    ap.add_argument("--yes", "-y", action="store_true", help="自动应用改动（跳过确认）")
+    ap.add_argument("--yes", "-y", action="store_true", help="自动确认方案并应用改动（跳过交互）")
     args = ap.parse_args()
 
     if not args.requirement.strip():
@@ -112,29 +137,63 @@ def main() -> None:
         print("未收集到任何代码文件（可能目录为空或全被排除）", file=sys.stderr)
         sys.exit(1)
     print(f"   共 {len(files)} 个文件")
-
-    print("[提交] 提交给 AI 改码（DeepSeek）...")
     zdata = build_zip(files)
-    try:
-        with httpx.Client(timeout=300, trust_env=False) as client:
-            resp = client.post(
-                f"{args.api}/api/dev/tasks",
-                data={"requirement": args.requirement},
-                files={"file": ("project.zip", zdata, "application/zip")},
-            )
-    except Exception as e:
-        print(f"[错误] 调用后端失败: {e}", file=sys.stderr)
-        sys.exit(1)
 
-    if resp.status_code != 200:
+    # ---- 第一步：AI 出修改方案（不改代码） ----
+    print("[方案] AI 分析代码并生成修改方案（DeepSeek）...")
+    feedback = ""
+    plan_text = ""
+    while True:
         try:
-            detail = resp.json().get("detail", resp.text)
-        except Exception:
-            detail = resp.text
-        print(f"[错误] 后端返回 {resp.status_code}: {detail}", file=sys.stderr)
+            data = post_dev(args.api, "/plan", args.requirement, zdata, feedback=feedback)
+        except Exception as e:
+            print(f"[错误] 方案生成失败: {e}", file=sys.stderr)
+            sys.exit(1)
+
+        plan_text = (data.get("plan") or "").strip()
+        plan_files = data.get("files") or []
+        questions = data.get("questions") or []
+
+        print("\n" + "=" * 60)
+        print("[方案] AI 修改方案:")
+        print("=" * 60)
+        print(plan_text or "(AI 未给出方案文本)")
+
+        if plan_files:
+            print("\n[文件] 预计改动文件:")
+            for f in plan_files:
+                if isinstance(f, dict):
+                    print(f"  - {f.get('path', f)}")
+                else:
+                    print(f"  - {f}")
+        if questions:
+            print("\n[问题] AI 需要你确认:")
+            for q in questions:
+                print(f"  ? {q}")
+
+        if args.yes:
+            break
+
+        ans = input(
+            "\n[询问] 按 Enter 确认并开始改码 / 输入你的意见让 AI 调整方案 / 输入 q 退出: "
+        ).strip()
+        if ans.lower() in ("q", "quit", "exit"):
+            print("已退出，未做任何改动。")
+            sys.exit(0)
+        if ans:
+            feedback = ans
+            print(f"[方案] 带着你的意见重新规划（{len(feedback)} 字）...")
+            continue
+        break
+
+    # ---- 第二步：按确认的方案落地改动 ----
+    print("\n[改码] 按已确认方案执行改动（DeepSeek）...")
+    try:
+        data = post_dev(args.api, "/apply", args.requirement, zdata, plan=plan_text, feedback=feedback)
+    except Exception as e:
+        print(f"[错误] 改码失败: {e}", file=sys.stderr)
         sys.exit(1)
 
-    data = resp.json()
     print("\n" + "=" * 60)
     print("[AI] AI 改动说明:", data.get("dev_summary") or "(无)")
     print("=" * 60)
