@@ -158,8 +158,8 @@ async def dev_apply(requirement: str = Form(...), plan: str = Form(...),
 # 上传文件根目录：只允许引用此目录内的文件（防任意文件读取/外泄）
 UPLOAD_DIR = Path(__file__).parent.parent.parent / "uploads"
 
-# 需求描述长度上限（防 LLM 成本 DoS）
-MAX_REQUIREMENT_LEN = 2000
+# 需求描述长度上限（防 LLM 成本 DoS；20000 字足以容纳脚本/长需求）
+MAX_REQUIREMENT_LEN = 20000
 
 # 匿名用户提交限速：防止换 ID 无限刷积分/刷任务（内存表，按 IP）
 _ANON_SUBMIT_RATE: dict[str, deque] = defaultdict(deque)

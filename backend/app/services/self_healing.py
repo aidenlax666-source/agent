@@ -254,7 +254,7 @@ EXPLAIN_PROMPT = """你是自动化助手的客服。用户让 AI 生成脚本�
 
 async def explain_failure(requirement: str, error_type: str, error_message: str) -> str:
     """把技术错误翻译成一句用户能理解的友好失败原因。"""
-    user_prompt = f"""用户需求：{requirement[:200]}
+    user_prompt = f"""用户需求：{requirement[:1000]}
 技术错误：{error_type}: {error_message[:300]}
 
 请翻译成一句友好的失败原因。"""

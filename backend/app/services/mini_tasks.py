@@ -172,7 +172,7 @@ async def _extract_tts_text_llm(requirement: str) -> str:
         info = await chat_completion_json(
             "你是文本提取助手。从用户需求中提取【需要语音朗读的原文】，只返回 JSON {\"text\":\"原文\"}；"
             "如果需求本身就是要朗读的内容（如\"朗读今天天气很好\"），返回该内容去掉指令词后的文本。",
-            requirement[:500], max_tokens=300)
+            requirement[:2000], max_tokens=300)
         return str(info.get("text") or "").strip()[:3000]
     except Exception:
         return ""
@@ -257,7 +257,7 @@ async def _classify_intent(requirement: str, has_data_files: bool) -> str:
         return "task"
     try:
         from app.services.llm_client import chat_completion_json
-        info = await chat_completion_json(QA_ROUTER_PROMPT, requirement[:300], max_tokens=20)
+        info = await chat_completion_json(QA_ROUTER_PROMPT, requirement[:1000], max_tokens=20)
         return "qa" if info.get("type") == "qa" else "task"
     except Exception:
         return "task"
@@ -866,7 +866,7 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
         for attempt in range(3):
             try:
                 info = await chat_completion_json(
-                    DEV_MODIFY_PROMPT.format(requirement=requirement[:800], tree=tree, plan_part=plan_part),
+                    DEV_MODIFY_PROMPT.format(requirement=requirement[:8000], tree=tree, plan_part=plan_part),
                     requirement, temperature=0.2, max_tokens=8000,
                     model=get_settings().ai_model_reasoning,
                 )
@@ -882,7 +882,7 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
             # 校验失败 → 把错误反馈给模型修复（reasoner）
             try:
                 info2 = await chat_completion_json(
-                    DEV_VALIDATE_PROMPT.format(requirement=requirement[:800], errors="\n".join(errors)),
+                    DEV_VALIDATE_PROMPT.format(requirement=requirement[:8000], errors="\n".join(errors)),
                     requirement, temperature=0.2, max_tokens=8000,
                     model=get_settings().ai_model_reasoning,
                 )
@@ -946,7 +946,7 @@ async def _plan_dev_task(requirement: str, code_dir: str, feedback: str | None =
     fb_part = f"\n【用户对上一版方案的意见】\n{feedback}\n请根据意见重新调整方案。" if feedback else ""
     try:
         info = await chat_completion_json(
-            DEV_PLAN_PROMPT.format(requirement=requirement[:800], tree=tree) + fb_part,
+            DEV_PLAN_PROMPT.format(requirement=requirement[:8000], tree=tree) + fb_part,
             requirement, temperature=0.2, max_tokens=3000,
             model=get_settings().ai_model_reasoning,
         )

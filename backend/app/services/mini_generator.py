@@ -695,7 +695,7 @@ async def generate_and_verify(
     info = {}
     for _attempt in range(2):  # LLM 偶发失败时重试一次，避免 info 为空导致目标跑偏
         try:
-            info = await chat_completion_json(STRUCTURE_SYSTEM_PROMPT, requirement[:500], max_tokens=500)
+            info = await chat_completion_json(STRUCTURE_SYSTEM_PROMPT, requirement[:2000], max_tokens=500)
             if info:
                 break
         except Exception:
