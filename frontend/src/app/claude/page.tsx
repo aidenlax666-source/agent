@@ -64,6 +64,10 @@ type Bubble = {
   zipB64?: string;
   planText?: string;      // 确认改码时要回传的方案
   applied?: number;
+  devCommand?: string;    // 操作型需求：执行过的命令
+  devOutput?: string;     // 命令输出
+  devOutputOk?: boolean;
+  devAnalysis?: string;   // 分析代码的结果文本
 };
 
 function base64ToUint8(b64: string): Uint8Array {
@@ -276,9 +280,13 @@ export default function ClaudePage() {
         devFiles: data.dev_files || [],
         diff: data.dev_diff || "",
         zipB64: data.dev_modified_zip || "",
+        devCommand: data.dev_command || "",
+        devOutput: data.dev_output || "",
+        devOutputOk: data.dev_output_ok !== false,
+        devAnalysis: data.dev_analysis || "",
       });
       // 改码成功后直接应用回本地文件夹（无需再次确认）；兼容模式提示下载
-      if (data.dev_modified_zip) {
+      if (data.dev_modified_zip && data.dev_files && data.dev_files.length > 0) {
         if (dir) {
           const applied = await writeZipToFolderRef.current(data.dev_modified_zip);
           // 重新打包（下一轮包含本次改动）
@@ -482,6 +490,22 @@ export default function ClaudePage() {
                           </summary>
                           <pre className="mt-2 max-h-72 overflow-auto rounded-xl bg-slate-950 text-slate-100 p-4 text-[11px] leading-relaxed whitespace-pre-wrap">{b.diff}</pre>
                         </details>
+                      )}
+                      {b.devAnalysis && (
+                        <div className="rounded-xl border border-sky-200/60 dark:border-sky-800 bg-sky-50/60 dark:bg-sky-950/30 px-3 py-2">
+                          <p className="text-[11px] font-semibold text-sky-600 dark:text-sky-300 mb-1">🔍 分析结果</p>
+                          <p className="text-sm text-slate-700 dark:text-slate-200 whitespace-pre-wrap max-h-72 overflow-auto">{b.devAnalysis}</p>
+                        </div>
+                      )}
+                      {b.devCommand && (
+                        <div className={`rounded-xl border px-3 py-2 text-xs ${b.devOutputOk ? "border-emerald-200/60 dark:border-emerald-800 bg-emerald-50/60 dark:bg-emerald-950/30" : "border-red-200/60 dark:border-red-800 bg-red-50/60 dark:bg-red-950/30"}`}>
+                          <p className={`font-mono mb-1 ${b.devOutputOk ? "text-emerald-700 dark:text-emerald-300" : "text-red-600 dark:text-red-300"}`}>
+                            {b.devOutputOk ? "▶ 已执行：" : "⚠ 执行失败："}{b.devCommand}
+                          </p>
+                          {b.devOutput && (
+                            <pre className="max-h-48 overflow-auto whitespace-pre-wrap text-[11px] text-slate-600 dark:text-slate-300">{b.devOutput}</pre>
+                          )}
+                        </div>
                       )}
                       {b.zipB64 && (
                         <div className="flex flex-wrap gap-2">

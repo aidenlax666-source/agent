@@ -351,15 +351,32 @@ def main() -> None:
             if len(diff) > 3000:
                 print(f"  {c_dim('...（共 ')}{len(diff)}{c_dim(' 字符）')}")
 
+        # 操作型需求：显示执行过的命令与输出
+        dev_cmd = data.get("dev_command") or ""
+        if dev_cmd:
+            out_ok = data.get("dev_output_ok") is not False
+            icon = c_green("▶ 已执行:") if out_ok else c_red("⚠ 执行失败:")
+            print(f"\n{icon} {dev_cmd}")
+            dev_out = data.get("dev_output") or ""
+            if dev_out:
+                print(c_dim(dev_out[:2000]))
+        # 分析代码：显示分析结果
+        dev_analysis = data.get("dev_analysis") or ""
+        if dev_analysis:
+            print(f"\n{c_cyan('[分析]')}")
+            print(dev_analysis[:4000])
+
         modified_zip = data.get("dev_modified_zip")
-        if not modified_zip:
-            print(f"{c_red('[错误] 后端未返回修改后的文件')}", file=sys.stderr)
+        if not modified_zip and not dev_cmd and not dev_analysis:
+            print(f"{c_red('[错误] 后端未返回文件改动/命令执行/分析结果')}", file=sys.stderr)
             continue
 
-        # ---- 第 3 步：分级审批（全部 / 逐文件 / 放弃）----
+        # ---- 第 3 步：分级审批（全部 / 逐文件 / 放弃）；纯命令/分析场景（无文件改动）跳过审批 ----
         dev_files = data.get("dev_files") or []
         only: set[str] | None = None
-        if args.yes:
+        if not dev_files and (dev_cmd or dev_analysis):
+            pass  # 操作型/分析型需求：无文件可应用
+        elif args.yes:
             ans = "a"
         else:
             try:
@@ -384,8 +401,12 @@ def main() -> None:
             continue
 
         rollback_sha = git_head(root) if git_repo else ""  # 应用前的提交点
-        applied = apply_changes(root, modified_zip, only)
-        print(f"{c_green('[完成]')} 已应用 {len(applied)} 个文件到 {root}")
+        applied = []
+        if dev_files:
+            applied = apply_changes(root, modified_zip, only)
+            print(f"{c_green('[完成]')} 已应用 {len(applied)} 个文件到 {root}")
+        else:
+            print(f"{c_green('[完成]')} 操作/分析型需求：无文件改动" + ("，命令已执行" if dev_cmd else ""))
 
         if rollback_sha:
             print(f"  {c_dim('[回滚点] git reset --hard ')}{rollback_sha}")

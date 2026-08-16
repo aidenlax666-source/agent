@@ -1103,20 +1103,29 @@ DEV_MODIFY_PROMPT = """你是一位资深软件工程师。用户需求：{requi
 {context}
 {plan_part}
 
-请基于上述真实源码完成需求：理解现有代码逻辑，然后**修改/新增文件**实现该需求。
+根据需求类型选择执行方式（可以组合）：
+1. **写代码/创建文件**：修改或新增文件 → 填 `files`
+2. **运行/测试**：执行命令（如 "python main.py"、"pytest"、"npm test"）→ 填 `command`
+   - 普通命令（测试/一次性脚本）：直接填 command
+   - **启动服务/长驻进程**（如 "python app.py"、"npm run dev" 这类不会自己结束的命令）：
+     填 `command` 且 `background=true`，系统会后台启动并探测是否成功启动
+3. **分析代码**：用户要你解释/审查/找问题（不写文件、不执行）→ 填 `analysis`（详细的分析结论文本）
+4. 如果先改代码再运行测试（如"修复测试"），files 和 command 一起填
 
 【输出格式（最重要，违反即失败）】
-只输出一个 JSON 对象，格式如下，除此之外**不允许输出任何内容**：
-{{"files": {{"相对路径": "该文件的完整新内容"}}, "summary": "一句话说明你改了什么"}}
-禁止输出：markdown 围栏（```）、目录树（├──/│）、文件名列表、任何解释/说明文字。
-JSON 必须完整闭合（每个字符串转义正确，不能中途截断）。
+只输出一个 JSON 对象，除此之外**不允许输出任何内容**：
+{{"files": {{"相对路径": "该文件的完整新内容"}}, "summary": "一句话说明你做了什么",
+  "command": "要执行的命令（可为空）", "background": false,
+  "analysis": "分析结论（纯文本，可为空）"}}
+禁止输出：markdown 围栏（```）、目录树（├──/│）、任何解释/说明文字。JSON 必须完整闭合。
+files / command / analysis 至少填一个。
 
 【严格要求】
-1. files 里只列出你需要**新增或修改**的文件；未列出的文件保持原样
-2. 每个文件内容必须**完整**（整个文件的全部代码，禁止用省略号/注释代替中间部分）
-3. 改动必须真实可用：import、函数定义、调用关系完整，逻辑自洽
-4. 优先小步改动：能加一个函数/文件解决的不要大改
-5. 中文 summary 说明改动内容
+1. files 里只列出需要新增或修改的文件；每个文件内容必须**完整**（整个文件全部代码）
+2. command 必须是可在项目目录执行的简单命令（python/npm/pip/pytest 等），不要用删除/格式化等危险命令
+3. background=true 只用于不会自己结束的长驻服务（web 服务器等）
+4. 改动必须真实可用：import、函数定义、调用关系完整
+5. 中文 summary 说明你做了什么
 """
 
 # 第一步：只读代码、出修改方案（不写文件）——让用户确认后再动手
@@ -1279,6 +1288,85 @@ def _dev_build_diff(files_map: dict, workspace: str, orig_contents: dict) -> str
     return "\n".join(lines)
 
 
+def _run_dev_command_background(workspace: str, command: str, probe_seconds: int = 6) -> dict:
+    """后台启动长驻命令（web 服务等），探测进程存活后返回，不等待结束。
+
+    进程 stdout/stderr 写入临时日志文件；探测窗口内若进程退出则判定启动失败并返回输出。
+    """
+    import shlex
+    import subprocess as _sp
+    cmd = (command or "").strip()
+    if not cmd:
+        return {"ok": False, "error": "空命令"}
+    low = cmd.lower()
+    for bad in ("rm ", "del ", "rmdir", "format ", "shutdown", "taskkill", "格式化", "删除全部", "rd /s"):
+        if low.startswith(bad):
+            return {"ok": False, "error": f"命令被安全拦截（危险操作）: {cmd[:80]}"}
+    try:
+        args = shlex.split(cmd, posix=False)
+    except ValueError as e:
+        return {"ok": False, "error": f"命令解析失败: {str(e)[:100]}"}
+    log_path = os.path.join(workspace, f".dev_run_{uuid.uuid4().hex[:8]}.log")
+    try:
+        with open(log_path, "w", encoding="utf-8") as lf:
+            proc = _sp.Popen(args, cwd=workspace, stdout=lf, stderr=_sp.STDOUT,
+                             encoding="utf-8", errors="replace", creationflags=0x08000000)  # CREATE_NO_WINDOW
+        # 探测窗口：进程存活即视为启动成功
+        import time as _t
+        _t.sleep(probe_seconds)
+        if proc.poll() is not None:
+            # 启动后立刻退出 → 失败
+            try:
+                with open(log_path, encoding="utf-8", errors="replace") as lf:
+                    out = lf.read()
+            except Exception:
+                out = ""
+            try:
+                os.unlink(log_path)
+            except OSError:
+                pass
+            return {"ok": False, "exit_code": proc.returncode, "output": (out or "(无输出)")[:4000]}
+        return {"ok": True, "pid": proc.pid, "output": f"进程已启动（日志: {os.path.basename(log_path)}）"}
+    except FileNotFoundError as e:
+        return {"ok": False, "error": f"命令不存在: {e}"}
+    except Exception as e:
+        return {"ok": False, "error": f"启动失败: {str(e)[:120]}"}
+
+
+def _run_dev_command(workspace: str, command: str, timeout: int = 120) -> dict:
+    """在项目目录执行模型返回的命令（操作型需求：启动/运行/测试）。
+
+    安全：shlex 拆分参数（不用 shell）、危险命令黑名单、超时限制、输出截断。
+    """
+    import shlex
+    import subprocess as _sp
+    cmd = (command or "").strip()
+    if not cmd:
+        return {"ok": True, "output": ""}
+    low = cmd.lower()
+    for bad in ("rm ", "del ", "rmdir", "format ", "shutdown", "taskkill", "格式化", "删除全部", "rd /s"):
+        if low.startswith(bad):
+            return {"ok": False, "error": f"命令被安全拦截（危险操作）: {cmd[:80]}"}
+    try:
+        args = shlex.split(cmd, posix=False)
+    except ValueError as e:
+        return {"ok": False, "error": f"命令解析失败: {str(e)[:100]}"}
+    if not args:
+        return {"ok": False, "error": "空命令"}
+    try:
+        r = _sp.run(args, cwd=workspace, capture_output=True, text=True,
+                    timeout=timeout, encoding="utf-8", errors="replace")
+        out = (r.stdout or "") + ("\n" + r.stderr if r.stderr else "")
+        return {"ok": r.returncode == 0, "exit_code": r.returncode,
+                "output": (out or "").strip()[:8000]}
+    except _sp.TimeoutExpired:
+        return {"ok": False, "error": f"命令执行超时（{timeout}s）"}
+    except FileNotFoundError as e:
+        return {"ok": False, "error": f"命令不存在: {e}"}
+    except Exception as e:
+        return {"ok": False, "error": f"命令执行失败: {str(e)[:120]}"}
+
+
 async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str | None = None,
                         feedback: str | None = None) -> dict:
     """开发任务：外部代码目录（API/CLI 上传解压的隔离副本）→ DeepSeek 改码 → 校验 → diff。
@@ -1339,29 +1427,35 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
                 return {"status": "failed", "error": f"开发模型调用失败: {str(e)[:120]}", "elapsed": round(time.time() - started, 1)}
             files_map = info.get("files") or {}
             summary = str(info.get("summary") or "")
-            if not files_map:
-                # 模型返回空 files：带纠正提示重试（可能是"无需改动"误判或格式偏差），最后才失败
+            command = str(info.get("command") or "").strip()
+            analysis = str(info.get("analysis") or "").strip()
+            background = bool(info.get("background"))
+            if not files_map and not command and not analysis:
+                # 模型什么都没返回：带纠正提示重试，最后才失败
                 if attempt < 2:
                     await asyncio.sleep(2)
                     continue
-                return {"status": "failed", "error": "模型未返回任何文件改动（已重试 3 次，请尝试更明确的需求）",
+                return {"status": "failed", "error": "模型未返回文件改动/命令/分析结果（已重试 3 次，请尝试更明确的需求）",
                         "elapsed": round(time.time() - started, 1)}
-            errors = _dev_validate(files_map, workspace)
-            if not errors:
-                break
-            # 校验失败 → 把错误反馈给模型修复（reasoner）
-            try:
-                info2 = await chat_completion_json(
-                    DEV_VALIDATE_PROMPT.format(requirement=requirement[:8000], errors="\n".join(errors)),
-                    requirement, temperature=0.2, max_tokens=32000,  # 防大文件 JSON 截断
-                    model=get_settings().ai_model_reasoning,
-                )
-                files_map = info2.get("files") or files_map
-                errors2 = _dev_validate(files_map, workspace)
-                if not errors2:
-                    errors = []
-                    break
-            except Exception:
+            if files_map:
+                errors = _dev_validate(files_map, workspace)
+                if errors:
+                    # 校验失败 → 把错误反馈给模型修复（reasoner）
+                    try:
+                        info2 = await chat_completion_json(
+                            DEV_VALIDATE_PROMPT.format(requirement=requirement[:8000], errors="\n".join(errors)),
+                            requirement, temperature=0.2, max_tokens=32000,  # 防大文件 JSON 截断
+                            model=get_settings().ai_model_reasoning,
+                        )
+                        files_map = info2.get("files") or files_map
+                        errors2 = _dev_validate(files_map, workspace)
+                        if not errors2:
+                            errors = []
+                            break
+                    except Exception:
+                        break
+            else:
+                # 操作型需求（启动/运行/分析）：无文件改动，直接进入命令/分析处理
                 break
 
         if errors:
@@ -1392,6 +1486,59 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
                 zf.writestr(rel, content)
         modified_zip_b64 = _b64.b64encode(buf.getvalue()).decode()
 
+        # 操作型需求：执行模型返回的命令（在项目目录运行），输出带回结果
+        dev_command = command or ""
+        dev_output = ""
+        dev_output_ok = True
+        if dev_command:
+            if background:
+                # 长驻服务（web 服务器等）：后台启动 + 存活探测，不等待结束
+                bg = await asyncio.to_thread(_run_dev_command_background, workspace, dev_command)
+                dev_output_ok = bool(bg.get("ok"))
+                dev_output = bg.get("output") or bg.get("error") or ""
+                if bg.get("pid"):
+                    dev_output = (f"已在后台启动（PID {bg['pid']}），进程存活中。\n" + dev_output).strip()
+            else:
+                cmd_result = await asyncio.to_thread(_run_dev_command, workspace, dev_command)
+                dev_output_ok = bool(cmd_result.get("ok"))
+                dev_output = cmd_result.get("output") or cmd_result.get("error") or ""
+                if not cmd_result.get("ok"):
+                    logger.warning("[dev_task:%s] 命令执行失败: %s", task_id, (cmd_result.get("error") or "")[:150])
+                    # 命令失败 → 反馈输出给模型修一次（改代码或换命令）
+                    try:
+                        fix_prompt = (
+                            f"你刚才在项目里执行命令 `{dev_command}` 失败了。输出如下：\n{dev_output[:1500]}\n\n"
+                            "请修复：修改相关文件（files）或给出修正后的命令（command），让命令能成功执行。"
+                            "只输出 JSON（files/command/summary，analysis 可为空）。")
+                        fix_info = await chat_completion_json(
+                            fix_prompt, requirement, temperature=0.2, max_tokens=32000,
+                            model=get_settings().ai_model_reasoning,
+                        )
+                        if fix_info.get("files"):
+                            files_map = {}
+                            for rel, content in (fix_info.get("files") or {}).items():
+                                safe = _safe_dev_rel(rel, workspace)
+                                if safe is not None:
+                                    files_map[safe] = content
+                            _dev_validate(files_map, workspace)  # 写盘
+                            # 重新打包（改动后）
+                            _buf2 = _io.BytesIO()
+                            with _zip.ZipFile(_buf2, "w", _zip.ZIP_DEFLATED) as zf2:
+                                for rel2, c2 in files_map.items():
+                                    zf2.writestr(rel2, c2)
+                            modified_zip_b64 = _b64.b64encode(_buf2.getvalue()).decode()
+                            for rel2, c2 in files_map.items():
+                                if {"path": rel2, "status": "新增" if rel2 not in orig_contents else "修改", "size": len(c2)} not in dev_files:
+                                    dev_files.append({"path": rel2, "status": "新增" if rel2 not in orig_contents else "修改", "size": len(c2)})
+                        new_cmd = str(fix_info.get("command") or "").strip()
+                        if new_cmd and new_cmd != dev_command:
+                            cmd2 = await asyncio.to_thread(_run_dev_command, workspace, new_cmd)
+                            dev_command = new_cmd
+                            dev_output_ok = bool(cmd2.get("ok"))
+                            dev_output = cmd2.get("output") or cmd2.get("error") or ""
+                    except Exception as e:
+                        logger.warning("[dev_task:%s] 命令修复重试失败: %s", task_id, str(e)[:120])
+
         return {
             "status": "ok",
             "dev_diff": diff[:20000],
@@ -1399,6 +1546,10 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
             "dev_files": dev_files,
             "dev_summary": summary,
             "dev_modified_zip": modified_zip_b64,
+            "dev_command": dev_command,
+            "dev_output": dev_output[:8000],
+            "dev_output_ok": dev_output_ok,
+            "dev_analysis": analysis,
             "output_file": diff_path,
             "elapsed": round(time.time() - started, 1),
             "error": None,
