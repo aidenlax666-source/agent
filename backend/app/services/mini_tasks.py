@@ -781,24 +781,69 @@ DEV_VALIDATE_PROMPT = """你是软件工程师。下面是上一个 AI 按需求
 只列出需要修改的文件（其他文件不用重复输出）。直接输出修复后的完整代码。"""
 
 
-def _dev_context(workspace: str, files: list[str], max_items: int = 80,
-                 per_file: int = 4000, total_cap: int = 40000) -> str:
+# 关键词打分时忽略的常见词（英文 + 中文 2-gram）
+_DEV_STOPWORDS = {
+    "the", "and", "for", "with", "from", "this", "that", "project", "code",
+    "file", "files", "add", "new", "make", "function", "in", "to", "of", "a",
+    "an", "is", "are", "be", "on", "it", "as", "by", "at", "or", "not", "my",
+    "we", "our", "需要", "项目", "代码", "文件", "功能", "函数", "增加",
+    "添加", "一个", "这个", "那个", "修改", "改成", "实现", "并且", "然后",
+}
+
+
+def _requirement_keywords(requirement: str, limit: int = 24) -> set[str]:
+    """从需求提取关键词：ASCII 单词 + 中文 2-gram（用于相关文件打分，零成本）。"""
+    import re
+    words: set[str] = set()
+    for tok in re.findall(r"[A-Za-z_][A-Za-z0-9_]{1,}", (requirement or "").lower()):
+        if tok not in _DEV_STOPWORDS:
+            words.add(tok)
+    cn = [c for c in (requirement or "") if "\u4e00" <= c <= "\u9fff"]
+    for i in range(len(cn) - 1):
+        bigram = cn[i] + cn[i + 1]
+        if bigram not in _DEV_STOPWORDS:
+            words.add(bigram)
+    return set(list(words)[:limit])
+
+
+def _dev_context(workspace: str, files: list[str], requirement: str | None = None,
+                 max_items: int = 80, per_file: int = 4000, total_cap: int = 40000) -> str:
     """文件树 + 每个文件的内容（Claude Code 风格：让模型看到真实代码而非只看到文件名）。
 
-    每个文件内容截断到 per_file 字符；总上下文上限 total_cap 字符（控成本）。
+    上下文精简：requirement 给出时，按关键词给文件打分——
+    相关文件（文件名/开头命中需求关键词）给完整内容，其余文件只给前 300 字符摘要，
+    既大幅省 token（低成本），又不会漏掉任何文件名。
+    每个文件内容截断到 per_file 字符；总上下文上限 total_cap 字符。
     读取失败（二进制/编码问题）的文件跳过。
     """
-    parts: list[str] = []
-    total = 0
+    kws = _requirement_keywords(requirement[:1500]) if requirement else set()
+    entries: list[tuple[str, str, int]] = []
     for rel in sorted(files)[:max_items]:
         try:
             with open(os.path.join(workspace, rel), encoding="utf-8") as f:
-                content = f.read(per_file + 1)
+                content = f.read()
         except Exception:
             continue
-        if len(content) > per_file:
-            content = content[:per_file] + "\n...(内容过长已截断)"
-        block = f"=== {rel} ===\n{content}"
+        score = 0
+        if kws:
+            hay = (rel + " " + content[:600]).lower()
+            for k in kws:
+                if k in hay:
+                    score += 1
+                if k in rel.lower():
+                    score += 3
+        entries.append((rel, content, score))
+    entries.sort(key=lambda e: -e[2])  # 相关文件在前
+    parts: list[str] = []
+    total = 0
+    for rel, content, score in entries:
+        if kws and score == 0:
+            body = content[:300] + ("\n...(仅摘要)" if len(content) > 300 else "")
+        elif len(content) > per_file:
+            body = content[:per_file] + "\n...(内容过长已截断)"
+        else:
+            body = content
+        block = f"=== {rel} ===\n{body}"
         if total + len(block) > total_cap:
             parts.append("...(上下文已达上限，其余文件省略)")
             break
@@ -876,7 +921,7 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
             except Exception:
                 pass
 
-        tree = _dev_context(workspace, files)
+        tree = _dev_context(workspace, files, requirement=requirement)
         plan_part = ""
         if plan:
             plan_part = (
@@ -969,7 +1014,7 @@ async def _plan_dev_task(requirement: str, code_dir: str, feedback: str | None =
     files = _walk_files(workspace)
     if not files:
         return {"status": "failed", "error": "未找到项目源码目录"}
-    tree = _dev_context(workspace, files)
+    tree = _dev_context(workspace, files, requirement=requirement)
     fb_part = f"\n【用户对上一版方案的意见】\n{feedback}\n请根据意见重新调整方案。" if feedback else ""
     info = None
     for attempt in range(3):
@@ -977,7 +1022,7 @@ async def _plan_dev_task(requirement: str, code_dir: str, feedback: str | None =
             info = await chat_completion_json(
                 DEV_PLAN_PROMPT.format(requirement=requirement[:8000], context=tree) + fb_part,
                 requirement, temperature=0.2, max_tokens=3000,
-                model=get_settings().ai_model_reasoning,
+                model=get_settings().ai_model,  # 方案用便宜模型；改码/修复才用 reasoner
             )
             break
         except Exception as e:
