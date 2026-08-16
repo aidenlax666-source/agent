@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { miniApi, uploadApi, ASSETS_BASE, getAnonymousId, type MiniTaskStatus } from "@/lib/api";
+import { miniApi, uploadApi, ASSETS_BASE, type MiniTaskStatus } from "@/lib/api";
 import type { PreviewData } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -11,10 +11,8 @@ import { PreviewTable } from "@/components/PreviewTable";
 import AppNav from "@/components/AppNav";
 import {
   Loader2, Sparkles, Play, CheckCircle2, XCircle, AlertTriangle, Download,
-  RefreshCw, Upload, Send, Wand2, FileSpreadsheet, Trash2, History, FolderGit2,
+  RefreshCw, Upload, Send, Wand2, FileSpreadsheet, Trash2, History,
 } from "lucide-react";
-
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 const STATUS_STYLE: Record<string, { label: string; cls: string }> = {
   queued: { label: "排队中", cls: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300" },
@@ -74,18 +72,6 @@ export default function MiniPage() {
   const [dataPaths, setDataPaths] = useState<string[]>([]);
   const [dataFiles, setDataFiles] = useState<{ name: string; path: string }[]>([]);
   const [scheduleValue, setScheduleValue] = useState("30");
-  const [zipFile, setZipFile] = useState<File | null>(null);
-  const [devResult, setDevResult] = useState<{
-    dev_summary?: string; dev_files?: { path: string; status: string; size: number }[];
-    dev_diff?: string; dev_modified_zip?: string; dev_diff_url?: string;
-  } | null>(null);
-  // 交互式改码第 1 步：AI 方案（先不改代码）
-  const [devPlan, setDevPlan] = useState<{
-    plan?: string; files?: (string | { path: string })[]; questions?: string[];
-  } | null>(null);
-  const [devFeedback, setDevFeedback] = useState("");
-  const [devPlanning, setDevPlanning] = useState(false);
-  const [devApplying, setDevApplying] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const stopPolling = useCallback(() => {
@@ -149,16 +135,8 @@ export default function MiniPage() {
     setSubmitting(true);
     setSubmitError(null);
     setTask(null);
-    setDevResult(null);
-    setDevPlan(null);
-    setDevFeedback("");
     stopPolling();
     try {
-      // 上传了项目 zip → 交互式改码第 1 步：先出方案（不改代码），用户确认后再改码
-      if (zipFile) {
-        await runDevPlan(requirement.trim(), zipFile);
-        return;
-      }
       const res = await miniApi.submit(requirement.trim(), undefined, imagePaths, dataPaths);
       const initial = await miniApi.get(res.task_id);
       setTask(initial);
@@ -167,83 +145,6 @@ export default function MiniPage() {
       setSubmitError(e instanceof Error ? e.message : String(e));
     } finally {
       setSubmitting(false);
-    }
-  };
-
-  // 交互式改码：调 /api/dev/plan 生成修改方案（不改代码）
-  const runDevPlan = async (req: string, zf: File, fb = "") => {
-    setDevPlanning(true);
-    setSubmitError(null);
-    try {
-      const fd = new FormData();
-      fd.append("requirement", req);
-      fd.append("file", zf);
-      if (fb.trim()) fd.append("feedback", fb.trim());
-      const res = await fetch(`${API}/api/dev/plan`, {
-        method: "POST",
-        body: fd,
-        headers: { "X-Anonymous-Id": getAnonymousId() },
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || `方案生成失败: ${res.status}`);
-      setDevPlan(data);
-    } catch (e) {
-      setSubmitError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setDevPlanning(false);
-    }
-  };
-
-  // 带着用户意见重新规划方案
-  const handleDevReplan = () => {
-    if (!zipFile || !devFeedback.trim() || devPlanning || devApplying) return;
-    runDevPlan(requirement.trim(), zipFile, devFeedback.trim());
-  };
-
-  // 确认方案 → 调 /api/dev/apply 落地改码
-  const handleDevConfirm = async () => {
-    if (!zipFile || !devPlan?.plan || devPlanning || devApplying) return;
-    setDevApplying(true);
-    setSubmitError(null);
-    try {
-      const fd = new FormData();
-      fd.append("requirement", requirement.trim());
-      fd.append("plan", devPlan.plan);
-      fd.append("file", zipFile);
-      if (devFeedback.trim()) fd.append("feedback", devFeedback.trim());
-      const res = await fetch(`${API}/api/dev/apply`, {
-        method: "POST",
-        body: fd,
-        headers: { "X-Anonymous-Id": getAnonymousId() },
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || `改码失败: ${res.status}`);
-      setDevResult(data);
-      setDevPlan(null);
-      setDevFeedback("");
-    } catch (e) {
-      setSubmitError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setDevApplying(false);
-    }
-  };
-
-  // 下载 AI 修改后的项目 zip（base64 → 文件）
-  const downloadModifiedZip = () => {
-    if (!devResult?.dev_modified_zip) return;
-    try {
-      const bin = atob(devResult.dev_modified_zip);
-      const bytes = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      const blob = new Blob([bytes], { type: "application/zip" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "modified_project.zip";
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch {
-      setSubmitError("下载失败");
     }
   };
 
@@ -427,21 +328,8 @@ export default function MiniPage() {
                   <FileSpreadsheet className="w-3.5 h-3.5" /> 数据文件
                   <input type="file" accept=".xlsx,.xls,.csv" multiple className="hidden" disabled={uploading} onChange={(e) => { handleDataFiles(e.target.files); e.target.value = ""; }} />
                 </label>
-                <label className="inline-flex items-center gap-1.5 text-xs font-medium text-violet-600 dark:text-violet-400 cursor-pointer hover:bg-violet-50 dark:hover:bg-violet-950 rounded-lg px-2.5 py-1.5 transition-colors" title="上传项目 zip：AI 先出修改方案，你确认（或提意见重新规划）后再改码">
-                  <FolderGit2 className="w-3.5 h-3.5" /> 项目zip（改代码）
-                  <input type="file" accept=".zip" className="hidden" disabled={uploading} onChange={(e) => { const f = e.target.files?.[0] || null; setZipFile(f); if (f) setSubmitError(null); e.target.value = ""; }} />
-                </label>
               </div>
             </div>
-
-            {/* zip 已选提示 */}
-            {zipFile && (
-              <div className="inline-flex items-center gap-2 rounded-xl border border-violet-200 dark:border-violet-800 bg-violet-50/70 dark:bg-violet-950/50 px-3 py-1.5 text-xs text-violet-700 dark:text-violet-300">
-                <FolderGit2 className="w-3.5 h-3.5" />
-                <span className="max-w-52 truncate">{zipFile.name}</span>
-                <button onClick={() => setZipFile(null)} className="text-violet-500 hover:text-red-500 transition-colors" title="移除">×</button>
-              </div>
-            )}
 
             {/* 已上传文件 */}
             {(imagePreviews.length > 0 || dataFiles.length > 0) && (
@@ -474,7 +362,7 @@ export default function MiniPage() {
                 className="gap-2 h-12 px-8 rounded-2xl bg-gradient-to-r from-indigo-600 via-violet-600 to-fuchsia-600 hover:opacity-90 text-white font-semibold shadow-lg shadow-indigo-500/30 disabled:opacity-50 w-full sm:w-auto"
               >
                 {submitting || isActive ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                {isActive ? "执行中..." : zipFile ? "生成修改方案" : "让 AI 搞定"}
+                {isActive ? "执行中..." : "让 AI 搞定"}
               </Button>
               <span className="text-xs text-muted-foreground sm:ml-1">
                 网页抓取无需填 URL，AI 会根据需求自动定位目标网站
@@ -710,91 +598,7 @@ export default function MiniPage() {
           </Card>
         )}
 
-        {/* 开发任务第 1 步：AI 方案（先确认，不改代码） */}
-        {devPlan && (
-          <Card className="rounded-3xl border-amber-200/70 dark:border-amber-800/70 bg-white/80 dark:bg-slate-900/70 backdrop-blur-xl shadow-xl shadow-amber-500/5">
-            <CardContent className="p-5 sm:p-6 space-y-4">
-              <div className="flex items-center gap-2">
-                <Wand2 className="w-4 h-4 text-amber-500" />
-                <span className="text-sm font-semibold">📋 AI 修改方案（先确认，不改代码）</span>
-                {devPlanning && <Loader2 className="w-4 h-4 animate-spin text-amber-500" />}
-              </div>
-              <p className="text-sm text-slate-700 dark:text-slate-200 whitespace-pre-wrap bg-slate-50 dark:bg-slate-900 rounded-xl px-4 py-3 max-h-72 overflow-auto">
-                {devPlan.plan || "(AI 未给出方案文本)"}
-              </p>
-              {(devPlan.files || []).length > 0 && (
-                <div>
-                  <p className="text-[11px] font-medium text-muted-foreground mb-1.5">预计改动文件</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {(devPlan.files || []).map((f, i) => (
-                      <span key={i} className="inline-flex items-center gap-1 rounded-lg bg-white/70 dark:bg-slate-900/70 border border-amber-200/60 dark:border-amber-800 px-2 py-1 text-[11px] text-slate-600 dark:text-slate-300 font-mono">
-                        {typeof f === "string" ? f : f?.path || String(f)}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {(devPlan.questions || []).length > 0 && (
-                <div className="space-y-1.5">
-                  <p className="text-[11px] font-medium text-muted-foreground">AI 需要你确认</p>
-                  {(devPlan.questions || []).map((q, i) => (
-                    <p key={i} className="text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/50 rounded-lg px-3 py-1.5">? {q}</p>
-                  ))}
-                </div>
-              )}
-              <div className="flex flex-col sm:flex-row gap-2">
-                <textarea value={devFeedback} onChange={(e) => setDevFeedback(e.target.value)}
-                  placeholder="对方案有意见？在这里输入，AI 会重新规划。没意见直接点「确认方案，开始改码」"
-                  className="flex-1 min-h-14 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-amber-400 resize-y" />
-                <Button variant="outline" size="sm" onClick={handleDevReplan} disabled={!devFeedback.trim() || devPlanning || devApplying} className="gap-2 rounded-xl">
-                  <RefreshCw className="w-4 h-4" /> 带着意见重新规划
-                </Button>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button size="sm" onClick={handleDevConfirm} disabled={devPlanning || devApplying} className="gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:opacity-90 text-white">
-                  {devApplying ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-                  {devApplying ? "AI 正在按方案改码…" : "确认方案，开始改码"}
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => { setDevPlan(null); setDevFeedback(""); }} disabled={devApplying}>取消</Button>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* 开发任务结果（上传 zip 改代码） */}
-        {devResult && (
-          <Card className="rounded-3xl border-violet-200/70 dark:border-violet-800/70 bg-white/80 dark:bg-slate-900/70 backdrop-blur-xl shadow-xl shadow-violet-500/5">
-            <CardContent className="p-5 sm:p-6 space-y-4">
-              <div className="flex items-center gap-2">
-                <FolderGit2 className="w-4 h-4 text-violet-500" />
-                <span className="text-sm font-semibold">💻 AI 代码改动</span>
-                {submitting && <Loader2 className="w-4 h-4 animate-spin text-violet-500" />}
-              </div>
-              {devResult.dev_summary && (
-                <p className="text-sm text-slate-700 dark:text-slate-200">{devResult.dev_summary}</p>
-              )}
-              <div className="flex flex-wrap gap-1.5">
-                {(devResult.dev_files || []).map((f) => (
-                  <span key={f.path} className="inline-flex items-center gap-1 rounded-lg bg-white/70 dark:bg-slate-900/70 border border-violet-200/60 dark:border-violet-800 px-2 py-1 text-[11px] text-slate-600 dark:text-slate-300 font-mono">
-                    {f.status === "新增" ? "🆕" : "✏️"} {f.path}
-                  </span>
-                ))}
-              </div>
-              {devResult.dev_diff && (
-                <details className="text-sm">
-                  <summary className="cursor-pointer text-muted-foreground hover:text-foreground select-none">查看代码改动 diff（{devResult.dev_diff.length} 字符）</summary>
-                  <pre className="mt-2 max-h-96 overflow-auto rounded-xl bg-slate-950 text-slate-100 p-4 text-[11px] leading-relaxed whitespace-pre-wrap">{devResult.dev_diff}</pre>
-                </details>
-              )}
-              <div className="flex flex-wrap gap-2">
-                <Button size="sm" variant="outline" onClick={downloadModifiedZip} className="gap-1.5 text-violet-600 dark:text-violet-400">
-                  <Download className="w-4 h-4" /> 下载修改后的项目 zip
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => setDevResult(null)}>关闭</Button>
-              </div>
-            </CardContent>
-          </Card>
-        )}
+        {/* 开发任务结果（上传 zip 改代码）已迁移到 /claude 改码助手（选文件夹），此处移除 */}
 
         <footer className="text-center text-[11px] text-muted-foreground pb-6">
           AI 自动化工作台 · 任务与数据问答自动识别 · 生成产物自动校验（数量 / 字段 / 覆盖 / 数值）
