@@ -29,7 +29,8 @@ os.makedirs(_SANDBOX_TMP, exist_ok=True)
 _AUTH_INJECT_DIR: str = ""
 
 # Output extensions we care about when locating the script's result file.
-_OUTPUT_EXTS = (".xlsx", ".xls", ".docx", ".pptx", ".csv", ".txt", ".json", ".html", ".png", ".pdf", ".wav", ".mp3", ".mp4")
+_OUTPUT_EXTS = (".xlsx", ".xls", ".docx", ".pptx", ".csv", ".txt", ".json", ".html", ".png", ".pdf",
+                ".wav", ".mp3", ".mp4", ".dxf", ".srt", ".mkv", ".mov", ".avi", ".webm", ".m4a")
 _OUTPUT_NAMES = ("output.xlsx", "output.xls", "output.docx", "output.pptx", "output.csv")
 
 # Environment variables that must never be passed to an untrusted subprocess.

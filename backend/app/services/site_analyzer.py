@@ -132,12 +132,13 @@ async def analyze_site(url: str, timeout: int = 30, profile_dir: str | None = No
         from playwright.sync_api import sync_playwright
 
         # 注入该任务所属用户的登录态（按账号隔离；未指定回退全局目录）
-        profile_dir = _os.path.normpath(
+        # 注意：不能给 profile_dir 赋值（会遮蔽外层参数导致 UnboundLocalError），用局部名 pdir
+        pdir = _os.path.normpath(
             profile_dir or _os.path.join(_os.path.dirname(__file__), "..", "..", "browser_profile"))
         storage_state = None
         try:
             merged = {"cookies": [], "origins": []}
-            for f in _glob.glob(_os.path.join(profile_dir, "*.json")):
+            for f in _glob.glob(_os.path.join(pdir, "*.json")):
                 try:
                     with open(f, encoding="utf-8") as fp:
                         s = _json.load(fp)

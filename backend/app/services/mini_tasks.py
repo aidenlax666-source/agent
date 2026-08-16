@@ -805,28 +805,38 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
         await _run_qa_task(task_id, requirement, data_paths, record)
         return
 
-    # ---- 多模式检测（需求可同时含多种意图，依次执行并合并产物） ----
-    modes: list[str] = []
-    r_low = requirement.lower()
-    if _is_game_request(requirement):
-        modes.append("game")
-    if _is_report_request(requirement):
-        modes.append("report")
-    if _is_content_request(requirement):
-        modes.append("content")
-    if _is_video_request(requirement):
-        modes.append("video")
-    if _is_image_request(requirement):
-        modes.append("image")
-    if _is_music_request(requirement):
-        modes.append("music")
-    if _is_tts_request(requirement):
-        modes.append("tts")
-    if not modes:
-        modes.append("code")
-    # 生成类与"明确要数据文件"意图并存时补代码任务（如"抓XX数据导出Excel，并做成XX网页"）
-    if "code" not in modes and any(k in r_low for k in ("导出excel", "导出csv", "导出xlsx", "下载数据", "输出文件")):
-        modes.append("code")
+    # ---- 技能任务（视频剪辑/CAD 制图等）：一律走 code 模式（生成脚本执行），不被"画/视频"等词误判为 image/video 模式 ----
+    try:
+        from app.skills import select_skill
+        skill = select_skill(requirement)
+    except Exception:
+        skill = None
+    if skill:
+        modes = ["code"]
+        record["message"] = f"技能: {skill['name']}，开始执行..."
+    else:
+        # ---- 多模式检测（需求可同时含多种意图，依次执行并合并产物） ----
+        modes: list[str] = []
+        r_low = requirement.lower()
+        if _is_game_request(requirement):
+            modes.append("game")
+        if _is_report_request(requirement):
+            modes.append("report")
+        if _is_content_request(requirement):
+            modes.append("content")
+        if _is_video_request(requirement):
+            modes.append("video")
+        if _is_image_request(requirement):
+            modes.append("image")
+        if _is_music_request(requirement):
+            modes.append("music")
+        if _is_tts_request(requirement):
+            modes.append("tts")
+        if not modes:
+            modes.append("code")
+        # 生成类与"明确要数据文件"意图并存时补代码任务（如"抓XX数据导出Excel，并做成XX网页"）
+        if "code" not in modes and any(k in r_low for k in ("导出excel", "导出csv", "导出xlsx", "下载数据", "输出文件")):
+            modes.append("code")
 
     try:
         await save_mini_task(record)
@@ -958,6 +968,21 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
                     merged["error"] = result.get("error") or hint
                 else:
                     failed.append(f"数据处理: {result.get('error') or rs}")
+                # 技能任务产物发布（视频/音频/CAD 等）：从沙箱临时目录复制到 web/ 供预览/下载
+                if rs == "ok" and result.get("output_file") and os.path.exists(str(result["output_file"])):
+                    _src = str(result["output_file"])
+                    if not os.path.normpath(_src).startswith(os.path.normpath(_WEB_DIR)):
+                        try:
+                            _ext = os.path.splitext(_src)[1].lower() or ".bin"
+                            _fname = f"content_{task_id}{_ext}"
+                            _dst = os.path.join(_WEB_DIR, _fname)
+                            os.makedirs(_WEB_DIR, exist_ok=True)
+                            shutil.copyfile(_src, _dst)
+                            merged["output_file"] = _dst
+                            merged["content_url"] = f"/{_fname}"
+                            merged["message_file"] = f"文件已生成：/{_fname}（{_size_mb(_dst)}）"
+                        except Exception as e:
+                            logger.warning("[mini:%s] 产物发布失败: %s", task_id, str(e)[:100])
 
         if failed and not any(merged.get(k) for k in ("game_url", "report_url", "content_url", "video_url", "image_url", "image_urls", "music_url", "tts_url", "dev_diff")):
             merged["status"] = "failed"

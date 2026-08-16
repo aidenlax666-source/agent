@@ -14,10 +14,14 @@ router = APIRouter()
 UPLOAD_DIR = Path(__file__).parent.parent.parent / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-MAX_UPLOAD_SIZE = 20 * 1024 * 1024  # 20 MB
+MAX_UPLOAD_SIZE = 200 * 1024 * 1024  # 200 MB（视频较大）
 ALLOWED_EXTENSIONS = {
     ".xlsx", ".xls", ".docx", ".doc", ".pptx", ".ppt",
     ".csv", ".txt", ".json", ".pdf", ".png", ".jpg", ".jpeg",
+    # 视频/音频/字幕（视频剪辑技能）
+    ".mp4", ".mov", ".avi", ".mkv", ".wmv", ".flv", ".webm", ".m4v",
+    ".mp3", ".wav", ".m4a", ".aac", ".flac",
+    ".srt", ".ass",
 }
 
 
