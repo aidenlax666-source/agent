@@ -43,27 +43,31 @@ export default function AutomationsPage() {
 
   const toggleRem = async (id: string) => {
     try {
-      const r = await notificationsApi.toggleReminder(id);
-      setReminders((prev) => prev.map((x) => (x.id === id ? { ...x, enabled: r.enabled ? 1 : 0 } : x)));
+      await notificationsApi.toggleReminder(id);
+      setError(null);
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    await load();
   };
   const delRem = async (id: string) => {
     try {
       await notificationsApi.deleteReminder(id);
-      setReminders((prev) => prev.filter((x) => x.id !== id));
+      setError(null);
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    await load();
   };
   const toggleMon = async (id: string) => {
     try {
-      const r = await notificationsApi.toggleMonitor(id);
-      setMonitors((prev) => prev.map((x) => (x.id === id ? { ...x, enabled: r.enabled ? 1 : 0 } : x)));
+      await notificationsApi.toggleMonitor(id);
+      setError(null);
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    await load();
   };
   const delMon = async (id: string) => {
     try {
       await notificationsApi.deleteMonitor(id);
-      setMonitors((prev) => prev.filter((x) => x.id !== id));
+      setError(null);
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    await load();
   };
 
   const createReminder = async () => {

@@ -424,9 +424,8 @@ async def create_monitor(data: dict, user=Depends(get_current_user)):
 @router.delete("/reminders/{rid}")
 async def delete_reminder(rid: str, user=Depends(get_current_user)):
     from app.database import delete_reminder as _db_del_rem
-    ok = await _db_del_rem(user["id"], rid)
-    if not ok:
-        raise HTTPException(status_code=404, detail="提醒不存在")
+    # 幂等：任务不存在也返回 ok（前端 stale 列表重复点击不会 404 报错）
+    await _db_del_rem(user["id"], rid)
     return {"ok": True}
 
 
@@ -435,16 +434,16 @@ async def toggle_reminder(rid: str, user=Depends(get_current_user)):
     from app.database import toggle_reminder as _db_toggle
     enabled = await _db_toggle(user["id"], rid)
     if enabled is None:
-        raise HTTPException(status_code=404, detail="提醒不存在")
+        # 幂等：不存在返回当前无效状态，前端据此刷新列表
+        return {"ok": True, "enabled": False, "missing": True}
     return {"ok": True, "enabled": enabled}
 
 
 @router.delete("/monitors/{mid}")
 async def delete_monitor(mid: str, user=Depends(get_current_user)):
     from app.database import delete_monitor as _db_del_mon
-    ok = await _db_del_mon(user["id"], mid)
-    if not ok:
-        raise HTTPException(status_code=404, detail="监控不存在")
+    # 幂等：不存在也返回 ok
+    await _db_del_mon(user["id"], mid)
     return {"ok": True}
 
 
@@ -453,7 +452,7 @@ async def toggle_monitor(mid: str, user=Depends(get_current_user)):
     from app.database import toggle_monitor as _db_toggle
     enabled = await _db_toggle(user["id"], mid)
     if enabled is None:
-        raise HTTPException(status_code=404, detail="监控不存在")
+        return {"ok": True, "enabled": False, "missing": True}
     return {"ok": True, "enabled": enabled}
 
 

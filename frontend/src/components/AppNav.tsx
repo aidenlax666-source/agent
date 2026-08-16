@@ -38,6 +38,7 @@ export default function AppNav() {
   const [unread, setUnread] = useState(0);
   const [reminders, setReminders] = useState<ReminderItem[]>([]);
   const [monitors, setMonitors] = useState<MonitorItem[]>([]);
+  const [panelError, setPanelError] = useState<string | null>(null);
   const lastUnread = useRef(0);
 
   const loadNotifs = useCallback(async () => {
@@ -77,6 +78,7 @@ export default function AppNav() {
       if (typeof Notification !== "undefined" && Notification.permission === "default") {
         try { await Notification.requestPermission(); } catch { /* 忽略 */ }
       }
+      setPanelError(null);
       await loadNotifs();
       await loadAutomations();
     }
@@ -93,29 +95,41 @@ export default function AppNav() {
   const removeReminder = async (id: string) => {
     try {
       await notificationsApi.deleteReminder(id);
-      setReminders((prev) => prev.filter((r) => r.id !== id));
-    } catch { /* 忽略 */ }
+      setPanelError(null);
+    } catch (e) {
+      setPanelError(e instanceof Error ? e.message : "删除失败");
+    }
+    await loadAutomations(); // 以服务端为准刷新，避免 stale 列表
   };
 
   const toggleReminder = async (id: string) => {
     try {
-      const r = await notificationsApi.toggleReminder(id);
-      setReminders((prev) => prev.map((x) => (x.id === id ? { ...x, enabled: r.enabled ? 1 : 0 } : x)));
-    } catch { /* 忽略 */ }
+      await notificationsApi.toggleReminder(id);
+      setPanelError(null);
+    } catch (e) {
+      setPanelError(e instanceof Error ? e.message : "操作失败");
+    }
+    await loadAutomations();
   };
 
   const removeMonitor = async (id: string) => {
     try {
       await notificationsApi.deleteMonitor(id);
-      setMonitors((prev) => prev.filter((m) => m.id !== id));
-    } catch { /* 忽略 */ }
+      setPanelError(null);
+    } catch (e) {
+      setPanelError(e instanceof Error ? e.message : "删除失败");
+    }
+    await loadAutomations();
   };
 
   const toggleMonitor = async (id: string) => {
     try {
-      const r = await notificationsApi.toggleMonitor(id);
-      setMonitors((prev) => prev.map((x) => (x.id === id ? { ...x, enabled: r.enabled ? 1 : 0 } : x)));
-    } catch { /* 忽略 */ }
+      await notificationsApi.toggleMonitor(id);
+      setPanelError(null);
+    } catch (e) {
+      setPanelError(e instanceof Error ? e.message : "操作失败");
+    }
+    await loadAutomations();
   };
 
   const loadUser = useCallback(async () => {
@@ -222,8 +236,7 @@ export default function AppNav() {
                   <div className="max-h-80 overflow-auto">
                     {items.length === 0 ? (
                       <p className="text-center text-xs text-muted-foreground py-8">暂无消息</p>
-                    ) : (
-                      <>
+                    ) : (                      <>
                         {items.map((n) => (
                           <div key={n.id} className={`px-4 py-2.5 border-b border-slate-50 dark:border-slate-800/60 ${n.read ? "opacity-60" : ""}`}>
                             <div className="flex items-center gap-2">
@@ -242,6 +255,9 @@ export default function AppNav() {
                   </div>
                 ) : (
                   <div className="max-h-80 overflow-auto p-3 space-y-3">
+                    {panelError && (
+                      <p className="text-xs text-red-500 bg-red-50 dark:bg-red-950 rounded-lg px-3 py-2">{panelError}</p>
+                    )}
                     <div>
                       <p className="text-[11px] font-medium text-muted-foreground mb-1.5 flex items-center gap-1">
                         <Clock className="w-3 h-3" /> 定时提醒
