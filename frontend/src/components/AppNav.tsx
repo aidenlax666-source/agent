@@ -3,13 +3,14 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Sparkles, History, QrCode, Zap, LogIn, LogOut, User as UserIcon, Coins, FolderGit2, Bell, X, Trash2, Clock, MonitorCheck } from "lucide-react";
+import { Sparkles, History, QrCode, Zap, LogIn, LogOut, User as UserIcon, Coins, FolderGit2, Bell, X, Trash2, Clock, MonitorCheck, AlarmClock } from "lucide-react";
 import { authApi, getAuthToken, setAuthToken, notificationsApi, type NotificationItem, type ReminderItem, type MonitorItem } from "@/lib/api";
 import type { User } from "@/lib/types";
 
 const LINKS = [
   { href: "/mini", label: "工作台", icon: Sparkles },
   { href: "/claude", label: "改码助手", icon: FolderGit2 },
+  { href: "/automations", label: "定时监控", icon: AlarmClock },
   { href: "/history", label: "任务历史", icon: History },
   { href: "/gallery", label: "分享中心", icon: QrCode },
 ];

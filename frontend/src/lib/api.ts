@@ -271,6 +271,18 @@ export const notificationsApi = {
   automations: () =>
     request<{ reminders: ReminderItem[]; monitors: MonitorItem[] }>("/api/automations"),
 
+  createReminder: (time: string, text: string) =>
+    request<{ ok: boolean }>("/api/reminders", {
+      method: "POST",
+      body: JSON.stringify({ time, text }),
+    }),
+
+  createMonitor: (data: { type: "window" | "screen"; keywords?: string; condition?: string; action_requirement?: string; check_interval?: number }) =>
+    request<{ ok: boolean }>("/api/monitors", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
   deleteReminder: (id: string) =>
     request<{ ok: boolean }>(`/api/reminders/${id}`, { method: "DELETE" }),
 

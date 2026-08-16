@@ -388,6 +388,39 @@ async def list_automations(user=Depends(get_current_user)):
     return {"reminders": reminders, "monitors": monitors}
 
 
+@router.post("/reminders")
+async def create_reminder(data: dict, user=Depends(get_current_user)):
+    """直接创建定时提醒：{time: "HH:MM", text: "内容"}"""
+    import re as _re
+    from app.database import add_reminder as _db_add_rem
+    t = str(data.get("time") or "").strip()
+    text = str(data.get("text") or "").strip()
+    if not _re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", t):
+        raise HTTPException(status_code=400, detail="time 需要 HH:MM 格式（如 08:30）")
+    if not text:
+        raise HTTPException(status_code=400, detail="text 不能为空")
+    await _db_add_rem(user["id"], t, text)
+    return {"ok": True, "time": t, "text": text}
+
+
+@router.post("/monitors")
+async def create_monitor(data: dict, user=Depends(get_current_user)):
+    """直接创建监控任务：{type: window|screen, keywords?, condition?, action_requirement?, check_interval?}"""
+    from app.database import add_monitor as _db_add_mon
+    mtype = str(data.get("type") or "").strip()
+    if mtype not in ("window", "screen"):
+        raise HTTPException(status_code=400, detail="type 只能是 window（软件/窗口）或 screen（屏幕变化）")
+    keywords = str(data.get("keywords") or "").strip()
+    condition = str(data.get("condition") or "").strip()
+    action = str(data.get("action_requirement") or "").strip()
+    interval = int(data.get("check_interval") or 60)
+    if mtype == "window" and not keywords:
+        raise HTTPException(status_code=400, detail="window 监控需要 keywords（窗口标题关键词）")
+    mid = await _db_add_mon(user["id"], mtype, keywords, condition, action, interval)
+    return {"ok": True, "id": mid, "type": mtype, "keywords": keywords,
+            "condition": condition, "action_requirement": action, "check_interval": interval}
+
+
 @router.delete("/reminders/{rid}")
 async def delete_reminder(rid: str, user=Depends(get_current_user)):
     from app.database import delete_reminder as _db_del_rem
