@@ -154,13 +154,16 @@ def scan_dangerous_code(script_code: str, block_subprocess: bool = False) -> lis
 
         func = node.func
 
-        # --- Dynamic code execution: eval/exec/compile 全拦；__import__ 只拦危险模块 ---
+        # --- Dynamic code execution: eval/exec/compile 全拦；__import__ 仅放行"字面量+安全模块" ---
         if isinstance(func, ast.Name) and func.id in _BLOCKED_CALL_NAMES:
             if func.id == "__import__":
-                # 动态导入：仅当目标是危险模块（os/subprocess/socket 等）才拦截；
-                # 合法动态导入（如 __import__("json")）放行，避免误拦 LLM 生成的正常脚本
+                # 合法动态导入（如 __import__("json")）放行；但：
+                # 1) 模块名非字面量（变量/拼接，如 __import__("o"+"s")）→ 无法静态确认安全，一律拦
+                # 2) 字面量指向危险模块（os/subprocess/socket 等）→ 拦
                 arg = _is_literal_path_arg(node.args[0] if node.args else None)
-                if arg and arg.split(".")[0] in _DANGEROUS_IMPORT_MODULES:
+                if arg is None:
+                    violations.append("禁止动态导入（模块名非字面量）: __import__()")
+                elif arg.split(".")[0] in _DANGEROUS_IMPORT_MODULES:
                     violations.append(f"禁止动态导入危险模块: __import__({arg!r})")
             else:
                 violations.append(f"动态代码执行被禁止: {func.id}()")

@@ -14,6 +14,7 @@ import time
 import uuid
 import logging
 
+from app.config import get_settings
 from app.services.long_task import start_background, is_running, cancel
 
 logger = logging.getLogger("app.services.mini_tasks")
@@ -740,6 +741,7 @@ async def _run_report_task(task_id: str, requirement: str, url: str | None) -> d
                 REPORT_HEAL_PROMPT,
                 f"【用户需求】{requirement}\n\n【当前脚本】\n```python\n{code}\n```\n\n【运行报错】\n{(stderr or stdout)[-1500:]}\n\n请修复脚本（保持 report.html 输出），只输出修复后的完整代码。",
                 temperature=0.2, max_tokens=8000,
+                model=get_settings().ai_model_reasoning,  # 报告修复也用推理模型
             )
             heal = heal.strip()
             if heal.startswith("```python"):
