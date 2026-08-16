@@ -327,7 +327,9 @@ def _parse_markers(output: str) -> dict:
         m = re.search(r"PREVIEW_DATA:(\[.*\]|\{.*\})", output, re.S)
     if m:
         try:
-            markers["preview"] = json.loads(m.group(1))
+            # NaN/Infinity 转成 None，避免非法 JSON 让前端 JSON.parse 崩溃
+            markers["preview"] = json.loads(m.group(1),
+                                            parse_constant=lambda s: None)
         except (json.JSONDecodeError, ValueError):
             markers["preview"] = []
     if "LOGIN_REQUIRED" in output:
@@ -720,13 +722,14 @@ async def generate_and_verify(
     if _skill:
         url = ""
         info["needs_web"] = False
-    if not url:
+    if not url and not _skill:
         url = info.get("url") or _default_search_url(requirement, info)
     report["url"] = url
 
     # --- Step 2.5: SSRF 防护：内网/云元数据地址不允许服务端采集（页面快照/结构分析会真实访问） ---
     from app.sandbox.security import is_lan_url
-    ssrf_blocked = bool(url and is_lan_url(url))
+    import asyncio as _aio
+    ssrf_blocked = bool(url and await _aio.to_thread(is_lan_url, url))  # DNS 解析放线程池，防阻塞事件循环
     if ssrf_blocked:
         logger.warning("[SSRF] 阻止内网目标: %s", url[:120])
         report["url"] = url
@@ -813,6 +816,18 @@ async def generate_and_verify(
         if markers["no_data"]:
             return await _report("no_data")
 
+        # 技能产物协议：脚本按技能指南打印 [OUTPUT_FILE] <绝对路径> 且文件存在 →
+        # 文件类任务（视频/CAD 等）即使没有 DATA_ROWS 也判定成功并发布产物
+        if result.success:
+            _mo = re.search(r"\[OUTPUT_FILE\]\s*(\S+)", result.stdout or "")
+            if _mo and os.path.exists(_mo.group(1)):
+                report["rows"] = markers["rows"] or 1
+                report["preview"] = markers["preview"]
+                report["output_file"] = _mo.group(1)
+                report["healing_rounds"] = round_no
+                report["skill_output"] = True
+                return await _report("ok")
+
         if result.success and markers["rows"] > 0:
             report["rows"] = markers["rows"]
             report["preview"] = markers["preview"]
@@ -847,7 +862,9 @@ async def generate_and_verify(
                     if markers2["no_data"]:
                         return await _report("no_data")
                     if not result2.success:
-                        break  # 修复后脚本崩溃：放弃，走 insufficient_count
+                        # 修复后脚本崩溃：如实上报失败原因，不误报数量不足
+                        report["error"] = f"补全后的脚本执行失败: {(result2.stderr or result2.stdout or '未知错误')[:200]}"
+                        return await _report("failed")
                     if markers2["rows"] >= expected:
                         report["rows"] = markers2["rows"]
                         report["preview"] = markers2["preview"]
@@ -895,6 +912,13 @@ async def generate_and_verify(
                         report["stdout"] = result.stdout or ""
                         output = (result.stdout or "") + "\n" + (result.stderr or "")
                         markers = _parse_markers(output)
+                        # 先看业务标记（修复后命中登录墙/反爬如实上报）
+                        if markers["login"]:
+                            return await _report("login_required")
+                        if markers["robots"]:
+                            return await _report("robots_blocked")
+                        if markers["no_data"]:
+                            return await _report("no_data")
                         if not result.success or markers["rows"] == 0:
                             return await _report("failed" if not result.success else "no_data")
                         report["rows"] = markers["rows"]
@@ -923,6 +947,12 @@ async def generate_and_verify(
                     report["stdout"] = result.stdout or ""
                     output = (result.stdout or "") + "\n" + (result.stderr or "")
                     markers = _parse_markers(output)
+                    if markers["login"]:
+                        return await _report("login_required")
+                    if markers["robots"]:
+                        return await _report("robots_blocked")
+                    if markers["no_data"]:
+                        return await _report("no_data")
                     if not result.success or markers["rows"] == 0:
                         return await _report("failed" if not result.success else "no_data")
                     report["rows"] = markers["rows"]
@@ -955,6 +985,12 @@ async def generate_and_verify(
                     report["stdout"] = result.stdout or ""
                     output = (result.stdout or "") + "\n" + (result.stderr or "")
                     markers = _parse_markers(output)
+                    if markers["login"]:
+                        return await _report("login_required")
+                    if markers["robots"]:
+                        return await _report("robots_blocked")
+                    if markers["no_data"]:
+                        return await _report("no_data")
                     if not result.success or markers["rows"] == 0:
                         return await _report("failed" if not result.success else "no_data")
                     report["rows"] = markers["rows"]

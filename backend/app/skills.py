@@ -53,6 +53,13 @@ def _load_skills() -> dict[str, dict]:
 
 _skills = _load_skills()
 
+# 歧义词排除：命中这些词的场景不算对应技能（防"合并PDF/裁剪图片/机械键盘/配音"误判）
+_SKILL_EXCLUSIONS = {
+    "video-edit": ("pdf", "图片", "zip", "压缩包", "文件合并", "文档", "作曲", "生成音乐", "写歌", "配乐生成",
+                   "生成一首", "创作一首", "唱一首", "配音", "朗读"),
+    "cad-drawing": ("键盘", "鼠标", "scada", "架构图", "流程图", "网站", "页面", "电路", "scad"),
+}
+
 
 def list_skills() -> list[dict]:
     """返回全部技能（元信息）。"""
@@ -60,15 +67,41 @@ def list_skills() -> list[dict]:
             for s in _skills.values()]
 
 
+def _matches_skill(s: dict, req: str) -> int:
+    """技能关键词命中数（ASCII 用词边界，避免 cad 命中 scada 这类子串）。"""
+    hits = 0
+    for kw in s["keywords"].split(","):
+        kw = kw.strip().lower()
+        if not kw:
+            continue
+        if kw.isascii() and kw.isalnum():
+            import re as _re
+            if _re.search(rf"\b{_re.escape(kw)}\b", req):
+                hits += 1
+        elif kw in req:
+            hits += 1
+    return hits
+
+
 def select_skill(requirement: str) -> dict | None:
-    """按关键词匹配需求命中的技能（命中数最多的；无命中返回 None）。"""
+    """按关键词匹配需求命中的技能（命中数最多且 ≥2 个泛词或 ≥1 个强词；有排除词则跳过）。
+
+    泛词（1 个字如"画"或常见动词）需要 ≥2 命中才生效，降低"合并/裁剪/机械"劫持无关任务的假阳性。
+    """
     req = (requirement or "").lower()
     best: dict | None = None
     best_hits = 0
     for s in _skills.values():
-        kws = [k.strip().lower() for k in s["keywords"].split(",") if k.strip()]
-        hits = sum(1 for k in kws if k and k in req)
-        if hits > best_hits:
+        # 排除规则：命中排除词且未命中强标识词 → 跳过该技能
+        excl = _SKILL_EXCLUSIONS.get(s["name"], ())
+        if excl and any(e in req for e in excl):
+            continue
+        hits = _matches_skill(s, req)
+        # 强标识词（词长 ≥3 且非通用动词）单个即命中；否则需要 ≥2 个关键词
+        strong = [k.strip().lower() for k in s["keywords"].split(",")
+                  if len(k.strip()) >= 3 and k.strip().lower() not in ("画", "合并", "压缩", "裁剪")]
+        is_strong = any(kw in req for kw in strong) or hits >= 2
+        if is_strong and hits > best_hits:
             best_hits = hits
             best = s
     return best if best_hits > 0 else None

@@ -25,9 +25,6 @@ _sandbox_semaphore = asyncio.Semaphore(settings.sandbox_max_concurrency)
 _SANDBOX_TMP = os.path.join(os.path.dirname(__file__), "..", "..", "tmp")
 os.makedirs(_SANDBOX_TMP, exist_ok=True)
 
-# 最近一次执行注入的登录态宿主目录（Docker 模式把它挂载为 /auth 并改写脚本路径）
-_AUTH_INJECT_DIR: str = ""
-
 # Output extensions we care about when locating the script's result file.
 _OUTPUT_EXTS = (".xlsx", ".xls", ".docx", ".pptx", ".csv", ".txt", ".json", ".html", ".png", ".pdf",
                 ".wav", ".mp3", ".mp4", ".dxf", ".srt", ".mkv", ".mov", ".avi", ".webm", ".m4a")
@@ -249,8 +246,6 @@ async def _execute_in_sandbox_impl(
     # (按账号隔离：任务只加载所属用户的登录态；未指定时回退全局目录)
     auth_dir = profile_dir or os.path.join(os.path.dirname(__file__), "..", "..", "browser_profile")
     auth_dir = os.path.normpath(auth_dir)
-    global _AUTH_INJECT_DIR
-    _AUTH_INJECT_DIR = auth_dir if os.path.exists(auth_dir) else ""
     if os.path.exists(auth_dir):
         auth_injection = (
             "\n# === AUTH STATE INJECTION (merge all saved domains) ===\n"
@@ -308,7 +303,7 @@ async def _execute_in_sandbox_impl(
         script_path = f.name
 
     try:
-        result = await _run_container(script_path, timeout, inactivity_timeout, preview_mode)
+        result = await _run_container(script_path, timeout, inactivity_timeout, preview_mode, auth_dir)
         result.execution_time = time.time() - start_time
         result.auto_fixes_applied = auto_fix_result.fixes_applied
         return result
@@ -325,8 +320,12 @@ async def _run_container(
     timeout: int,
     inactivity_timeout: int,
     preview_mode: bool,
+    auth_dir: str = "",
 ) -> ScriptResult:
-    """Run the script inside a Docker container, or fall back to subprocess."""
+    """Run the script inside a Docker container, or fall back to subprocess.
+
+    auth_dir 通过显式参数传入（不能用模块级全局：并发任务会互相覆盖导致跨用户登录态串号）。
+    """
     import logging as _logging
     _log = _logging.getLogger("app.sandbox.docker_executor")
     script_name = os.path.basename(script_path)
@@ -356,7 +355,6 @@ async def _run_container(
             await asyncio.to_thread(client.images.pull, settings.sandbox_image)
 
         # 登录态目录挂载进容器 /auth（fallback 路径直接用宿主路径，这里替换成容器内路径）
-        auth_dir = _AUTH_INJECT_DIR  # set by caller (host path)
         volumes = {
             os.path.dirname(script_path): {"bind": "/scripts", "mode": "ro"},
             output_host_dir: {"bind": "/output", "mode": "rw"},

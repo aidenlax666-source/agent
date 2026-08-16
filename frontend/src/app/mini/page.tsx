@@ -84,10 +84,13 @@ export default function MiniPage() {
 
   useEffect(() => stopPolling, [stopPolling]);
 
+  // 轮询改为串行自调度（上一轮请求完成才发起下一轮），杜绝旧响应乱序覆盖新状态
   const pollTask = useCallback((taskId: string) => {
     stopPolling();
     let consecutiveErrors = 0;
-    pollRef.current = setInterval(async () => {
+    let stopped = false;
+    const tick = async () => {
+      if (stopped) return;
       try {
         const s = await miniApi.get(taskId);
         // 竞态防护：只接受当前任务的响应（防旧任务在途响应覆盖新状态）
@@ -95,17 +98,23 @@ export default function MiniPage() {
         consecutiveErrors = 0;
         setTask(s);
         if (s.status === "done" || s.status === "error" || s.status === "cancelled" || s.status === "confirmed") {
+          stopped = true;
           stopPolling();
+          return;
         }
       } catch (e) {
         // 瞬时错误不停止轮询（否则界面永久卡死在旧状态）；连续 10 次失败才放弃
         consecutiveErrors += 1;
         if (consecutiveErrors >= 10) {
+          stopped = true;
           stopPolling();
           setSubmitError("与服务器连接中断，请刷新页面重试");
+          return;
         }
       }
-    }, 2000);
+      pollRef.current = window.setTimeout(tick, 2000) as unknown as ReturnType<typeof setInterval>;
+    };
+    tick();
   }, [stopPolling]);
 
   const handleLoadTask = useCallback(async (taskId: string) => {
@@ -169,11 +178,11 @@ export default function MiniPage() {
   // 下载任务结果文件（fetch + 鉴权头 → blob，替代裸 <a href> 直链）
   const handleDownloadOutput = async (taskId: string) => {
     try {
-      const blob = await miniApi.download(taskId);
+      const { blob, filename } = await miniApi.download(taskId);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `result_${taskId.slice(0, 8)}.xlsx`;
+      a.download = filename;
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);  // 等下载启动后再 revoke
     } catch (e) {
@@ -191,7 +200,9 @@ export default function MiniPage() {
       for (const file of Array.from(files).slice(0, 4)) {
         const res = await uploadApi.upload(file);
         paths.push(res.path);
-        previews.push(URL.createObjectURL(file));
+        const url = URL.createObjectURL(file);
+        previews.push(url);
+        blobUrlsRef.current.push(url);  // ref 记录，卸载时可释放（state 闭包拿不到最新值）
       }
       setImagePaths((prev) => [...prev, ...paths]);
       setImagePreviews((prev) => [...prev, ...previews]);
@@ -232,12 +243,13 @@ export default function MiniPage() {
     });
   };
 
-  // 组件卸载时统一 revoke 全部图片预览 blob URL
+  // 组件卸载时统一 revoke 全部图片预览 blob URL（用 ref 保存，避免闭包捕获空数组）
+  const blobUrlsRef = useRef<string[]>([]);
   useEffect(() => {
     return () => {
-      imagePreviews.forEach((src) => URL.revokeObjectURL(src));
+      blobUrlsRef.current.forEach((src) => URL.revokeObjectURL(src));
+      blobUrlsRef.current = [];
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const removeDataFile = (idx: number) => {

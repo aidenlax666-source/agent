@@ -298,7 +298,8 @@ async def create_task(data: dict, request: Request, user=Depends(get_current_use
 
     # 额度校验：原子扣减（防并发竞态），余额不足返回 402
     from app.database import (get_credits, try_decrement_credits, add_reminder as _db_add_reminder,
-                              add_monitor as _db_add_monitor, update_mini_task as _db_update_task)
+                              add_monitor as _db_add_monitor, update_mini_task as _db_update_task,
+                              add_credits as _db_add_credits)
     if not await try_decrement_credits(user["id"], 1):
         raise HTTPException(status_code=402, detail="额度不足，无法提交任务")
     credits = await get_credits(user["id"])
@@ -308,44 +309,53 @@ async def create_task(data: dict, request: Request, user=Depends(get_current_use
 
     # ---- 定时提醒：创建提醒项 + 落一条"设置型"历史记录（不跑任务引擎）----
     if auto.get("kind") == "reminder" and auto.get("reminders"):
-        record = mini_tasks.submit(requirement, url, user["id"], image_paths=image_paths,
-                                   data_paths=data_paths, skip_run=True)
-        for it in auto["reminders"]:
-            await _db_add_reminder(user["id"], it["time"], it["text"], source_task=record["id"])
-        import json as _json
-        await _db_update_task(record["id"], status="done", message="已设置定时提醒",
-                              result=_json.dumps({"status": "ok", "kind": "reminder",
-                                                  "reminders": auto["reminders"]}, ensure_ascii=False))
+        # 单请求提醒条数上限（防正则批量灌入）
+        reminders = auto["reminders"][:20]
+        try:
+            record = mini_tasks.submit(requirement, url, user["id"], image_paths=image_paths,
+                                       data_paths=data_paths, skip_run=True)
+            for it in reminders:
+                await _db_add_reminder(user["id"], it["time"], it["text"], source_task=record["id"])
+            import json as _json
+            await _db_update_task(record["id"], status="done", message="已设置定时提醒",
+                                  result=_json.dumps({"status": "ok", "kind": "reminder",
+                                                      "reminders": reminders}, ensure_ascii=False))
+        except Exception as e:
+            await _db_add_credits(user["id"], 1)  # 创建失败补回积分（原子性）
+            raise HTTPException(status_code=500, detail=f"创建定时提醒失败: {str(e)[:120]}")
         return {
-            "task_id": record["id"], "status": "done", "message": f"已设置 {len(auto['reminders'])} 条定时提醒",
-            "credits_left": credits, "automation": "reminder", "reminders": auto["reminders"],
+            "task_id": record["id"], "status": "done", "message": f"已设置 {len(reminders)} 条定时提醒",
+            "credits_left": credits, "automation": "reminder", "reminders": reminders,
         }
 
     # ---- 监控任务：创建监控项 + 落"设置型"历史记录 ----
     if auto.get("kind") == "monitor" and auto.get("monitor"):
-        record = mini_tasks.submit(requirement, url, user["id"], image_paths=image_paths,
-                                   data_paths=data_paths, skip_run=True)
-        m = auto["monitor"]
-        mid = await _db_add_monitor(user["id"], m["type"], m["keywords"], m["condition"],
-                                    m["action_requirement"], m["check_interval"], source_task=record["id"])
-        import json as _json
-        await _db_update_task(record["id"], status="done", message="已设置监控任务",
-                              result=_json.dumps({"status": "ok", "kind": "monitor",
-                                                  "monitor_id": mid, "monitor": m}, ensure_ascii=False))
+        try:
+            record = mini_tasks.submit(requirement, url, user["id"], image_paths=image_paths,
+                                       data_paths=data_paths, skip_run=True)
+            m = auto["monitor"]
+            mid = await _db_add_monitor(user["id"], m["type"], m["keywords"], m["condition"],
+                                        m["action_requirement"], m["check_interval"], source_task=record["id"])
+            import json as _json
+            await _db_update_task(record["id"], status="done", message="已设置监控任务",
+                                  result=_json.dumps({"status": "ok", "kind": "monitor",
+                                                      "monitor_id": mid, "monitor": m}, ensure_ascii=False))
+        except Exception as e:
+            await _db_add_credits(user["id"], 1)  # 创建失败补回积分
+            raise HTTPException(status_code=500, detail=f"创建监控任务失败: {str(e)[:120]}")
         return {
             "task_id": record["id"], "status": "done", "message": "已设置监控任务",
             "credits_left": credits, "automation": "monitor", "monitor": {**m, "id": mid},
         }
 
     # ---- 普通任务（可带显式 schedule 或自然语言解析出的循环执行）----
-    record = mini_tasks.submit(requirement, url, user["id"], image_paths=image_paths, data_paths=data_paths)
     schedule = auto.get("schedule") or data.get("schedule")
+    sched_dict = schedule if isinstance(schedule, dict) and schedule.get("type") in ("interval", "daily") else None
+    record = mini_tasks.submit(requirement, url, user["id"], image_paths=image_paths,
+                               data_paths=data_paths, schedule=sched_dict)
     automation_note = ""
-    if isinstance(schedule, dict) and schedule.get("type") in ("interval", "daily"):
-        sval = str(schedule.get("value") or "")
-        sres = mini_tasks.schedule_task(record["id"], schedule["type"], sval, True, user["id"])
-        if sres and not sres.get("error"):
-            automation_note = f"{schedule['type']}:{sval}"
+    if sched_dict:
+        automation_note = f"{sched_dict['type']}:{sched_dict.get('value')}"
     return {
         "task_id": record["id"],
         "status": record["status"],
@@ -413,7 +423,11 @@ async def create_monitor(data: dict, user=Depends(get_current_user)):
     keywords = str(data.get("keywords") or "").strip()
     condition = str(data.get("condition") or "").strip()
     action = str(data.get("action_requirement") or "").strip()
-    interval = int(data.get("check_interval") or 60)
+    try:
+        interval = int(data.get("check_interval") or 60)
+        interval = max(5, min(interval, 3600))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="check_interval 需要 5~3600 的整数（秒）")
     if mtype == "window" and not keywords:
         raise HTTPException(status_code=400, detail="window 监控需要 keywords（窗口标题关键词）")
     mid = await _db_add_mon(user["id"], mtype, keywords, condition, action, interval)
@@ -477,13 +491,15 @@ async def cancel_task(task_id: str, user=Depends(get_current_user)):
 
 
 @router.post("/mini/tasks/{task_id}/iterate")
-async def iterate_task(task_id: str, data: dict, user=Depends(get_current_user)):
+async def iterate_task(task_id: str, data: dict, request: Request, user=Depends(get_current_user)):
     """对已完成任务提修改意见，同一任务原地迭代重跑。"""
     feedback = (data.get("feedback") or "").strip()
     if not feedback:
         raise HTTPException(status_code=400, detail="feedback 不能为空")
     if len(feedback) > MAX_REQUIREMENT_LEN:
         raise HTTPException(status_code=400, detail=f"修改意见过长（最多 {MAX_REQUIREMENT_LEN} 字）")
+    # 迭代会重跑完整 LLM 管线：匿名限速 + 扣 1 积分（防无限免费重跑）
+    await _charge_dev_credit(user, request)
     result = mini_tasks.iterate(task_id, feedback, user["id"])
     if result is None:
         raise HTTPException(status_code=404, detail="任务不存在")
@@ -598,7 +614,11 @@ async def data_qa(data: dict, request: Request, user=Depends(get_current_user)):
 
 @router.get("/mini/tasks/{task_id}/download")
 async def download_output(task_id: str, user=Depends(get_current_user)):
-    """下载任务产出的结果文件（仅本人可见）。"""
+    """下载任务产出的结果文件（仅本人可见）。
+
+    安全：产物 HTML 是 LLM/网页抓取内容拼接的不可信数据，一律强制下载 +
+    nosniff，禁止在 API 源内联渲染（防存储型 XSS 偷取同源 localStorage JWT）。
+    """
     status = mini_tasks.get_status(task_id, user_id=user["id"])
     if status is None:
         raise HTTPException(status_code=404, detail="任务不存在")
@@ -607,11 +627,21 @@ async def download_output(task_id: str, user=Depends(get_current_user)):
     if not path or not os.path.exists(path):
         raise HTTPException(status_code=404, detail="该任务没有可下载的结果文件")
     filename = os.path.basename(path)
+    ext = os.path.splitext(filename)[1].lower()
+    if ext in (".html", ".htm", ".svg", ".xml"):
+        # 不可信标记语言：强制下载 + 非 HTML 媒体类型（防内联执行）
+        return FileResponse(path, media_type="application/octet-stream",
+                            headers={"X-Content-Type-Options": "nosniff",
+                                     "Content-Disposition": f'attachment; filename="{filename}"'})
     media = {
-        ".html": "text/html; charset=utf-8",
         ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         ".png": "image/png",
         ".pdf": "application/pdf",
         ".csv": "text/csv; charset=utf-8",
-    }.get(os.path.splitext(filename)[1].lower(), "application/octet-stream")
-    return FileResponse(path, media_type=media, filename=filename)
+        ".mp4": "video/mp4",
+        ".wav": "audio/wav",
+        ".mp3": "audio/mpeg",
+        ".dxf": "application/dxf",
+    }.get(ext, "application/octet-stream")
+    return FileResponse(path, media_type=media, filename=filename,
+                        headers={"X-Content-Type-Options": "nosniff"})

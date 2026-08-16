@@ -275,11 +275,13 @@ def _json_list(v) -> list:
 
 
 def submit(requirement: str, url: str | None = None, user_id: str = "", image_paths: list[str] | None = None,
-           data_paths: list[str] | None = None, skip_run: bool = False) -> dict:
+           data_paths: list[str] | None = None, skip_run: bool = False,
+           schedule: dict | None = None) -> dict:
     """提交一个后台任务，立即返回任务信息（持久化到 SQLite，重启不丢）。
 
     统一入口：LLM 自动判断"数据问答"还是"任务执行"，无需用户选择。
     skip_run=True：只落库不执行（用于提醒/监控等"设置型"任务，由调度器驱动）。
+    schedule={type,value}：提交时直接设置定时重跑（随 INSERT 一次写入，无竞态）。
     """
     task_id = uuid.uuid4().hex[:12]
     record = {
@@ -296,6 +298,30 @@ def submit(requirement: str, url: str | None = None, user_id: str = "", image_pa
         "image_paths": image_paths or [],
         "data_paths": data_paths or [],
     }
+    if isinstance(schedule, dict) and schedule.get("type") in ("interval", "daily"):
+        stype, sval = schedule["type"], str(schedule.get("value") or "")
+        if stype == "interval":
+            try:
+                ival = max(1, int(sval))
+            except (ValueError, TypeError):
+                ival = 60
+            record["schedule_type"] = "interval"
+            record["schedule_value"] = str(ival)
+            record["enabled"] = 1
+            record["next_run_at"] = time.time() + ival * 60
+        else:
+            from datetime import datetime as _dt, timedelta as _td
+            try:
+                hh, mm = (int(x) for x in sval.split(":"))
+                target = _dt.now().replace(hour=hh, minute=mm, second=0, microsecond=0)
+                if target <= _dt.now():
+                    target += _td(days=1)
+                record["schedule_type"] = "daily"
+                record["schedule_value"] = sval
+                record["enabled"] = 1
+                record["next_run_at"] = target.timestamp()
+            except Exception:
+                pass
     _TASKS[task_id] = record
 
     # 清理超出上限的旧任务
@@ -308,6 +334,12 @@ def submit(requirement: str, url: str | None = None, user_id: str = "", image_pa
         record["status"] = "done"
         record["message"] = "已设置"
         record["progress"] = 100
+        # 落库（同步写）：提醒/监控的"设置型"记录持久化，重启不丢
+        try:
+            from app.database import _save_mini_task
+            _save_mini_task(record)
+        except Exception as e:
+            logger.warning("[mini:%s] skip_run 落库失败: %s", task_id, str(e)[:100])
         return record
     started = start_background(task_id, _run_task(task_id, requirement, url, record))
     if not started:
@@ -333,7 +365,7 @@ def schedule_task(task_id: str, schedule_type: str, schedule_value: str, enabled
             rec = None
     if rec is None:
         return None
-    if user_id and rec.get("user_id") and rec["user_id"] != user_id:
+    if user_id and rec.get("user_id") != user_id:  # 空 user_id 也不放行（防越权）
         return None
 
     schedule_type = (schedule_type or "interval").strip()
@@ -373,7 +405,7 @@ def schedule_task(task_id: str, schedule_type: str, schedule_value: str, enabled
         import asyncio as _a
         from app.database import set_mini_schedule
         loop = _a.get_running_loop()
-        loop.create_task(set_mini_schedule(task_id, schedule_type, schedule_value, enabled, next_run))
+        _hold_task(loop.create_task(set_mini_schedule(task_id, schedule_type, schedule_value, enabled, next_run)))
     except Exception:
         pass
     if task_id in _TASKS:
@@ -439,7 +471,9 @@ def parse_automation(requirement: str) -> dict:
             "check_interval": 20,
         }
     if monitor and ("监控" in req or "时" in req or "打开" in req or "启动" in req):
-        out["kind"] = "monitor"
+        # 混合意图：已有提醒时不覆盖（提醒优先，create_task 会同时处理）
+        if not reminders:
+            out["kind"] = "monitor"
         out["monitor"] = monitor
 
     # ---- 3) 循环执行：每隔N分钟 / 每天X点执行 ----
@@ -463,21 +497,31 @@ def parse_automation(requirement: str) -> dict:
 
 # 提醒/监控触发去重（进程内：同一提醒项同一分钟只发一次；同一监控关键词 5 分钟冷却）
 _fire_memory: dict[str, float] = {}
+# 后台 Task 引用池：防止 fire-and-forget 的 create_task 被 GC 中断
+_held_tasks: set = set()
 
 
-def _fire_reminder(reminder: dict, user_id: str) -> None:
-    """定时提醒到点 → 写站内通知（去重：同 id 同分钟只发一次）。"""
+def _hold_task(t: "asyncio.Task") -> None:
+    _held_tasks.add(t)
+    t.add_done_callback(_held_tasks.discard)
+
+
+async def _fire_reminder(reminder: dict, user_id: str) -> None:
+    """定时提醒到点 → 写站内通知（去重：同 id 同分钟只发一次；先写库成功再记去重 key，失败可重试）。"""
     from app.database import add_notification
     key = f"rem:{reminder['id']}:{time.strftime('%Y%m%d%H%M')}"
     if key in _fire_memory:
+        return
+    try:
+        await add_notification(user_id, "⏰ 定时提醒",
+                               f"{reminder.get('time', '')} - {reminder.get('text', '')}")
+    except Exception as e:
+        logger.warning("[提醒] %s 写库失败（本次不记去重，下轮重试）: %s", user_id[:8], str(e)[:120])
         return
     _fire_memory[key] = time.time()
     if len(_fire_memory) > 2000:
         for k in list(_fire_memory)[:1000]:
             _fire_memory.pop(k, None)
-    asyncio.create_task(add_notification(
-        user_id, "⏰ 定时提醒",
-        f"{reminder.get('time', '')} - {reminder.get('text', '')}"))
     logger.info("[提醒] %s 触发: %s", user_id[:8], reminder.get("text", ""))
 
 
@@ -516,7 +560,10 @@ def _screen_hash() -> str:
 
 
 async def _run_monitor_check(monitor: dict) -> None:
-    """执行一次监控检查：条件满足 → 通知 +（可选）执行动作任务。"""
+    """执行一次监控检查：条件满足 → 通知 +（可选）执行动作任务。
+
+    无论成败都会推进 last_checked_at（防失败后每 30 秒重试风暴）。
+    """
     from app.database import add_notification as _add_note, update_monitor_state
     mid = monitor["id"]
     user_id = monitor["user_id"]
@@ -525,66 +572,80 @@ async def _run_monitor_check(monitor: dict) -> None:
     condition = (monitor.get("condition") or "").strip()
     action_req = (monitor.get("action_requirement") or "").strip()
 
+    now = time.time()
+    fired: list[str] = []
+    state_updated = False
     try:
-        fired: list[str] = []
         if mtype == "window":
-            titles = _window_titles()
+            titles = await asyncio.to_thread(_window_titles)  # ctypes 同步调用不阻塞事件循环
             joined = " ".join(titles).lower()
             for kw in [k for k in keywords.replace("，", ",").split(",") if k.strip()]:
                 kw = kw.strip().lower()
                 if kw and kw in joined:
                     key = f"mon:{mid}:{kw}"
-                    now = time.time()
                     if _fire_memory.get(key, 0) > now - 300:  # 5 分钟冷却
                         continue
                     _fire_memory[key] = now
                     fired.append(kw)
+            await update_monitor_state(mid, now, monitor.get("last_state") or "")
+            state_updated = True
         else:  # screen
-            cur = _screen_hash()
+            cur = await asyncio.to_thread(_screen_hash)  # Pillow 全屏截图不阻塞事件循环
             prev = monitor.get("last_state") or ""
             changed = bool(prev) and cur != prev
-            # 条件：默认"画面发生变化"；"静止X分钟"由调度器传 condition 数字
             if "静止" in condition or "没变化" in condition or "不动" in condition:
                 m_min = re.search(r"(\d+)\s*分钟", condition)
                 mins = int(m_min.group(1)) if m_min else 5
-                # 由 last_state 记录"变化时刻"：简单实现为连续 2 次不变才触发
                 key = f"screen:{mid}"
                 if changed:
-                    _fire_memory.pop(key, None)  # 画面动了，重置
+                    _fire_memory.pop(key, None)  # 画面动了，重置计时
                 else:
                     prev_t = _fire_memory.get(key, 0)
                     if prev_t and now - prev_t >= mins * 60:
                         _fire_memory.pop(key, None)
                         fired.append(f"屏幕静止超过 {mins} 分钟")
                     elif not prev_t:
-                        _fire_memory[key] = time.time()  # 开始计时
+                        _fire_memory[key] = now  # 开始计时
             else:  # 默认：画面变化触发（冷却 60s）
                 if changed:
                     key = f"mon:{mid}:change"
-                    now = time.time()
                     if _fire_memory.get(key, 0) > now - 60:
                         pass
                     else:
                         _fire_memory[key] = now
                         fired.append("屏幕画面发生变化")
-            # 更新状态哈希（无论触发与否）
-            await update_monitor_state(mid, time.time(), cur)
-            return  # screen 分支已更新状态
-
-        # window 分支更新状态
-        await update_monitor_state(mid, time.time(), monitor.get("last_state") or "")
-
-        for what in fired:
-            await _add_note(user_id, "👁️ 监控触发",
-                            f"{what} → {action_req or '（仅提醒）'}")
-            logger.info("[监控] %s 触发: %s", user_id[:8], what)
-            # "提醒/通知我xxx"语义 = 仅通知；其余才作为动作任务执行
-            notify_only = (not action_req or action_req in ("仅提醒", "提醒", "通知")
-                           or action_req.startswith(("提醒", "通知")))
-            if action_req and not notify_only:
-                submit(action_req, None, user_id)
+            await update_monitor_state(mid, now, cur)
+            state_updated = True
     except Exception as e:
         logger.warning("[监控] %s 检查异常: %s", mid[:8], str(e)[:150])
+    finally:
+        # 无论成败都推进 last_checked_at（异常路径保持 last_state 不变，screen 不覆盖已更新的哈希）
+        if not state_updated:
+            try:
+                await update_monitor_state(mid, now, monitor.get("last_state") or "")
+            except Exception:
+                pass
+
+    for what in fired:
+        try:
+            await _add_note(user_id, "👁️ 监控触发",
+                            f"{what} → {action_req or '（仅提醒）'}")
+        except Exception as e:
+            logger.warning("[监控] %s 通知失败: %s", mid[:8], str(e)[:120])
+        logger.info("[监控] %s 触发: %s", user_id[:8], what)
+        # "提醒/通知我xxx"语义 = 仅通知；其余才作为动作任务执行（扣 1 积分防无限免费跑）
+        notify_only = (not action_req or action_req in ("仅提醒", "提醒", "通知")
+                       or action_req.startswith(("提醒", "通知")))
+        if action_req and not notify_only:
+            try:
+                from app.database import try_decrement_credits
+                if not await try_decrement_credits(user_id, 1):
+                    await _add_note(user_id, "额度不足",
+                                    f"监控触发的动作任务因余额不足未执行：{what}")
+                    continue
+            except Exception:
+                pass
+            submit(action_req, None, user_id)
 
 
 
@@ -610,6 +671,24 @@ def _next_mini_run(task: dict, now_ts: float) -> float | None:
     return None
 
 
+async def _run_scheduled(mtask: dict) -> None:
+    """执行一次定时重跑：扣 1 积分（余额不足跳过+通知），再提交任务。
+
+    注册在稳定 key mini_sched:{tid} 下，运行期间调度器跳过该任务（防重叠并发）。
+    """
+    from app.database import add_notification as _add_note, try_decrement_credits
+    user_id = mtask.get("user_id") or ""
+    try:
+        if user_id and not await try_decrement_credits(user_id, 1):
+            await _add_note(user_id, "额度不足", "定时任务因余额不足未执行，请充值后重试")
+            return
+    except Exception as e:
+        logger.warning("[调度器] %s 扣积分失败: %s", user_id[:8], str(e)[:100])
+    submit(mtask.get("requirement") or "", mtask.get("url") or None, user_id,
+           image_paths=_json_list(mtask.get("image_paths")),
+           data_paths=_json_list(mtask.get("data_paths")))
+
+
 async def mini_scheduler_loop() -> None:
     """调度循环：每 30 秒检查一次到期的 mini 定时任务、定时提醒、监控任务；每天清理超期产物。
 
@@ -622,7 +701,7 @@ async def mini_scheduler_loop() -> None:
             import time as _t
             from app.database import (claim_mini_run, get_due_mini_tasks, list_reminders,
                                       list_monitors, get_mini_task)
-            # 1) 定时任务重跑
+            # 1) 定时任务重跑（注册在稳定 key 下，运行期间不重复触发）
             due = await get_due_mini_tasks(_t.time())
             for mtask in due:
                 tid = mtask["id"]
@@ -634,10 +713,7 @@ async def mini_scheduler_loop() -> None:
                 # 原子抢占：只在 next_run_at 仍是到期值时更新（多 worker 也不会重复执行）
                 if not await claim_mini_run(tid, now_ts, nxt):
                     continue
-                submit(mtask.get("requirement") or "", mtask.get("url") or None,
-                       mtask.get("user_id") or "",
-                       image_paths=_json_list(mtask.get("image_paths")),
-                       data_paths=_json_list(mtask.get("data_paths")))
+                start_background(key, _run_scheduled(mtask))
                 logger.info(f"[mini调度器] 定时触发: {tid[:8]} - {(mtask.get('requirement') or '')[:40]}")
 
             # 2) 定时提醒：当前 HH:MM 匹配 → 发通知（去重，同一分钟只发一次）
@@ -647,7 +723,7 @@ async def mini_scheduler_loop() -> None:
                 rems = await list_reminders("*", enabled_only=True)
                 for r in rems:
                     if str(r.get("time", "")).strip() == cur_hhmm:
-                        _fire_reminder(r, r.get("user_id", ""))
+                        await _fire_reminder(r, r.get("user_id", ""))
             except Exception as e:
                 logger.warning("[调度器] 提醒检查异常: %s", str(e)[:120])
 
@@ -705,8 +781,23 @@ def _cleanup_assets() -> None:
                         removed += 1
                 except Exception:
                     pass
+        # 沙箱稳定产物目录（auto_output_*/sandbox_output_*）：产物已复制到 web/，按 mtime 清超期目录
+        _tmp_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "tmp"))
+        if os.path.isdir(_tmp_dir):
+            for name in os.listdir(_tmp_dir):
+                p = os.path.join(_tmp_dir, name)
+                if not os.path.isdir(p):
+                    continue
+                if not (name.startswith("auto_output_") or name.startswith("sandbox_output_")):
+                    continue
+                try:
+                    if os.path.getmtime(p) < cutoff:
+                        shutil.rmtree(p, ignore_errors=True)
+                        removed += 1
+                except Exception:
+                    pass
         if removed:
-            logger.info("[清理] 已删除 %d 个超期产物（保留 %d 天）", removed, days)
+            logger.info("[清理] 已删除 %d 个超期产物/目录（保留 %d 天）", removed, days)
     except Exception as e:
         logger.warning("[清理] 失败: %s", str(e)[:120])
 
@@ -728,11 +819,11 @@ def confirm_task(task_id: str, user_id: str = "") -> dict | None:
             rec = None
     if rec is None:
         return None
-    if user_id and rec.get("user_id") and rec["user_id"] != user_id:
+    if user_id and rec.get("user_id") != user_id:  # 空 user_id 也不放行（防越权）
         return None
     try:
         from app.database import update_mini_task
-        asyncio.create_task(update_mini_task(task_id, status="confirmed", message="已确认"))
+        _hold_task(asyncio.create_task(update_mini_task(task_id, status="confirmed", message="已确认")))
     except Exception:
         pass
     if task_id in _TASKS:
@@ -758,7 +849,7 @@ def iterate(task_id: str, feedback: str, user_id: str = "") -> dict | None:
             rec = None
     if rec is None:
         return None
-    if user_id and rec.get("user_id") and rec["user_id"] != user_id:
+    if user_id and rec.get("user_id") != user_id:  # 空 user_id 也不放行（防越权）
         return None
     if is_running(task_id):
         return {"id": task_id, "status": "running", "error": "任务正在执行中，请等待完成"}
@@ -1279,11 +1370,12 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
         if errors:
             return {"status": "failed", "error": f"代码校验未通过: {'；'.join(errors)[:300]}", "elapsed": round(time.time() - started, 1)}
 
-        # 只保留路径合法的文件（防 LLM 返回 ../ 或绝对路径）
+        # 只保留路径合法的文件（防 LLM 返回 ../ 或绝对路径），并用归一化路径作 key（防 \ 与 / 不一致）
         safe_files: dict[str, str] = {}
         for rel, content in (files_map or {}).items():
-            if _safe_dev_rel(rel, workspace) is not None:
-                safe_files[rel] = content
+            safe = _safe_dev_rel(rel, workspace)
+            if safe is not None:
+                safe_files[safe] = content
         files_map = safe_files
         diff = _dev_build_diff(files_map, workspace, orig_contents)
         # diff 落 web/ 便于下载/查看（产物域）
@@ -1699,7 +1791,7 @@ def get_status(task_id: str, user_id: str = "") -> dict | None:
         except Exception as e:
             logger.warning("从 DB 恢复任务 %s 失败: %s", task_id, str(e)[:100])
             return None
-    if user_id and rec.get("user_id") and rec["user_id"] != user_id:
+    if user_id and rec.get("user_id") != user_id:  # 空 user_id 也不放行（防越权）
         return None
     out = {
         "id": rec["id"],

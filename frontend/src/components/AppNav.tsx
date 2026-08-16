@@ -39,16 +39,16 @@ export default function AppNav() {
   const [reminders, setReminders] = useState<ReminderItem[]>([]);
   const [monitors, setMonitors] = useState<MonitorItem[]>([]);
   const [panelError, setPanelError] = useState<string | null>(null);
-  const lastUnread = useRef(0);
+  const lastUnread = useRef<number | null>(null);  // null = 首次加载不触发通知
 
   const loadNotifs = useCallback(async () => {
     try {
       const d = await notificationsApi.list();
       setItems(d.items || []);
       setUnread(d.unread || 0);
-      // 有新增未读且页面不可见 → 浏览器通知
-      if (d.unread > lastUnread.current && typeof document !== "undefined" && document.hidden
-          && typeof Notification !== "undefined" && Notification.permission === "granted") {
+      // 有新增未读且页面不可见 → 浏览器通知（首轮只记录基线，不弹旧消息）
+      if (lastUnread.current !== null && d.unread > lastUnread.current && typeof document !== "undefined"
+          && document.hidden && typeof Notification !== "undefined" && Notification.permission === "granted") {
         const n = (d.items || [])[0];
         if (n) new Notification(n.title || "新消息", { body: n.content || "" });
       }
@@ -88,6 +88,7 @@ export default function AppNav() {
     try {
       await notificationsApi.markRead();
       setUnread(0);
+      lastUnread.current = 0;  // 同步基线：之后第 1 条新消息能正常触发通知
       setItems((prev) => prev.map((i) => ({ ...i, read: 1 })));
     } catch { /* 忽略 */ }
   };

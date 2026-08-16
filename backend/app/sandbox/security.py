@@ -20,7 +20,7 @@ import urllib.parse
 # introspection used to smuggle __builtins__ / attribute chains past the scanner).
 _BLOCKED_CALL_NAMES = {
     "eval", "exec", "compile", "__import__",
-    "globals", "locals", "vars", "getattr",
+    "globals", "locals", "vars",
 }
 
 # __import__ 动态导入时视为危险的模块（其余模块的动态导入放行，避免误拦合法脚本）
@@ -253,7 +253,14 @@ def scan_dangerous_code(script_code: str, block_subprocess: bool = False) -> lis
 
         func = node.func
 
-        # --- Dynamic code execution: eval/exec/compile/globals/locals/vars/getattr 全拦 ---
+        # --- getattr 动态属性访问：属性名非常量/非字面量时拦截（字面量如 getattr(x, "name") 放行） ---
+        if isinstance(func, ast.Name) and func.id == "getattr":
+            if len(node.args) < 2 or not isinstance(node.args[1], ast.Constant) \
+                    or not isinstance(node.args[1].value, str):
+                violations.append("禁止动态属性访问: getattr()（属性名必须为字符串字面量）")
+            continue
+
+        # --- Dynamic code execution: eval/exec/compile/globals/locals/vars 全拦 ---
         if isinstance(func, ast.Name) and func.id in _BLOCKED_CALL_NAMES:
             if func.id == "__import__":
                 # 合法动态导入（如 __import__("json")）放行；但：

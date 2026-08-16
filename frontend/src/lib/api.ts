@@ -237,7 +237,7 @@ export const miniApi = {
     }),
 
   // 下载任务结果文件：必须带鉴权头（裸 <a href> 不带 token/匿名 id 会 404）
-  download: async (taskId: string) => {
+  download: async (taskId: string): Promise<{ blob: Blob; filename: string }> => {
     const token = getAuthToken();
     const headers: Record<string, string> = { "X-Anonymous-Id": getAnonymousId() };
     if (token) headers["Authorization"] = `Bearer ${token}`;
@@ -246,7 +246,12 @@ export const miniApi = {
       const err = await res.json().catch(() => ({ detail: res.statusText }));
       throw new Error(err.detail || `下载失败: ${res.status}`);
     }
-    return res.blob();
+    // 从 Content-Disposition 推导文件名（附件下载时后端已带）
+    let filename = `result_${taskId.slice(0, 8)}.xlsx`;
+    const cd = res.headers.get("content-disposition");
+    const m = cd && cd.match(/filename="?([^";]+)"?/i);
+    if (m && m[1]) filename = m[1];
+    return { blob: await res.blob(), filename };
   },
 };
 

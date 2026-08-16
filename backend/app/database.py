@@ -26,9 +26,10 @@ def _uid() -> str:
 # ============================================================
 
 def _get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(DB_PATH), timeout=15)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=10000")  # 高并发写不抛 locked，等待 10s
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
@@ -182,14 +183,16 @@ async def create_user(email: str, name: str | None, password_hash: str) -> dict:
 # ============================================================
 
 def _save_mini_task(record: dict) -> None:
-    # INSERT ... ON CONFLICT DO UPDATE：不再用 INSERT OR REPLACE（REPLACE 会先删旧行，
+    # INSERT ... ON CONFLICT DO UPDATE：不用 INSERT OR REPLACE（REPLACE 会先删旧行，
     # 把 schedule_type/schedule_value/enabled/last_run_at/next_run_at 等列静默清空）。
-    # 新记录同时持久化 image_paths/data_paths（JSON），供 iterate/定时重跑恢复上下文。
+    # 新记录同时持久化 image_paths/data_paths（JSON）与 schedule 列（提交时直接带定时）。
+    # ON CONFLICT 分支不更新 schedule 列 → iterate/重存不会覆盖已有调度配置。
     with _get_conn() as conn:
         conn.execute(
             """INSERT INTO mini_tasks (id, user_id, requirement, url, status, message, created_at, updated_at,
-                                       result, error, image_paths, data_paths)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                                       result, error, image_paths, data_paths,
+                                       schedule_type, schedule_value, enabled, next_run_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(id) DO UPDATE SET
                  user_id=excluded.user_id, requirement=excluded.requirement, url=excluded.url,
                  status=excluded.status, message=excluded.message, updated_at=excluded.updated_at,
@@ -203,6 +206,8 @@ def _save_mini_task(record: dict) -> None:
                 record.get("error"),
                 json.dumps(record.get("image_paths") or [], ensure_ascii=False),
                 json.dumps(record.get("data_paths") or [], ensure_ascii=False),
+                record.get("schedule_type", ""), record.get("schedule_value", ""),
+                1 if record.get("enabled") else 0, record.get("next_run_at"),
             ),
         )
 
@@ -389,12 +394,22 @@ def _try_decrement_credits(user_id: str, amount: int = 1) -> bool:
         return cur.rowcount == 1
 
 
+def _add_credits(user_id: str, amount: int = 1) -> None:
+    """补回积分（自动化创建失败退款等场景）。"""
+    with _get_conn() as conn:
+        conn.execute("UPDATE users SET credits = credits + ? WHERE id=?", (amount, user_id))
+
+
 async def get_credits(user_id: str) -> int:
     return await _run_async(_get_credits, user_id)
 
 
 async def try_decrement_credits(user_id: str, amount: int = 1) -> bool:
     return await _run_async(_try_decrement_credits, user_id, amount)
+
+
+async def add_credits(user_id: str, amount: int = 1) -> None:
+    return await _run_async(_add_credits, user_id, amount)
 
 
 # ============================================================

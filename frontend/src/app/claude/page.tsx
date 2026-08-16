@@ -10,7 +10,7 @@ import JSZip from "jszip";
 import AppNav from "@/components/AppNav";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { getAnonymousId } from "@/lib/api";
+import { getAnonymousId, getAuthToken } from "@/lib/api";
 import {
   FolderGit2, Send, Loader2, CheckCircle2, RefreshCw, Download,
   Wand2, FileCode2, XCircle, Trash2,
@@ -56,6 +56,7 @@ type Bubble = {
   role: "user" | "ai";
   kind: "requirement" | "plan" | "apply" | "error";
   text?: string;          // 需求 / 方案文本 / 改动说明
+  requirement?: string;   // 方案对应的需求（确认/重规划时回传）
   planFiles?: string[];   // 预计改动文件
   questions?: string[];   // AI 待确认问题
   devFiles?: DevFileInfo[];
@@ -102,13 +103,16 @@ export default function ClaudePage() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [bubbles]);
 
-  const buildZip = useCallback(async (): Promise<{ blob: Blob; count: number }> => {
+  // buildZip 接受显式数据源（避免 React state 闭包旧值问题：选完文件夹立即打包必须用新句柄）
+  const buildZip = useCallback(async (dirArg?: DirHandleLike | null, filesArg?: File[] | null): Promise<{ blob: Blob; count: number }> => {
+    const d = dirArg !== undefined ? dirArg : dir;
+    const lf = filesArg !== undefined ? filesArg : legacyFiles;
     // 兼容模式：来自 <input webkitdirectory> 的只读文件列表
-    if (legacyFiles && !dir) {
+    if (lf && lf.length > 0 && !d) {
       const zip = new JSZip();
       let total = 0;
       let count = 0;
-      for (const f of legacyFiles) {
+      for (const f of lf) {
         if (count >= MAX_FILES || total >= MAX_TOTAL_BYTES) break;
         if (f.size > MAX_FILE_BYTES) continue;
         const ext = "." + f.name.split(".").pop()!.toLowerCase();
@@ -121,7 +125,7 @@ export default function ClaudePage() {
       }
       return { blob: await zip.generateAsync({ type: "blob", compression: "DEFLATE" }), count };
     }
-    if (!dir) throw new Error("请先选择文件夹");
+    if (!d) throw new Error("请先选择文件夹");
     const zip = new JSZip();
     const counter = { files: 0, total: 0 };
     async function walk(dirH: DirHandleLike, base: string) {
@@ -142,7 +146,7 @@ export default function ClaudePage() {
         }
       }
     }
-    await walk(dir, "");
+    await walk(d, "");
     const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
     return { blob, count: counter.files };
   }, [dir, legacyFiles]);
@@ -155,7 +159,8 @@ export default function ClaudePage() {
         setDir(d);
         setDirName(d.name);
         setLegacyFiles(null);
-        const { blob, count } = await buildZipRef.current();
+        // 用新句柄直接打包（不等 React 重渲染）
+        const { blob, count } = await buildZipRef.current(d, null);
         setZipBlob(blob);
         setFileCount(count);
       } else {
@@ -175,17 +180,20 @@ export default function ClaudePage() {
     setLegacyFiles(Array.from(files));
     setDir(null);
     setDirName(Array.from(files)[0]?.webkitRelativePath?.split("/")[0] || "所选文件夹");
-    const { blob, count } = await buildZipRef.current();
+    const { blob, count } = await buildZipRef.current(null, Array.from(files));
     setZipBlob(blob);
     setFileCount(count);
   }, []);
 
   const postDev = useCallback(async (path: string, fd: FormData, blob: Blob) => {
     fd.append("file", blob, "project.zip");
+    const headers: Record<string, string> = { "X-Anonymous-Id": getAnonymousId() };
+    const token = getAuthToken();
+    if (token) headers["Authorization"] = `Bearer ${token}`;  // 登录用户按本人积分/配额
     const res = await fetch(`${API}${path}`, {
       method: "POST",
       body: fd,
-      headers: { "X-Anonymous-Id": getAnonymousId() },
+      headers,
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || `${path} 失败: ${res.status}`);
@@ -210,6 +218,7 @@ export default function ClaudePage() {
       const data = await postDev("/api/dev/plan", fd, zipBlob);
       push({
         role: "ai", kind: "plan",
+        requirement: req,  // 关键：方案气泡记住需求文本，确认/重规划用它回传
         text: (data.plan || "").trim() || "(AI 未给出方案文本)",
         planFiles: (data.files || []).map((f: unknown) => (typeof f === "string" ? f : (f as { path?: string })?.path || String(f))),
         questions: data.questions || [],
@@ -222,41 +231,41 @@ export default function ClaudePage() {
     }
   }, [requirement, busy, zipBlob, postDev, push]);
 
-  const replan = useCallback(async (planText: string) => {
+  const replan = useCallback(async (planText: string, req: string) => {
     if (busy || !zipBlob) return;
     const fb = feedback.trim();
-    if (!fb) return;
+    if (!fb || !req) return;
     setError(null);
     setBusy(true);
     try {
       const fd = new FormData();
-      fd.append("requirement", requirement.trim() || "");
+      fd.append("requirement", req);
       fd.append("feedback", fb);
       const data = await postDev("/api/dev/plan", fd, zipBlob);
       setFeedback("");
       push({
         role: "ai", kind: "plan",
+        requirement: req,
         text: (data.plan || "").trim() || "(AI 未给出方案文本)",
         planFiles: (data.files || []).map((f: unknown) => (typeof f === "string" ? f : (f as { path?: string })?.path || String(f))),
         questions: data.questions || [],
         planText: (data.plan || "").trim(),
-        // 记录上一版方案与意见，方便追溯
       });
     } catch (e) {
       push({ role: "ai", kind: "error", text: e instanceof Error ? e.message : String(e) });
     } finally {
       setBusy(false);
     }
-  }, [busy, zipBlob, feedback, requirement, postDev, push]);
+  }, [busy, zipBlob, feedback, postDev, push]);
 
-  const confirmPlan = useCallback(async (planText: string) => {
+  const confirmPlan = useCallback(async (planText: string, req: string) => {
     if (busy || !zipBlob) return;
-    if (!requirement.trim() && !planText) return;
+    if (!req && !planText) return;
     setError(null);
     setBusy(true);
     try {
       const fd = new FormData();
-      fd.append("requirement", requirement.trim() || "");
+      fd.append("requirement", req);
       fd.append("plan", planText);
       if (feedback.trim()) fd.append("feedback", feedback.trim());
       const data = await postDev("/api/dev/apply", fd, zipBlob);
@@ -273,7 +282,7 @@ export default function ClaudePage() {
     } finally {
       setBusy(false);
     }
-  }, [busy, zipBlob, requirement, feedback, postDev, push]);
+  }, [busy, zipBlob, feedback, postDev, push]);
 
   const applyToFolder = useCallback(async (bubble: Bubble) => {
     if (!bubble.zipB64) return;
@@ -295,12 +304,15 @@ export default function ClaudePage() {
         }
         const fh = await cur.getFileHandle(parts[parts.length - 1], { create: true });
         const w = await fh.createWritable();
-        await w.write(await entry.async("arraybuffer"));
-        await w.close();
+        try {
+          await w.write(await entry.async("arraybuffer"));
+        } finally {
+          try { await w.close(); } catch { /* 关闭失败不阻塞 */ }
+        }
         count++;
       }
       // 重新打包（下一轮包含本次改动）
-      const { blob, count: c2 } = await buildZipRef.current();
+      const { blob, count: c2 } = await buildZipRef.current(dir, null);
       setZipBlob(blob);
       setFileCount(c2);
       push({ role: "ai", kind: "apply", text: `已应用 ${count} 个文件到本地文件夹（${dirName}）`, applied: count });
@@ -429,13 +441,13 @@ export default function ClaudePage() {
                             <textarea value={feedback} onChange={(e) => setFeedback(e.target.value)}
                               placeholder="对方案有意见？在这里输入，AI 会重新规划。没意见直接点「确认并改码」"
                               className="flex-1 min-h-12 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-violet-400 resize-y" />
-                            <Button variant="outline" size="sm" onClick={() => replan(b.planText || "")}
+                            <Button variant="outline" size="sm" onClick={() => replan(b.planText || "", b.requirement || "")}
                               disabled={!feedback.trim() || busy} className="gap-1.5 rounded-xl text-violet-600 dark:text-violet-400">
                               <RefreshCw className="w-3.5 h-3.5" /> 重新规划
                             </Button>
                           </div>
                           <div className="flex flex-wrap gap-2">
-                            <Button size="sm" onClick={() => confirmPlan(b.planText || "")} disabled={busy}
+                            <Button size="sm" onClick={() => confirmPlan(b.planText || "", b.requirement || "")} disabled={busy}
                               className="gap-1.5 rounded-xl bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:opacity-90 text-white">
                               {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
                               {busy ? "AI 正在改码…" : "确认并改码"}

@@ -24,6 +24,17 @@ export default function AutomationsPage() {
   const [monKeyword, setMonKeyword] = useState("");
   const [monAction, setMonAction] = useState("仅提醒");
   const [saving, setSaving] = useState(false);
+  const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
+
+  const inFlight = (id: string) => pendingIds.has(id);
+  const withPending = async (id: string, fn: () => Promise<void>) => {
+    setPendingIds((prev) => new Set(prev).add(id));
+    try {
+      await fn();
+    } finally {
+      setPendingIds((prev) => { const n = new Set(prev); n.delete(id); return n; });
+    }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -42,32 +53,46 @@ export default function AutomationsPage() {
   useEffect(() => { load(); }, [load]);
 
   const toggleRem = async (id: string) => {
-    try {
-      await notificationsApi.toggleReminder(id);
-      setError(null);
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-    await load();
+    if (inFlight(id)) return;
+    await withPending(id, async () => {
+      try {
+        await notificationsApi.toggleReminder(id);
+        setError(null);
+      } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+      await load();
+    });
   };
   const delRem = async (id: string) => {
-    try {
-      await notificationsApi.deleteReminder(id);
-      setError(null);
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-    await load();
+    if (!window.confirm("确定删除这条定时提醒吗？")) return;
+    if (inFlight(id)) return;
+    await withPending(id, async () => {
+      try {
+        await notificationsApi.deleteReminder(id);
+        setError(null);
+      } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+      await load();
+    });
   };
   const toggleMon = async (id: string) => {
-    try {
-      await notificationsApi.toggleMonitor(id);
-      setError(null);
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-    await load();
+    if (inFlight(id)) return;
+    await withPending(id, async () => {
+      try {
+        await notificationsApi.toggleMonitor(id);
+        setError(null);
+      } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+      await load();
+    });
   };
   const delMon = async (id: string) => {
-    try {
-      await notificationsApi.deleteMonitor(id);
-      setError(null);
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-    await load();
+    if (!window.confirm("确定删除这条监控任务吗？")) return;
+    if (inFlight(id)) return;
+    await withPending(id, async () => {
+      try {
+        await notificationsApi.deleteMonitor(id);
+        setError(null);
+      } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+      await load();
+    });
   };
 
   const createReminder = async () => {
@@ -145,12 +170,12 @@ export default function AutomationsPage() {
                       <span className={`font-mono text-sm shrink-0 ${r.enabled ? "text-violet-600 dark:text-violet-300" : "text-slate-400"}`}>每天 {r.time}</span>
                       <span className={`flex-1 text-sm ${r.enabled ? "text-slate-700 dark:text-slate-200" : "text-slate-400"}`}>{r.text}</span>
                       {/* 开关 */}
-                      <button onClick={() => toggleRem(r.id)} title={r.enabled ? "停用" : "启用"}
-                        className={`relative w-10 h-5 rounded-full transition-colors shrink-0 ${r.enabled ? "bg-violet-500" : "bg-slate-300 dark:bg-slate-600"}`}>
+                      <button onClick={() => toggleRem(r.id)} disabled={inFlight(r.id)} title={r.enabled ? "停用" : "启用"}
+                        className={`relative w-10 h-5 rounded-full transition-colors shrink-0 disabled:opacity-40 ${r.enabled ? "bg-violet-500" : "bg-slate-300 dark:bg-slate-600"}`}>
                         <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${r.enabled ? "left-5" : "left-0.5"}`} />
                       </button>
                       {/* 删除 */}
-                      <button onClick={() => delRem(r.id)} title="删除" className="p-1.5 rounded-lg text-muted-foreground hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/50 transition-colors shrink-0">
+                      <button onClick={() => delRem(r.id)} disabled={inFlight(r.id)} title="删除" className="p-1.5 rounded-lg text-muted-foreground hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/50 transition-colors shrink-0 disabled:opacity-40">
                         <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
@@ -208,12 +233,12 @@ export default function AutomationsPage() {
                       </span>
                       <span className="text-[11px] text-muted-foreground shrink-0 hidden sm:inline">每{m.check_interval}s</span>
                       {/* 开关 */}
-                      <button onClick={() => toggleMon(m.id)} title={m.enabled ? "停用" : "启用"}
-                        className={`relative w-10 h-5 rounded-full transition-colors shrink-0 ${m.enabled ? "bg-emerald-500" : "bg-slate-300 dark:bg-slate-600"}`}>
+                      <button onClick={() => toggleMon(m.id)} disabled={inFlight(m.id)} title={m.enabled ? "停用" : "启用"}
+                        className={`relative w-10 h-5 rounded-full transition-colors shrink-0 disabled:opacity-40 ${m.enabled ? "bg-emerald-500" : "bg-slate-300 dark:bg-slate-600"}`}>
                         <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${m.enabled ? "left-5" : "left-0.5"}`} />
                       </button>
                       {/* 删除 */}
-                      <button onClick={() => delMon(m.id)} title="删除" className="p-1.5 rounded-lg text-muted-foreground hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/50 transition-colors shrink-0">
+                      <button onClick={() => delMon(m.id)} disabled={inFlight(m.id)} title="删除" className="p-1.5 rounded-lg text-muted-foreground hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/50 transition-colors shrink-0 disabled:opacity-40">
                         <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
