@@ -5,13 +5,68 @@ import time as _time
 from collections import defaultdict, deque
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
 from app.api.dependencies import get_current_user
 from app.services import mini_tasks
 
 router = APIRouter()
+
+# 开发任务 API：zip 上限 50MB
+MAX_DEV_ZIP_SIZE = 50 * 1024 * 1024
+
+
+@router.post("/dev/tasks")
+async def dev_task(requirement: str = Form(...), file: UploadFile = File(...), user=Depends(get_current_user)):
+    """开发任务 API（供 CLI/外部调用）：上传项目 zip + 需求 → AI 改码 → 返回 diff + 修改后文件 zip。
+
+    返回: {dev_diff, dev_files, dev_summary, dev_modified_zip(base64), dev_diff_url}
+    """
+    import base64 as _b64
+    import io as _io
+    import tempfile
+    import uuid as _uuid
+    import zipfile as _zip
+
+    requirement = (requirement or "").strip()
+    if not requirement:
+        raise HTTPException(status_code=400, detail="requirement 不能为空")
+    content = await file.read(MAX_DEV_ZIP_SIZE + 1)
+    if len(content) > MAX_DEV_ZIP_SIZE:
+        raise HTTPException(status_code=413, detail="项目 zip 过大（最大 50MB）")
+
+    # 安全解压：防 zip-slip 路径穿越
+    tmp = tempfile.mkdtemp(prefix="dev_api_")
+    try:
+        with _zip.ZipFile(_io.BytesIO(content)) as zf:
+            for member in zf.infolist():
+                target = os.path.normpath(os.path.join(tmp, member.filename))
+                if not target.startswith(tmp + os.sep) and target != tmp:
+                    raise HTTPException(status_code=400, detail="项目 zip 包含非法路径")
+            zf.extractall(tmp)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"zip 解压失败: {str(e)[:150]}")
+
+    try:
+        task_id = _uuid.uuid4().hex[:12]
+        result = await mini_tasks._run_dev_task(task_id, requirement, code_dir=tmp)
+        if result.get("status") != "ok":
+            raise HTTPException(status_code=422, detail=result.get("error") or "开发任务失败")
+        return {
+            "task_id": task_id,
+            "dev_summary": result.get("dev_summary"),
+            "dev_files": result.get("dev_files"),
+            "dev_diff": result.get("dev_diff"),
+            "dev_diff_url": result.get("dev_diff_url"),
+            "dev_modified_zip": result.get("dev_modified_zip"),
+            "elapsed": result.get("elapsed"),
+        }
+    finally:
+        import shutil as _shutil
+        _shutil.rmtree(tmp, ignore_errors=True)
 
 # 上传文件根目录：只允许引用此目录内的文件（防任意文件读取/外泄）
 UPLOAD_DIR = Path(__file__).parent.parent.parent / "uploads"

@@ -835,22 +835,17 @@ def _dev_validate(files_map: dict, workspace: str) -> list[str]:
     return errors
 
 
-def _dev_build_diff(files_map: dict, workspace: str, src_root: str) -> str:
-    """生成统一 diff 文本（改动文件 + 新内容；新文件标注 +，原文件对比摘要）。"""
+def _dev_build_diff(files_map: dict, workspace: str, orig_contents: dict) -> str:
+    """生成统一 diff 文本（改动文件 + 新内容；orig_contents 里有的是修改，否则为新增）。"""
     lines = []
     for rel, content in (files_map or {}).items():
-        orig = os.path.join(src_root, rel)
-        exists = os.path.exists(orig)
+        exists = rel in orig_contents
         lines.append(f"--- a/{rel}")
         lines.append(f"+++ b/{rel}  {'(新增文件)' if not exists else '(修改文件)'}")
         if not exists:
             body = content.splitlines()
         else:
-            # 简化：展示新内容（原文件对比留给用户 git diff）
-            try:
-                old = open(orig, encoding="utf-8").read().splitlines()
-            except Exception:
-                old = []
+            old = (orig_contents.get(rel) or "").splitlines()
             added = len(content.splitlines()) - len(old)
             lines.append(f"# 改动行数: +{max(added, 0)} 行" + ("" if added >= 0 else f" -{-added} 行"))
             body = content.splitlines()
@@ -860,27 +855,46 @@ def _dev_build_diff(files_map: dict, workspace: str, src_root: str) -> str:
     return "\n".join(lines)
 
 
-async def _run_dev_task(task_id: str, requirement: str) -> dict:
+async def _run_dev_task(task_id: str, requirement: str, code_dir: str | None = None) -> dict:
     """开发任务：仓库副本 → DeepSeek 改码（多文件 JSON）→ 语法校验 → diff。
 
-    产物：dev_diff（diff 文本）、dev_files（改动清单）、dev_summary、output_file（.diff 文件）
+    code_dir: 外部传入的代码目录（CLI/API 上传解压后的隔离副本）；None 时用内置仓库源码。
+
+    产物：dev_diff（diff 文本）、dev_files（改动清单）、dev_summary、dev_modified_zip（修改后文件 base64）、output_file（.diff）
     """
-    import json as _json
+    import base64 as _b64
+    import io as _io
     import shutil as _shutil
     import tempfile
+    import zipfile as _zip
     from app.services.llm_client import chat_completion_json
 
     started = time.time()
     src_root = _dev_src_root()
-    workspace = tempfile.mkdtemp(prefix="dev_ws_")
+    if code_dir:
+        workspace = os.path.normpath(code_dir)  # 外部代码目录本身就是隔离副本
+    else:
+        workspace = tempfile.mkdtemp(prefix="dev_ws_")
     try:
-        files = _copy_dev_repo(workspace)
+        if code_dir:
+            files = _walk_files(workspace)
+        else:
+            files = _copy_dev_repo(workspace)
         if not files:
             return {"status": "failed", "error": "未找到项目源码目录", "elapsed": round(time.time() - started, 1)}
+        # 改前文件内容快照（diff 对比用；写文件前取）
+        orig_contents: dict[str, str] = {}
+        for rel in _walk_files(workspace):
+            try:
+                with open(os.path.join(workspace, rel), encoding="utf-8") as _f:
+                    orig_contents[rel] = _f.read()
+            except Exception:
+                pass
 
         tree = _dev_tree(files)
         files_map: dict = {}
         summary = ""
+        errors: list[str] = []
         for attempt in range(3):
             try:
                 info = await chat_completion_json(
@@ -907,6 +921,7 @@ async def _run_dev_task(task_id: str, requirement: str) -> dict:
                 files_map = info2.get("files") or files_map
                 errors2 = _dev_validate(files_map, workspace)
                 if not errors2:
+                    errors = []
                     break
             except Exception:
                 break
@@ -914,7 +929,7 @@ async def _run_dev_task(task_id: str, requirement: str) -> dict:
         if errors:
             return {"status": "failed", "error": f"代码校验未通过: {'；'.join(errors)[:300]}", "elapsed": round(time.time() - started, 1)}
 
-        diff = _dev_build_diff(files_map, workspace, src_root)
+        diff = _dev_build_diff(files_map, workspace, orig_contents)
         # diff 落 web/ 便于下载/查看（产物域）
         os.makedirs(_WEB_DIR, exist_ok=True)
         diff_path = os.path.join(_WEB_DIR, f"dev_{task_id}.diff")
@@ -923,8 +938,14 @@ async def _run_dev_task(task_id: str, requirement: str) -> dict:
 
         dev_files = []
         for rel, content in (files_map or {}).items():
-            orig = os.path.join(src_root, rel)
-            dev_files.append({"path": rel, "status": "新增" if not os.path.exists(orig) else "修改", "size": len(content)})
+            dev_files.append({"path": rel, "status": "新增" if rel not in orig_contents else "修改", "size": len(content)})
+
+        # 修改后的文件打包 zip（base64）——CLI 用它应用改动到本地项目
+        buf = _io.BytesIO()
+        with _zip.ZipFile(buf, "w", _zip.ZIP_DEFLATED) as zf:
+            for rel, content in (files_map or {}).items():
+                zf.writestr(rel, content)
+        modified_zip_b64 = _b64.b64encode(buf.getvalue()).decode()
 
         return {
             "status": "ok",
@@ -932,6 +953,7 @@ async def _run_dev_task(task_id: str, requirement: str) -> dict:
             "dev_diff_url": f"/dev_{task_id}.diff",
             "dev_files": dev_files,
             "dev_summary": summary,
+            "dev_modified_zip": modified_zip_b64,
             "output_file": diff_path,
             "elapsed": round(time.time() - started, 1),
             "error": None,
@@ -940,7 +962,18 @@ async def _run_dev_task(task_id: str, requirement: str) -> dict:
         logger.exception("[dev_task:%s] failed", task_id)
         return {"status": "failed", "error": f"开发任务执行出错: {str(e)[:200]}", "elapsed": round(time.time() - started, 1)}
     finally:
-        _shutil.rmtree(workspace, ignore_errors=True)
+        if not code_dir:
+            _shutil.rmtree(workspace, ignore_errors=True)
+
+
+def _walk_files(root: str) -> list[str]:
+    """列出目录下所有相对文件路径（跳过忽略目录）。"""
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in DEV_EXCLUDE_DIRS]
+        for fn in filenames:
+            out.append(os.path.relpath(os.path.join(dirpath, fn), root).replace("\\", "/"))
+    return out
 
 
 async def _run_report_task(task_id: str, requirement: str, url: str | None) -> dict:
