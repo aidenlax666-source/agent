@@ -16,17 +16,20 @@ security = HTTPBearer(auto_error=False)
 
 
 def _anon_identity(anon_id: str | None, request: Request | None) -> str:
-    """解析匿名身份：优先客户端自报 id（校验长度），否则按直连 IP 派生，
-    避免所有无头客户端共享同一个 guest 身份导致数据互相可见。"""
+    """解析匿名身份。
+
+    安全：匿名身份必须绑定真实来源（IP），绝不直接信任客户端自报的 id——
+    否则拿到/猜到他人 anon_id 即可冒用其匿名数据（任务/提醒/监控/积分，甚至
+    触发读取其 browser_profile 中的第三方登录 Cookie）。实现：
+    - 有自报 id 时：ip+id 一起哈希派生（id 仅作为同一来源下的子身份区分，
+      脱离 IP 单独使用无效）；
+    - 无自报 id：直接用 IP 派生稳定身份。
+    """
+    from app.api.mini import _client_ip
+    peer = _client_ip(request) if request else "unknown"
     anon_id = (anon_id or "").strip()
     if anon_id and 0 < len(anon_id) <= 64:
-        return anon_id
-    # 无自报 id：用 IP（经 _client_ip 同款逻辑：仅可信代理时信任 XFF）派生稳定身份
-    peer = request.client.host if request and request.client else "unknown"
-    xff = request.headers.get("x-forwarded-for") if request else None
-    if xff:
-        from app.api.mini import _client_ip
-        peer = _client_ip(request)
+        return hashlib.sha256(f"{peer}|{anon_id}".encode("utf-8")).hexdigest()[:32]
     return "ip_" + hashlib.sha256(peer.encode("utf-8")).hexdigest()[:16]
 
 

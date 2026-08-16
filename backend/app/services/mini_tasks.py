@@ -1565,14 +1565,17 @@ def _dev_errors_context(errors: list[str], workspace: str, max_chars: int = 6000
         rel = str(err).split(":", 1)[0].strip()
         if not rel or rel in seen:
             continue
-        seen.add(rel)
-        p = os.path.join(workspace, rel)
+        safe = _safe_dev_rel(rel, workspace)
+        if safe is None:
+            continue  # 非法路径：绝不越出项目目录读取
+        seen.add(safe)
+        p = os.path.join(workspace, safe)
         try:
             with open(p, encoding="utf-8-sig") as f:
                 content = f.read()
         except Exception:
             continue
-        parts.append(f"### {rel}\n{content[:max_chars]}" + ("\n...(截断)" if len(content) > max_chars else ""))
+        parts.append(f"### {safe}\n{content[:max_chars]}" + ("\n...(截断)" if len(content) > max_chars else ""))
     return "\n\n".join(parts) if parts else "(无法读取文件内容)"
 
 
@@ -1601,7 +1604,10 @@ _DEV_SHELL_BAD = [";", "|", ">", "<", "`", "$(", "rm ", "del ", "rmdir", "format
 
 
 def _check_dev_command_safety(command: str) -> str | None:
-    """校验命令安全性：拒绝危险命令前缀与危险 shell 元字符。返回错误信息或 None。"""
+    """校验命令安全性：拒绝危险命令前缀与危险 shell 元字符。返回错误信息或 None。
+
+    Windows cmd 分隔符是 &（等价 bash 的 ;），必须拦截单 &，但放行 &&（步骤串联）。
+    """
     low = (command or "").lower()
     for bad in ("rm ", "del ", "rmdir", "format ", "shutdown", "taskkill", "格式化", "删除全部", "rd /s"):
         if low.startswith(bad):
@@ -1609,6 +1615,10 @@ def _check_dev_command_safety(command: str) -> str | None:
     for ch in _DEV_SHELL_BAD:
         if ch in (command or ""):
             return f"命令包含禁止的 shell 字符（{ch}）: {command[:80]}"
+    # 拦截单 &（cmd 分隔符）：去掉 && 后若还有 & 则拒绝
+    stripped = (command or "").replace("&&", "")
+    if "&" in stripped:
+        return f"命令包含禁止的 shell 字符（&）: {command[:80]}"
     return None
 
 

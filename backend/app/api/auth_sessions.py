@@ -54,6 +54,10 @@ async def start_login(data: dict, user=Depends(get_current_user)):
     low = url.lower()
     if not low.startswith(("http://", "https://")):
         return {"error": "仅支持 http/https 协议的登录地址"}
+    # SSRF 防护：禁止访问内网/回环/云元数据地址（服务器浏览器不能当内网代理）
+    from app.sandbox.security import is_lan_url
+    if is_lan_url(url):
+        return {"error": "禁止访问内网/回环/元数据地址"}
 
     domain = _safe_domain(url)
     user_profile = str(PROFILE_DIR / str(user["id"]))
@@ -133,9 +137,17 @@ async def start_login(data: dict, user=Depends(get_current_user)):
 
 
 @router.get("/sessions/status")
-async def login_status():
-    """Check login window status."""
-    return _login_status
+async def login_status(user=Depends(get_current_user)):
+    """Check login window status（仅返回当前用户自己的窗口状态，不再暴露全局/他人状态）。"""
+    uid = str(user["id"])
+    session = _active_sessions.get(uid)
+    if session is None or session["done"].is_set():
+        return {"status": "idle", "message": "", "domain": ""}
+    return {
+        "status": _login_status.get("status", "opening"),
+        "message": _login_status.get("message", ""),
+        "domain": session.get("domain", ""),
+    }
 
 
 @router.get("/sessions/check")

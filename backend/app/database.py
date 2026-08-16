@@ -194,7 +194,7 @@ def _save_mini_task(record: dict) -> None:
                                        schedule_type, schedule_value, enabled, next_run_at)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(id) DO UPDATE SET
-                 user_id=excluded.user_id, requirement=excluded.requirement, url=excluded.url,
+                 requirement=excluded.requirement, url=excluded.url,
                  status=excluded.status, message=excluded.message, updated_at=excluded.updated_at,
                  result=excluded.result, error=excluded.error,
                  image_paths=excluded.image_paths, data_paths=excluded.data_paths""",

@@ -77,9 +77,19 @@ def load_session(root: str) -> dict:
             session = json.load(f)
     except Exception:
         return {"project": root, "rounds": []}
-    # 清理历史轮次里可能带 BOM 的需求文本
-    for r in session.get("rounds") or []:
-        r["requirement"] = str(r.get("requirement") or "").lstrip("\ufeff")
+    # 结构校验：损坏/非预期结构的会话文件按全新会话处理（不崩溃）
+    if not isinstance(session, dict):
+        return {"project": root, "rounds": []}
+    rounds = session.get("rounds")
+    if not isinstance(rounds, list):
+        rounds = []
+    clean = []
+    for r in rounds:
+        if isinstance(r, dict):
+            r = dict(r)
+            r["requirement"] = str(r.get("requirement") or "").lstrip("\ufeff")
+            clean.append(r)
+    session["rounds"] = clean
     return session
 
 
@@ -94,17 +104,26 @@ def save_session(root: str, session: dict) -> None:
 
 
 def collect_files(root: str) -> dict[str, bytes]:
-    """遍历项目目录收集文件内容（排除忽略项），返回 {相对路径: bytes}。"""
+    """遍历项目目录收集文件内容（排除忽略项），返回 {相对路径: bytes}。
+
+    安全：跳过符号链接（含文件链接），防止把项目外文件（如 ~/.ssh/id_rsa）打包上传。
+    """
     root = os.path.abspath(root)
     files: dict[str, bytes] = {}
     total = 0
+    excluded = {d.lower() for d in EXCLUDE_DIRS}  # Windows 大小写不敏感
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS]
+        dirnames[:] = [d for d in dirnames if d.lower() not in excluded]
         for fn in filenames:
             ext = os.path.splitext(fn)[1].lower()
             if ext in EXCLUDE_EXTS:
                 continue
             fp = os.path.join(dirpath, fn)
+            try:
+                if os.path.islink(fp):  # 文件符号链接：跳过（防项目外文件外泄）
+                    continue
+            except OSError:
+                continue
             rel = os.path.relpath(fp, root).replace("\\", "/")
             try:
                 size = os.path.getsize(fp)
@@ -140,7 +159,7 @@ def post_dev(api: str, path: str, requirement: str, zdata: bytes,
         data["feedback"] = feedback
     with httpx.Client(timeout=600, trust_env=False) as client:
         resp = client.post(
-            f"{api}/api/dev{path}",
+            f"{api.rstrip('/')}/api/dev{path}",
             data=data,
             files={"file": ("project.zip", zdata, "application/zip")},
         )
@@ -154,18 +173,38 @@ def post_dev(api: str, path: str, requirement: str, zdata: bytes,
 
 
 def apply_changes(root: str, modified_zip_b64: str, only: set[str] | None = None) -> list[str]:
-    """把后端返回的修改后文件 zip 应用回本地项目（only 给定时只应用这些文件），返回应用列表。"""
+    """把后端返回的修改后文件 zip 应用回本地项目（only 给定时只应用这些文件），返回应用列表。
+
+    安全：跳过目录成员与符号链接（含父目录链上的链接），防止写入穿透到项目外文件。
+    """
     data = base64.b64decode(modified_zip_b64)
     applied = []
+    root_abs = os.path.abspath(root)
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         for member in zf.infolist():
             if only is not None and member.filename not in only:
                 continue
+            if member.is_dir():
+                continue  # 目录成员：无需写入
             target = os.path.normpath(os.path.join(root, member.filename))
-            if not target.startswith(os.path.abspath(root) + os.sep):
+            if not target.startswith(root_abs + os.sep):
                 continue  # 防穿越
+            # 防符号链接穿透：target 自身或任一父目录是链接则跳过
+            try:
+                p = target
+                while p != root_abs and not os.path.exists(p):
+                    p = os.path.dirname(p)
+                if os.path.islink(p):
+                    continue
+                if os.path.islink(target):
+                    continue
+            except OSError:
+                continue
             os.makedirs(os.path.dirname(target), exist_ok=True)
-            Path(target).write_bytes(zf.read(member))
+            try:
+                Path(target).write_bytes(zf.read(member))
+            except (OSError, PermissionError):
+                continue
             applied.append(member.filename)
     return applied
 

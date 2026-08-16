@@ -220,6 +220,9 @@ def _client_ip(request: Request) -> str:
 
     防伪造 X-Forwarded-For 绕过匿名限速：客户端可随意改 XFF 头，但只要
     直连 peer 不在可信白名单里，就按直连 IP 限速。
+
+    可信代理场景（nginx 等）：取 XFF **最后一个**值——可信代理追加的是
+    "客户端真实IP"，而首值完全由客户端控制（伪造）；取末值才能拿到真实来源。
     """
     from app.config import get_settings
 
@@ -230,8 +233,8 @@ def _client_ip(request: Request) -> str:
     trusted = {s.strip().lower() for s in (get_settings().trusted_proxy_ips or "").split(",") if s.strip()}
     if peer.lower() not in trusted:
         return peer
-    first = xff.split(",")[0].strip()
-    return first if first else peer
+    values = [v.strip() for v in xff.split(",") if v.strip()]
+    return values[-1] if values else peer
 
 
 def _check_anon_rate(ip: str) -> None:

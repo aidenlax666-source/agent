@@ -242,11 +242,33 @@ def scan_dangerous_code(script_code: str, block_subprocess: bool = False) -> lis
                 if root in _STRICT_BLOCKED_MODULES:
                     violations.append(f"严格模式下禁止导入: {root}")
 
+        # --- 危险 import 名称：from os import system / from builtins import eval 等 ---
+        if isinstance(node, ast.ImportFrom) and node.module:
+            mod = node.module.split(".")[0]
+            for alias in node.names:
+                nm = alias.name
+                if mod == "os" and nm in {"system", "popen", "fork", "spawnv", "spawnl", "execv", "execve", "startfile", "posix_spawn"}:
+                    violations.append(f"禁止从 os 导入危险名称: {nm}")
+                if mod in ("builtins", "__builtins__") and nm in {"eval", "exec", "compile", "__import__", "globals", "locals", "vars", "open"}:
+                    violations.append(f"禁止从 builtins 导入危险名称: {nm}")
+                if mod in ("subprocess",) and nm not in {"run", "Popen", "call", "check_call", "check_output", "PIPE", "STDOUT", "DEVNULL", "TimeoutExpired", "CalledProcessError", "CompletedProcess", "SubprocessError"}:
+                    # subprocess 里其余冷门名称（如 _execute_child）一律拦
+                    violations.append(f"禁止导入 subprocess 危险名称: {nm}")
+
         # --- __builtins__ 访问（下标/属性链）一律拦 ---
         if (isinstance(node, (ast.Subscript, ast.Attribute))
                 and _root_name(node) == "__builtins__"):
             violations.append("禁止访问 __builtins__")
             continue
+
+        # --- os.__dict__["system"] / os.__getattribute__ 等下标访问危险属性链 ---
+        if isinstance(node, ast.Subscript) and _root_name(node) == "os":
+            try:
+                if isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str) \
+                        and node.slice.value in {"system", "popen", "fork", "spawnv", "execv", "execve", "startfile", "posix_spawn"}:
+                    violations.append(f"禁止下标访问危险属性: os.__dict__[{node.slice.value!r}]")
+            except AttributeError:
+                pass
 
         if not isinstance(node, ast.Call):
             continue
@@ -258,6 +280,12 @@ def scan_dangerous_code(script_code: str, block_subprocess: bool = False) -> lis
             if len(node.args) < 2 or not isinstance(node.args[1], ast.Constant) \
                     or not isinstance(node.args[1].value, str):
                 violations.append("禁止动态属性访问: getattr()（属性名必须为字符串字面量）")
+            else:
+                # getattr(os, "system") / getattr(os, "popen") 等危险属性名也拦
+                attr = node.args[1].value
+                root = _root_name(node.args[0]) if node.args else None
+                if root == "os" and attr in {"system", "popen", "fork", "spawnv", "execv", "startfile"}:
+                    violations.append(f"禁止动态访问危险属性: getattr({root}, {attr!r})")
             continue
 
         # --- Dynamic code execution: eval/exec/compile/globals/locals/vars 全拦 ---
@@ -276,6 +304,15 @@ def scan_dangerous_code(script_code: str, block_subprocess: bool = False) -> lis
         # 下标调用：__builtins__['ev'+'al'](...) 形态
         if isinstance(func, ast.Subscript) and _root_name(func) == "__builtins__":
             violations.append("禁止动态调用: __builtins__[...](...)")
+
+        # builtins.eval/exec 等：import builtins 后属性调用形态（绕过裸名检查）
+        if isinstance(func, ast.Attribute):
+            root_attr = _root_name(func)
+            if root_attr in ("builtins", "__builtins__") and func.attr in _BLOCKED_CALL_NAMES:
+                violations.append(f"禁止调用: {root_attr}.{func.attr}()")
+            # import os as x; x.system(...) —— 别名变量名无法静态追踪，但 os.<危险名> 直呼仍拦
+            if root_attr == "os" and func.attr in {"system", "popen", "fork", "posix_spawn", "startfile"}:
+                violations.append(f"禁止调用: os.{func.attr}()")
 
         # --- 敏感文件读取拦截：open/read_* 读 .env/.db 等 ---
         call_name = func.id if isinstance(func, ast.Name) else (
