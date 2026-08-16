@@ -1180,11 +1180,12 @@ DEV_SELECT_PROMPT = """你是一位资深软件工程师。用户需求：{requi
 {index}
 
 要正确完成修改，你需要先决定读哪些文件的完整内容。只输出一个 JSON 对象：
-{{"files_to_read": ["需要读取完整内容的文件相对路径", ...]}}
+{{"files_to_read": ["需要读取完整内容的文件相对路径", ...],
+  "grep": ["要全文搜索的符号/关键词（如函数名、变量名，用于定位调用点/定义点；不需要可省略）", ...]}}
 
 选择原则：
 1. **必选**：本次要修改/新增的文件，以及修改会直接影响的文件（被 import 的模块、被模板引用的文件、依赖的配置）
-2. 拿不准是否相关的文件**宁可选中**（多读一个文件比漏读导致改错便宜）
+2. 拿不准哪些文件涉及某个符号时，**用 grep 搜索它**（如搜函数名找到所有调用点），grep 命中的文件会自动读入
 3. 与需求明显无关的文件（如其它模块的测试、文档）不要选
 4. 如果这是空项目（清单为空）或项目极小，files_to_read 可为空数组——你会基于需求从零创建
 禁止输出任何其他内容（不要 markdown 围栏、不要解释）。"""
@@ -1267,6 +1268,42 @@ def _dev_read_files(workspace: str, rels: list[str], per_file: int = 4000,
     if not parts:
         return "(未能读取任何文件)"
     return "\n\n".join(parts)
+
+
+def _dev_grep(workspace: str, files: list[str], queries: list[str],
+              max_hits_per_query: int = 30, preview: int = 120) -> tuple[str, list[str]]:
+    """在工作区文件里搜索（不区分大小写的子串匹配，类 grep）。
+
+    返回 (结果文本, 命中文件列表)。结果文本含 文件:行号: 行内容 前缀；
+    命中文件列表供调用方并入读取清单（找调用点/定义点）。
+    """
+    if not queries:
+        return "", []
+    results: list[str] = []
+    hit_files: set[str] = set()
+    qs = [str(q).strip().lower() for q in queries if str(q).strip()]
+    if not qs:
+        return "", []
+    for rel in sorted(files):
+        try:
+            with open(os.path.join(workspace, rel), encoding="utf-8-sig") as f:
+                lines = f.read().splitlines()
+        except Exception:
+            continue
+        for lineno, line in enumerate(lines, 1):
+            low = line.lower()
+            if any(q in low for q in qs):
+                shown = line.strip()
+                if len(shown) > preview:
+                    shown = shown[:preview] + "..."
+                results.append(f"{rel}:{lineno}: {shown}")
+                hit_files.add(rel)
+                if len(results) >= max_hits_per_query * max(1, len(qs)):
+                    break
+    if not results:
+        return "(grep 无结果)", []
+    text = "【grep 搜索结果】\n" + "\n".join(results[:200])
+    return text, sorted(hit_files)
 
 
 def _dev_context(workspace: str, files: list[str], requirement: str | None = None,
@@ -1730,11 +1767,19 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
                     model=get_settings().dev_modify_model or get_settings().ai_model,
                 )
                 rels = [r for r in (sel.get("files_to_read") or []) if isinstance(r, str) and _safe_dev_rel(r, workspace)]
+                # grep：搜索模型要定位的符号，命中文件自动并入读取清单（找调用点/定义点，不再靠猜）
+                grep_text, grep_files = _dev_grep(workspace, files, sel.get("grep") or [])
+                for g in grep_files:
+                    if g not in rels:
+                        rels.append(g)
                 if rels:
                     tree = _dev_read_files(workspace, rels)
+                    if grep_text:
+                        tree += "\n\n" + grep_text
                     # 附上完整清单：模型知道还有哪些文件没读（需要时可在 files_to_read 里要求）
                     tree += "\n\n【项目全部文件清单（未读取的文件未显示内容）】\n" + index_text
-                    logger.warning("[dev_task:%s] 两阶段：选中 %d/%d 个文件读取: %s", task_id, len(rels), len(files), rels[:10])
+                    logger.warning("[dev_task:%s] 两阶段：选中 %d/%d 个文件读取(grep %d 个): %s", task_id,
+                                   len(rels), len(files), len(grep_files), rels[:12])
                 else:
                     tree = _dev_context(workspace, files, requirement=requirement)  # 回退全给
                     logger.warning("[dev_task:%s] 两阶段：模型未选择文件，回退全量上下文", task_id)
@@ -1867,13 +1912,14 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
                 zf.writestr(rel, content)
         modified_zip_b64 = _b64.b64encode(buf.getvalue()).decode()
 
-# 操作型需求：执行模型返回的命令（在项目目录运行），失败则让模型自我修复（最多 3 轮）
+# 操作型需求：执行模型返回的命令（在项目目录运行），失败则让模型自我修复（最多 5 轮；
+# 模型可中途换实现方案或 give_up 放弃，5 轮仍失败说明方案本身不行）
         dev_command = command or ""
         dev_output = ""
         dev_output_ok = True
         dev_keep_dir = False  # 后台进程在运行 → 保留项目目录（否则进程的文件会被清理）
         last_error = ""
-        for fix_round in range(3):
+        for fix_round in range(5):
             if not dev_command:
                 break
             if background:
@@ -1892,12 +1938,12 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
                 break
             last_error = dev_output
             logger.warning("[dev_task:%s] 命令第 %d 次失败: %s", task_id, fix_round + 1, last_error[:150])
-            if fix_round >= 2:
+            if fix_round >= 4:
                 break
             # 失败 → 让模型自我修复：改代码（换实现方案）或换命令；模型可判断该继续还是放弃
             try:
                 fix_prompt = (
-                    f"你在项目里执行命令 `{dev_command}` 失败了（第 {fix_round + 1} 次，共可尝试 {3 - fix_round} 次）。\n"
+                    f"你在项目里执行命令 `{dev_command}` 失败了（第 {fix_round + 1} 次，共可尝试 {5 - fix_round} 次）。\n"
                     f"命令输出/错误如下（重点看依赖安装、编译、端口占用等）:\n{last_error[:2500]}\n\n"
                     "【请自我修复】\n"
                     "1. 如果依赖安装失败（如 better-sqlite3 等需要 C++ 编译工具链/node-gyp/Visual Studio，"
@@ -1999,9 +2045,17 @@ async def _plan_dev_task(requirement: str, code_dir: str, feedback: str | None =
                 model=get_settings().ai_model,
             )
             rels = [r for r in (sel.get("files_to_read") or []) if isinstance(r, str) and _safe_dev_rel(r, workspace)]
+            grep_text, grep_files = _dev_grep(workspace, files, sel.get("grep") or [])
+            for g in grep_files:
+                if g not in rels:
+                    rels.append(g)
             if rels:
-                tree = _dev_read_files(workspace, rels) + "\n\n【项目全部文件清单（未读取的文件未显示内容）】\n" + index_text
-                logger.warning("[dev_plan] 两阶段：选中 %d/%d 个文件读取: %s", len(rels), len(files), rels[:10])
+                tree = _dev_read_files(workspace, rels)
+                if grep_text:
+                    tree += "\n\n" + grep_text
+                tree += "\n\n【项目全部文件清单（未读取的文件未显示内容）】\n" + index_text
+                logger.warning("[dev_plan] 两阶段：选中 %d/%d 个文件读取(grep %d 个): %s", len(rels), len(files),
+                               len(grep_files), rels[:12])
             else:
                 tree = _dev_context(workspace, files, requirement=requirement)  # 回退全给
         except Exception as e:
