@@ -3,12 +3,13 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
-import { Sparkles, History, QrCode, Zap, LogIn, LogOut, User as UserIcon, Coins } from "lucide-react";
+import { Sparkles, History, QrCode, Zap, LogIn, LogOut, User as UserIcon, Coins, FolderGit2 } from "lucide-react";
 import { authApi, getAuthToken, setAuthToken } from "@/lib/api";
 import type { User } from "@/lib/types";
 
 const LINKS = [
   { href: "/mini", label: "工作台", icon: Sparkles },
+  { href: "/claude", label: "改码助手", icon: FolderGit2 },
   { href: "/history", label: "任务历史", icon: History },
   { href: "/gallery", label: "分享中心", icon: QrCode },
 ];
