@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { miniApi, uploadApi, ASSETS_BASE, type MiniTaskStatus } from "@/lib/api";
+import { miniApi, uploadApi, ASSETS_BASE, getAnonymousId, type MiniTaskStatus } from "@/lib/api";
 import type { PreviewData } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -11,7 +11,7 @@ import { PreviewTable } from "@/components/PreviewTable";
 import AppNav from "@/components/AppNav";
 import {
   Loader2, Sparkles, Play, CheckCircle2, XCircle, AlertTriangle, Download,
-  RefreshCw, Upload, Send, Wand2, FileSpreadsheet, Trash2, History,
+  RefreshCw, Upload, Send, Wand2, FileSpreadsheet, Trash2, History, FolderGit2,
 } from "lucide-react";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -74,6 +74,11 @@ export default function MiniPage() {
   const [dataPaths, setDataPaths] = useState<string[]>([]);
   const [dataFiles, setDataFiles] = useState<{ name: string; path: string }[]>([]);
   const [scheduleValue, setScheduleValue] = useState("30");
+  const [zipFile, setZipFile] = useState<File | null>(null);
+  const [devResult, setDevResult] = useState<{
+    dev_summary?: string; dev_files?: { path: string; status: string; size: number }[];
+    dev_diff?: string; dev_modified_zip?: string; dev_diff_url?: string;
+  } | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const stopPolling = useCallback(() => {
@@ -128,8 +133,26 @@ export default function MiniPage() {
     setSubmitting(true);
     setSubmitError(null);
     setTask(null);
+    setDevResult(null);
     stopPolling();
     try {
+      // 上传了项目 zip → 走开发任务 API（AI 改用户上传的项目代码）
+      if (zipFile) {
+        const fd = new FormData();
+        fd.append("requirement", requirement.trim());
+        fd.append("file", zipFile);
+        const res = await fetch(`${API}/api/dev/tasks`, {
+          method: "POST",
+          body: fd,
+          headers: { "X-Anonymous-Id": getAnonymousId() },
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.detail || `开发任务失败: ${res.status}`);
+        }
+        setDevResult(data);
+        return;
+      }
       const res = await miniApi.submit(requirement.trim(), undefined, imagePaths, dataPaths);
       const initial = await miniApi.get(res.task_id);
       setTask(initial);
@@ -138,6 +161,25 @@ export default function MiniPage() {
       setSubmitError(e instanceof Error ? e.message : String(e));
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  // 下载 AI 修改后的项目 zip（base64 → 文件）
+  const downloadModifiedZip = () => {
+    if (!devResult?.dev_modified_zip) return;
+    try {
+      const bin = atob(devResult.dev_modified_zip);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const blob = new Blob([bytes], { type: "application/zip" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "modified_project.zip";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setSubmitError("下载失败");
     }
   };
 
@@ -292,8 +334,21 @@ export default function MiniPage() {
                   <FileSpreadsheet className="w-3.5 h-3.5" /> 数据文件
                   <input type="file" accept=".xlsx,.xls,.csv" multiple className="hidden" disabled={uploading} onChange={(e) => handleDataFiles(e.target.files)} />
                 </label>
+                <label className="inline-flex items-center gap-1.5 text-xs font-medium text-violet-600 dark:text-violet-400 cursor-pointer hover:bg-violet-50 dark:hover:bg-violet-950 rounded-lg px-2.5 py-1.5 transition-colors" title="上传项目 zip，AI 直接改你的项目代码">
+                  <FolderGit2 className="w-3.5 h-3.5" /> 项目zip（改代码）
+                  <input type="file" accept=".zip" className="hidden" disabled={uploading} onChange={(e) => { const f = e.target.files?.[0] || null; setZipFile(f); if (f) setSubmitError(null); }} />
+                </label>
               </div>
             </div>
+
+            {/* zip 已选提示 */}
+            {zipFile && (
+              <div className="inline-flex items-center gap-2 rounded-xl border border-violet-200 dark:border-violet-800 bg-violet-50/70 dark:bg-violet-950/50 px-3 py-1.5 text-xs text-violet-700 dark:text-violet-300">
+                <FolderGit2 className="w-3.5 h-3.5" />
+                <span className="max-w-52 truncate">{zipFile.name}</span>
+                <button onClick={() => setZipFile(null)} className="text-violet-500 hover:text-red-500 transition-colors" title="移除">×</button>
+              </div>
+            )}
 
             {/* 已上传文件 */}
             {(imagePreviews.length > 0 || dataFiles.length > 0) && (
@@ -558,6 +613,41 @@ export default function MiniPage() {
                   <CheckCircle2 className="w-4 h-4" /> 已确认完成，结果即最终版。
                 </div>
               )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* 开发任务结果（上传 zip 改代码） */}
+        {devResult && (
+          <Card className="rounded-3xl border-violet-200/70 dark:border-violet-800/70 bg-white/80 dark:bg-slate-900/70 backdrop-blur-xl shadow-xl shadow-violet-500/5">
+            <CardContent className="p-5 sm:p-6 space-y-4">
+              <div className="flex items-center gap-2">
+                <FolderGit2 className="w-4 h-4 text-violet-500" />
+                <span className="text-sm font-semibold">💻 AI 代码改动</span>
+                {submitting && <Loader2 className="w-4 h-4 animate-spin text-violet-500" />}
+              </div>
+              {devResult.dev_summary && (
+                <p className="text-sm text-slate-700 dark:text-slate-200">{devResult.dev_summary}</p>
+              )}
+              <div className="flex flex-wrap gap-1.5">
+                {(devResult.dev_files || []).map((f) => (
+                  <span key={f.path} className="inline-flex items-center gap-1 rounded-lg bg-white/70 dark:bg-slate-900/70 border border-violet-200/60 dark:border-violet-800 px-2 py-1 text-[11px] text-slate-600 dark:text-slate-300 font-mono">
+                    {f.status === "新增" ? "🆕" : "✏️"} {f.path}
+                  </span>
+                ))}
+              </div>
+              {devResult.dev_diff && (
+                <details className="text-sm">
+                  <summary className="cursor-pointer text-muted-foreground hover:text-foreground select-none">查看代码改动 diff（{devResult.dev_diff.length} 字符）</summary>
+                  <pre className="mt-2 max-h-96 overflow-auto rounded-xl bg-slate-950 text-slate-100 p-4 text-[11px] leading-relaxed whitespace-pre-wrap">{devResult.dev_diff}</pre>
+                </details>
+              )}
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="outline" onClick={downloadModifiedZip} className="gap-1.5 text-violet-600 dark:text-violet-400">
+                  <Download className="w-4 h-4" /> 下载修改后的项目 zip
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setDevResult(null)}>关闭</Button>
+              </div>
             </CardContent>
           </Card>
         )}

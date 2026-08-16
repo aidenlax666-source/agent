@@ -46,23 +46,6 @@ def _is_report_request(requirement: str) -> bool:
     return any(k in r for k in _REPORT_HINTS)
 
 
-# 开发类意图（改项目代码）：命中则走"仓库副本 + AI 改码 + 校验"流程
-_DEV_HINTS = ["改代码", "加一个功能", "加个功能", "新增功能", "修改项目", "项目代码", "重构",
-              "写一个函数", "写个函数", "加一个接口", "加个接口", "开发", "改这个项目", "给项目"]
-
-
-def _is_dev_request(requirement: str) -> bool:
-    r = requirement.lower()
-    if any(k in r for k in ("看视频", "上传视频", "开发票", "开发者", "开发计划")):
-        return False
-    if any(k in r for k in _DEV_HINTS):
-        return True
-    # "新增一个XX功能/接口/模块/页面" 这类也属开发（"新增"与功能词中间隔着词）
-    if "新增" in r and any(k in r for k in ("功能", "接口", "模块", "页面", "方法", "代码", "工具", "端点")):
-        return True
-    return False
-
-
 # 联机游戏意图关键词：命中则走多人游戏生成
 _GAME_HINTS = ["联机", "多人", "一起玩", "对战", "加入房间", "创建房间", "合作", "同步玩"]
 
@@ -580,8 +563,6 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
         modes.append("music")
     if _is_tts_request(requirement):
         modes.append("tts")
-    if _is_dev_request(requirement):
-        modes.append("dev")
     if not modes:
         modes.append("code")
     # 生成类与"明确要数据文件"意图并存时补代码任务（如"抓XX数据导出Excel，并做成XX网页"）
@@ -692,13 +673,6 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
                         merged["message_tts"] = f"配音已生成：/{fname}{note}"
                     else:
                         failed.append(f"配音: {tr.get('error', '失败')}")
-            elif mode == "dev":
-                # 开发类：仓库副本 + AI 改码 + 语法校验 → diff（DeepSeek 驱动，低成本）
-                dv = await _run_dev_task(task_id, requirement)
-                if dv.get("dev_diff"):
-                    merged.update({k: v for k, v in dv.items() if v is not None})
-                else:
-                    failed.append(f"开发: {dv.get('error', '失败')}")
             else:  # code：数据/抓取任务
                 from app.services.mini_generator import generate_and_verify
                 result = await generate_and_verify(requirement, url or None, image_paths=image_paths or None,
@@ -755,12 +729,11 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
 
 
 # ============================================================
-# 开发类任务（方案 B）：仓库副本 + AI 改码 + 校验 → diff
+# 开发类任务：外部代码目录（API/CLI 上传解压的隔离副本）→ AI 改码 → 校验 → diff
 # 用 DeepSeek 驱动，隔离副本保证安全，产出 diff 供用户确认/应用
 # ============================================================
 
-# 开发任务复制的源码目录（相对项目根），排除大/敏感目录
-DEV_SOURCE_DIRS = ["backend/app", "frontend/src"]
+# 遍历时排除的目录（大/无关）
 DEV_EXCLUDE_DIRS = {"node_modules", ".next", "__pycache__", ".git", "web", "data", "tmp",
                     "uploads", "browser_profile", "screens", "benchmark"}
 
@@ -787,29 +760,6 @@ DEV_VALIDATE_PROMPT = """你是软件工程师。下面是上一个 AI 按需求
 
 请修复：只输出 JSON {{"files": {{"相对路径": "修复后的完整文件内容"}}}}，
 只列出需要修改的文件（其他文件不用重复输出）。直接输出修复后的完整代码。"""
-
-
-def _dev_src_root() -> str:
-    return os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-
-
-def _copy_dev_repo(dst: str) -> list[str]:
-    """复制源码目录到工作区副本（排除大/敏感目录），返回相对文件清单。"""
-    src_root = _dev_src_root()
-    copied: list[str] = []
-
-    def ignore(directory, names):
-        return [n for n in names if n in DEV_EXCLUDE_DIRS]
-
-    for rel in DEV_SOURCE_DIRS:
-        s = os.path.join(src_root, rel)
-        if os.path.isdir(s):
-            d = os.path.join(dst, rel)
-            shutil.copytree(s, d, ignore=ignore)
-            for root, _dirs, files in os.walk(d):
-                for f in files:
-                    copied.append(os.path.relpath(os.path.join(root, f), dst).replace("\\", "/"))
-    return copied
 
 
 def _dev_tree(files: list[str], max_items: int = 80) -> str:
@@ -855,31 +805,21 @@ def _dev_build_diff(files_map: dict, workspace: str, orig_contents: dict) -> str
     return "\n".join(lines)
 
 
-async def _run_dev_task(task_id: str, requirement: str, code_dir: str | None = None) -> dict:
-    """开发任务：仓库副本 → DeepSeek 改码（多文件 JSON）→ 语法校验 → diff。
-
-    code_dir: 外部传入的代码目录（CLI/API 上传解压后的隔离副本）；None 时用内置仓库源码。
+async def _run_dev_task(task_id: str, requirement: str, code_dir: str) -> dict:
+    """开发任务：外部代码目录（API/CLI 上传解压的隔离副本）→ DeepSeek 改码 → 校验 → diff。
 
     产物：dev_diff（diff 文本）、dev_files（改动清单）、dev_summary、dev_modified_zip（修改后文件 base64）、output_file（.diff）
     """
     import base64 as _b64
     import io as _io
     import shutil as _shutil
-    import tempfile
     import zipfile as _zip
     from app.services.llm_client import chat_completion_json
 
     started = time.time()
-    src_root = _dev_src_root()
-    if code_dir:
-        workspace = os.path.normpath(code_dir)  # 外部代码目录本身就是隔离副本
-    else:
-        workspace = tempfile.mkdtemp(prefix="dev_ws_")
+    workspace = os.path.normpath(code_dir)  # 外部代码目录本身就是隔离副本
     try:
-        if code_dir:
-            files = _walk_files(workspace)
-        else:
-            files = _copy_dev_repo(workspace)
+        files = _walk_files(workspace)
         if not files:
             return {"status": "failed", "error": "未找到项目源码目录", "elapsed": round(time.time() - started, 1)}
         # 改前文件内容快照（diff 对比用；写文件前取）
@@ -961,9 +901,6 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str | None = N
     except Exception as e:
         logger.exception("[dev_task:%s] failed", task_id)
         return {"status": "failed", "error": f"开发任务执行出错: {str(e)[:200]}", "elapsed": round(time.time() - started, 1)}
-    finally:
-        if not code_dir:
-            _shutil.rmtree(workspace, ignore_errors=True)
 
 
 def _walk_files(root: str) -> list[str]:
