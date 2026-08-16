@@ -1118,15 +1118,25 @@ DEV_MODIFY_PROMPT = """你是一位资深软件工程师。用户需求：{requi
 
 【输出格式（最重要，违反即失败）】
 只输出一个 JSON 对象，除此之外**不允许输出任何内容**：
-{{"files": {{"相对路径": "该文件的完整新内容"}}, "summary": "一句话说明你做了什么",
+{{"patch": {{"相对路径": ["diff 行", "..."]}} 或 "patch": "unified diff 字符串",
+  "files": {{"相对路径": "该文件的完整新内容（仅新增文件用）"}},
+  "summary": "一句话说明你做了什么",
   "command": "要执行的命令（可为空）", "background": false,
   "analysis": "分析结论（纯文本，可为空）"}}
 禁止输出：markdown 围栏（```）、目录树（├──/│）、任何解释/说明文字。JSON 必须完整闭合。
-files / command / analysis 至少填一个。
+patch / files / command / analysis 至少填一个。
+
+【patch 格式（修改已有文件时优先用 patch，省 token；新增文件用 files 给完整内容）】
+**推荐数组形式**（每个元素是一行 diff，无需转义），例如改 main.py 第 1-3 行：
+"patch": {{"main.py": ["@@ -1,3 +1,4 @@", " print('hello')", "-print('old')", "+print('new')"]}}
+- hunk 头：@@ -旧起始行,旧行数 +新起始行,新行数 @@；行号从 1 开始，必须与源码真实行号一致
+- 上下文行（前面一个空格）必须与源码逐字一致；删除行前加 -；新增行前加 +
+- 只输出改动位置附近的几行（上下文 1-3 行 + 改动行），**绝不输出整个文件**
+- 一次可给多个文件（每个文件一个 key）；一个文件可多个 hunk（数组里连续排列）
 
 【严格要求】
-1. files 里只列出需要新增或修改的文件；**尽量只改必要文件、小步改动**，不动的文件绝不列出
-2. 每个文件内容必须**完整且精炼**：只保留真实需要的代码，禁止输出未修改的大段原样内容（只完整输出你实际改动的文件）
+1. files 里只列出**新增**文件（完整内容）；已有文件的修改一律用 patch（绝不用 files 重写整个文件）
+2. 每个文件内容必须**完整且精炼**：只保留真实需要的代码，禁止输出未修改的大段原样内容
 3. command 必须是可在项目目录执行的简单命令（python/npm/pip/pytest 等），不要用删除/格式化等危险命令
 4. background=true 只用于不会自己结束的长驻服务（web 服务器等）
 5. 改动必须真实可用：import、函数定义、调用关系完整
@@ -1155,8 +1165,12 @@ DEV_PLAN_PROMPT = """你是一位资深软件工程师。用户需求：{require
 DEV_VALIDATE_PROMPT = """你是软件工程师。下面是上一个 AI 按需求 {requirement} 改的代码，但校验报错：
 {errors}
 
-请修复：只输出 JSON {{"files": {{"相对路径": "修复后的完整文件内容"}}}}，
-只列出需要修改的文件（其他文件不用重复输出）。直接输出修复后的完整代码。"""
+涉及文件当前内容（可据此精确定位行号）：
+{files_context}
+
+请修复：只输出 JSON。已有文件的修改用 {{"patch": {{"相对路径": ["@@ -旧起始行,旧行数 +新起始行,新行数 @@", " 上下文行（空格开头，与上面内容一致）", "-删除行", "+新增行"]}}}}，
+新增文件用 {{"files": {{"相对路径": "完整内容"}}}}。
+只列出需要修改的文件（其他文件不用重复输出）。行号必须与上面的内容一致，只输出改动附近的几行，不要重写整个文件。"""
 
 
 # 关键词打分时忽略的常见词（英文 + 中文 2-gram）
@@ -1252,11 +1266,10 @@ def _safe_dev_rel(rel: str, workspace: str) -> str | None:
 
 
 def _dev_validate(files_map: dict, workspace: str) -> list[str]:
-    """校验改动的 .py 文件语法，返回错误列表（空=通过）。"""
+    """写盘所有改动文件（含非 .py：模板/样式/数据等，patch 应用需要读到磁盘原文件），
+    并对 .py 文件做语法校验，返回错误列表（空=通过）。"""
     errors = []
     for rel, content in (files_map or {}).items():
-        if not rel.endswith(".py"):
-            continue
         safe = _safe_dev_rel(rel, workspace)
         if safe is None:
             errors.append(f"{rel}: 非法路径（不允许越出项目目录）")
@@ -1266,7 +1279,8 @@ def _dev_validate(files_map: dict, workspace: str) -> list[str]:
             os.makedirs(os.path.dirname(p), exist_ok=True)
             with open(p, "w", encoding="utf-8") as f:
                 f.write(content)
-            compile(content, safe, "exec")
+            if rel.endswith(".py"):
+                compile(content, safe, "exec")
         except SyntaxError as e:
             errors.append(f"{safe}: 语法错误 line {e.lineno}: {e.msg}")
         except Exception as e:
@@ -1292,6 +1306,186 @@ def _dev_build_diff(files_map: dict, workspace: str, orig_contents: dict) -> str
             lines.append(f"{i:5d} | {ln}")
         lines.append("")
     return "\n".join(lines)
+
+
+def _find_hunk_pos(lines: list[str], old_seq: list[str], hint_start: int) -> int | None:
+    """在 lines 中定位 old_seq 的起始位置（0-based）。优先按行号验证，行号对不上时用 difflib 内容匹配。
+
+    容忍模型行号算错：先试 hint_start-1 处是否精确匹配；不行就在全文中找最长公共块推导位置，
+    再用 ratio 验证相似度足够才接受（防误匹配）。
+    """
+    import difflib as _dl
+    if not old_seq:
+        return max(0, min(hint_start - 1, len(lines)))  # 纯新增：插入在行号处
+    idx = hint_start - 1
+    if 0 <= idx <= len(lines) - len(old_seq) and lines[idx:idx + len(old_seq)] == old_seq:
+        return idx
+    sm = _dl.SequenceMatcher(None, lines, old_seq, autojunk=False)
+    best_a, best_b, best_n = -1, -1, 0
+    for block in sm.get_matching_blocks():
+        if block.size > best_n:
+            best_a, best_b, best_n = block.a, block.b, block.size
+    if best_n < max(1, int(len(old_seq) * 0.5)):
+        return None  # 最长公共块太小，不可信
+    start = best_a - best_b
+    if start < 0 or start + len(old_seq) > len(lines):
+        return None
+    seg = lines[start:start + len(old_seq)]
+    if _dl.SequenceMatcher(None, seg, old_seq, autojunk=False).ratio() < 0.6:
+        return None
+    return start
+
+
+def _dev_apply_patch(patch_text: str, workspace: str) -> tuple[dict, list[str]]:
+    """把模型输出的 diff（patch）应用到工作区文件，返回 (files_map, 错误列表)。
+
+    patch 支持两种形态（模型输出数组形式最稳，无需转义）：
+    A. 字符串 unified diff（标准 git diff 子集）：
+        --- a/相对路径
+        +++ b/相对路径
+        @@ -旧行号,旧行数 +新行号,新行数 @@
+         上下文行（空格开头，必须与源码一致）
+        -删除行
+        +新增行
+    B. 数组形式（推荐，每行一个字符串元素，无转义问题）：
+        "patch": {"相对路径": ["@@ -1,3 +1,4 @@", " print('hello')", "-print('old')", "+print('new')"]}
+    新文件用 files 字段给完整内容（patch 不表达新文件）。
+    定位策略：优先按行号验证，行号对不上时内容模糊匹配（容忍模型行号算错）。
+    """
+    import difflib as _dl
+
+    files_map: dict = {}
+    errors: list[str] = []
+    # ---- 1. 归一化 patch 为按文件分组的 diff 行 ----
+    file_diffs: dict[str, list[str]] = {}
+    if isinstance(patch_text, dict):
+        # 数组形式：{"相对路径": [diff 行...]}
+        for rel, rows in patch_text.items():
+            if isinstance(rows, str):
+                rows = rows.splitlines()
+            if isinstance(rows, list):
+                file_diffs[str(rel)] = [str(r) for r in rows]
+    else:
+        # 字符串 unified diff：按 --- / +++ 文件头切分
+        cur_rel: str | None = None
+        cur_lines: list[str] = []
+        for ln in (patch_text or "").splitlines():
+            m = re.match(r"^---\s+(?:a/)?(.+)$", ln)
+            m2 = re.match(r"^\+\+\+\s+(?:b/)?(.+)$", ln)
+            if m:
+                if cur_rel and cur_lines:
+                    file_diffs.setdefault(cur_rel, []).extend(cur_lines)
+                rel = m.group(1).strip()
+                cur_rel = None if rel == "/dev/null" else rel
+                cur_lines = [ln]
+            elif m2:
+                rel = m2.group(1).strip()
+                if rel != "/dev/null" and cur_rel is None:
+                    cur_rel = rel
+                cur_lines.append(ln)
+            elif cur_rel is not None:
+                cur_lines.append(ln)
+        if cur_rel and cur_lines:
+            file_diffs.setdefault(cur_rel, []).extend(cur_lines)
+
+    # ---- 2. 逐文件解析 hunk 并应用 ----
+    for rel, diff_lines in file_diffs.items():
+        hunks: list[dict] = []
+        cur_hunk: dict | None = None
+        for ln in diff_lines:
+            m = re.match(r"^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@", ln)
+            if m:
+                cur_hunk = {"old_start": int(m.group(1)), "old": [], "new": []}
+                hunks.append(cur_hunk)
+                continue
+            if cur_hunk is not None:
+                if ln.startswith(" "):
+                    cur_hunk["old"].append(ln[1:])
+                    cur_hunk["new"].append(ln[1:])
+                elif ln.startswith("-"):
+                    cur_hunk["old"].append(ln[1:])
+                elif ln.startswith("+"):
+                    cur_hunk["new"].append(ln[1:])
+                # 其他（---/+++/\ No newline 等）忽略
+        if not hunks:
+            errors.append(f"patch 中文件 {rel} 没有有效 hunk")
+            continue
+        safe = _safe_dev_rel(rel, workspace)
+        if safe is None:
+            errors.append(f"patch 中非法路径: {rel}")
+            continue
+        fp = os.path.join(workspace, safe)
+        if os.path.isfile(fp):
+            try:
+                with open(fp, encoding="utf-8") as f:
+                    old_text = f.read()
+            except Exception as e:
+                errors.append(f"{safe}: 读取原文件失败 {str(e)[:80]}")
+                continue
+            old_lines = old_text.splitlines()
+        else:
+            old_lines = []  # 新文件（patch 中无上下文，纯 + 行）
+        new_lines = list(old_lines)
+        ok = True
+        for hunk in hunks:
+            if not old_lines:
+                # 新文件：直接把所有 + 行作为内容（跳过定位）
+                new_lines.extend(hunk["new"])
+                continue
+            pos = _find_hunk_pos(new_lines, hunk["old"], hunk["old_start"])
+            if pos is None:
+                errors.append(f"{safe}: 第 {hunk['old_start']} 行附近找不到匹配内容（patch 与源码不一致）")
+                ok = False
+                break
+            new_lines = new_lines[:pos] + hunk["new"] + new_lines[pos + len(hunk["old"]):]
+        if not ok:
+            continue
+        if not old_lines and new_lines:
+            files_map[safe] = "\n".join(new_lines) + "\n"  # 新文件补结尾换行
+            continue
+        trailing = "\n" if (os.path.isfile(fp) and old_text.endswith("\n")) else ""
+        files_map[safe] = "\n".join(new_lines) + trailing
+    return files_map, errors
+
+
+def _dev_errors_context(errors: list[str], workspace: str, max_chars: int = 6000) -> str:
+    """从校验错误提取涉及的文件，返回其当前内容（供 reasoner 精确定位 patch 行号）。"""
+    parts: list[str] = []
+    seen: set[str] = set()
+    for err in (errors or []):
+        # 错误格式: "相对路径: 语法错误 line N: msg" 或 "相对路径: xxx"
+        rel = str(err).split(":", 1)[0].strip()
+        if not rel or rel in seen:
+            continue
+        seen.add(rel)
+        p = os.path.join(workspace, rel)
+        try:
+            with open(p, encoding="utf-8") as f:
+                content = f.read()
+        except Exception:
+            continue
+        parts.append(f"### {rel}\n{content[:max_chars]}" + ("\n...(截断)" if len(content) > max_chars else ""))
+    return "\n\n".join(parts) if parts else "(无法读取文件内容)"
+
+
+def _dev_files_from_info(info: dict, workspace: str) -> tuple[dict, list[str]]:
+    """从模型 JSON 提取文件改动：patch（unified diff，省 token）+ files（完整内容）合并。
+
+    返回 (files_map, 错误列表)。patch 应用失败时 errors 非空（调用方应回退让模型改用 files）。
+    """
+    files_map: dict = {}
+    errors: list[str] = []
+    patch_raw = info.get("patch") or ""
+    if patch_raw:
+        patched, perr = _dev_apply_patch(patch_raw, workspace)
+        if perr:
+            errors.extend(perr)
+        else:
+            files_map.update(patched)
+    for rel, content in (info.get("files") or {}).items():
+        if isinstance(rel, str) and isinstance(content, str):
+            files_map[rel] = content
+    return files_map, errors
 
 
 _DEV_SHELL_BAD = [";", "|", ">", "<", "`", "$(", "rm ", "del ", "rmdir", "format ",
@@ -1457,14 +1651,32 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
         files_map: dict = {}
         summary = ""
         errors: list[str] = []
+        retry_hint = ""
         for attempt in range(3):
             try:
+                # 每次尝试前恢复工作区到初始快照：patch/files 始终基于同一份源码应用，
+                # 防止上次尝试写盘的内容污染本次（否则同一 patch 会被重复应用产生重复行）
+                for _rel in _walk_files(workspace):
+                    if _rel not in orig_contents:
+                        try:
+                            os.remove(os.path.join(workspace, _rel))
+                        except Exception:
+                            pass
+                for _rel, _content in orig_contents.items():
+                    _p = os.path.join(workspace, _rel)
+                    try:
+                        os.makedirs(os.path.dirname(_p), exist_ok=True)
+                        with open(_p, "w", encoding="utf-8") as _f:
+                            _f.write(_content)
+                    except Exception:
+                        pass
                 prompt = DEV_MODIFY_PROMPT.format(requirement=requirement[:8000], context=tree, plan_part=plan_part)
                 if attempt > 0:
                     # 上轮失败：把原因反馈给模型，强制纠正输出格式
-                    prompt += ("\n\n【上次输出不符合要求】你没有返回合法 JSON（可能输出了目录树/说明文字或被截断）。"
-                               "请这次**只输出一个完整闭合的 JSON 对象**（{\"files\": {...}, \"summary\": \"...\"}），"
-                               "绝对不要输出目录树、文件名列表或任何解释文字。")
+                    prompt += ("\n\n【上次输出不符合要求】" + (retry_hint or (
+                        "你没有返回合法 JSON（可能输出了目录树/说明文字或被截断）。"
+                        "请这次**只输出一个完整闭合的 JSON 对象**（{\"patch\": \"...\", \"files\": {...}, \"summary\": \"...\"}），"
+                        "绝对不要输出目录树、文件名列表或任何解释文字。")))
                 info = await chat_completion_json(
                     prompt,
                     requirement, temperature=0.2, max_tokens=32000,  # 大项目/长文件：防 JSON 截断
@@ -1472,17 +1684,37 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
                 )
             except Exception as e:
                 if attempt < 2:
+                    retry_hint = ("你没有返回合法 JSON。请这次**只输出一个完整闭合的 JSON 对象**"
+                                  "（{\"patch\": \"...\", \"files\": {...}, \"summary\": \"...\"}），"
+                                  "绝对不要输出目录树、markdown 围栏或任何解释文字。")
                     await asyncio.sleep(2)  # 偶发网络/JSON 错误 → 重试（带格式纠正提示）
                     continue
                 return {"status": "failed", "error": f"开发模型调用失败: {str(e)[:120]}", "elapsed": round(time.time() - started, 1)}
-            files_map = info.get("files") or {}
+            files_map, patch_errors = _dev_files_from_info(info, workspace)
+            logger.info("[dev_task:%s] 模型返回 keys=%s patch_type=%s files=%s", task_id,
+                        sorted(info.keys()), type(info.get("patch")).__name__,
+                        list((info.get("files") or {}).keys()))
+            if patch_errors:
+                logger.warning("[dev_task:%s] patch 应用失败: %s | patch 内容: %s", task_id,
+                               patch_errors[:3], str(info.get("patch"))[:800])
             summary = str(info.get("summary") or "")
             command = str(info.get("command") or "").strip()
             analysis = str(info.get("analysis") or "").strip()
             background = bool(info.get("background"))
+            if patch_errors:
+                # patch 应用失败 → 提示模型改用 files（完整内容）重试；3 次仍失败才报错
+                if attempt < 2:
+                    retry_hint = ("你返回的 patch 无法应用：" + "；".join(patch_errors)[:200] +
+                                  "。请这次**改用 files 字段输出每个改动文件的完整内容**（不要再输出 patch），"
+                                  "files 的值必须是文件完整内容。")
+                    await asyncio.sleep(2)
+                    continue
+                return {"status": "failed", "error": f"patch 应用失败: {'；'.join(patch_errors)[:200]}",
+                        "elapsed": round(time.time() - started, 1)}
             if not files_map and not command and not analysis:
                 # 模型什么都没返回：带纠正提示重试，最后才失败
                 if attempt < 2:
+                    retry_hint = "你没有返回任何文件改动（patch/files）、命令或分析结果。请至少返回一个（改动已有文件用 patch，新增文件用 files）。"
                     await asyncio.sleep(2)
                     continue
                 return {"status": "failed", "error": "模型未返回文件改动/命令/分析结果（已重试 3 次，请尝试更明确的需求）",
@@ -1490,20 +1722,26 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
             if files_map:
                 errors = _dev_validate(files_map, workspace)
                 if errors:
-                    # 校验失败 → 把错误反馈给模型修复（reasoner）
+                    # 校验失败 → 把错误反馈给模型修复（reasoner），附上报错文件当前内容供精确定位
                     try:
+                        files_context = _dev_errors_context(errors, workspace)
                         info2 = await chat_completion_json(
-                            DEV_VALIDATE_PROMPT.format(requirement=requirement[:8000], errors="\n".join(errors)),
+                            DEV_VALIDATE_PROMPT.format(requirement=requirement[:8000], errors="\n".join(errors),
+                                                       files_context=files_context),
                             requirement, temperature=0.2, max_tokens=32000,  # 防大文件 JSON 截断
                             model=get_settings().ai_model_reasoning,
                         )
-                        files_map = info2.get("files") or files_map
+                        fixed_map, _ = _dev_files_from_info(info2, workspace)
+                        if fixed_map:
+                            files_map = {**files_map, **fixed_map}
                         errors2 = _dev_validate(files_map, workspace)
                         if not errors2:
                             errors = []
                             break
                     except Exception:
                         break
+                else:
+                    break  # 校验通过 → 结束尝试（避免重复调用 LLM / 重复应用 patch）
             else:
                 # 操作型需求（启动/运行/分析）：无文件改动，直接进入命令/分析处理
                 break
@@ -1572,30 +1810,33 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
                     "1. 如果依赖安装失败（如 better-sqlite3 等需要 C++ 编译工具链/node-gyp/Visual Studio，"
                     "或 prebuild-install 下载失败）：**修改代码改用不需要编译的替代方案**"
                     "（如 sql.js 纯 JS、node:sqlite 内置模块、JSON 文件存储等），并同步更新 package.json 依赖；\n"
-                    "2. 如果是代码/端口/路径问题：修改相关文件（files）或给出修正后的命令（command）；\n"
-                    "3. 必须给出修复：files（改代码/依赖）或 command（新命令），至少一个。\n"
-                    "只输出 JSON（files/command/summary，analysis 可为空）。")
+                    "2. 如果是代码/端口/路径问题：修改相关文件（patch 或 files）或给出修正后的命令（command）；\n"
+                    "3. 必须给出修复：patch（unified diff，只写改动行）/ files（完整内容）或 command（新命令），至少一个。\n"
+                    "只输出 JSON（patch/files/command/summary，analysis 可为空）。")
                 fix_info = await chat_completion_json(
                     fix_prompt, requirement, temperature=0.2, max_tokens=32000,
                     model=get_settings().ai_model_reasoning,
                 )
                 fixed_any = False
-                if fix_info.get("files"):
-                    fix_map = {}
-                    for rel, content in (fix_info.get("files") or {}).items():
+                fix_map, fix_patch_err = _dev_files_from_info(fix_info, workspace)
+                if fix_patch_err and not fix_map:
+                    logger.warning("[dev_task:%s] 修复 patch 无法应用: %s", task_id, "；".join(fix_patch_err)[:150])
+                if fix_map:
+                    safe_map = {}
+                    for rel, content in fix_map.items():
                         safe = _safe_dev_rel(rel, workspace)
                         if safe is not None:
-                            fix_map[safe] = content
-                    if fix_map:
-                        _dev_validate(fix_map, workspace)  # 写盘
-                        files_map = {**files_map, **fix_map}
+                            safe_map[safe] = content
+                    if safe_map:
+                        _dev_validate(safe_map, workspace)  # 写盘
+                        files_map = {**files_map, **safe_map}
                         # 重新打包（改动后）
                         _buf2 = _io.BytesIO()
                         with _zip.ZipFile(_buf2, "w", _zip.ZIP_DEFLATED) as zf2:
                             for rel2, c2 in files_map.items():
                                 zf2.writestr(rel2, c2)
                         modified_zip_b64 = _b64.b64encode(_buf2.getvalue()).decode()
-                        for rel2, c2 in fix_map.items():
+                        for rel2, c2 in safe_map.items():
                             entry = {"path": rel2, "status": "新增" if rel2 not in orig_contents else "修改", "size": len(c2)}
                             if entry not in dev_files:
                                 dev_files.append(entry)
