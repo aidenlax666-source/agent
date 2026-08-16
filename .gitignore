@@ -48,6 +48,7 @@ cloudflared.exe
 
 # ===== 日志 =====
 *.log
+frontend/dev_log.txt
 
 # ===== AI 生成产物（可随时重新生成，不入库）=====
 web/
