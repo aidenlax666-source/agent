@@ -737,12 +737,16 @@ async def _run_report_task(task_id: str, requirement: str, url: str | None) -> d
     for round_no in range(3):  # 首次执行 + 最多 2 次定向修复
         if round_no > 0:
             logger.info("报告脚本第 %d 轮失败，带错误定向修复...", round_no)
-            heal = await chat_completion(
-                REPORT_HEAL_PROMPT,
-                f"【用户需求】{requirement}\n\n【当前脚本】\n```python\n{code}\n```\n\n【运行报错】\n{(stderr or stdout)[-1500:]}\n\n请修复脚本（保持 report.html 输出），只输出修复后的完整代码。",
-                temperature=0.2, max_tokens=8000,
-                model=get_settings().ai_model_reasoning,  # 报告修复也用推理模型
-            )
+            try:
+                heal = await chat_completion(
+                    REPORT_HEAL_PROMPT,
+                    f"【用户需求】{requirement}\n\n【当前脚本】\n```python\n{code}\n```\n\n【运行报错】\n{(stderr or stdout)[-1500:]}\n\n请修复脚本（保持 report.html 输出），只输出修复后的完整代码。",
+                    temperature=0.2, max_tokens=8000,
+                    model=get_settings().ai_model_reasoning,  # 报告修复也用推理模型
+                )
+            except Exception as e:
+                logger.warning("报告修复调用失败: %s", str(e)[:120])
+                break  # LLM 不可用，跳过修复
             heal = heal.strip()
             if heal.startswith("```python"):
                 heal = heal[9:]
