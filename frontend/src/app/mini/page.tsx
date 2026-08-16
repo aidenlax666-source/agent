@@ -495,6 +495,34 @@ export default function MiniPage() {
                       <pre className="mt-3 max-h-96 overflow-auto rounded-xl bg-slate-950 text-slate-100 p-4 text-xs leading-relaxed whitespace-pre-wrap">{result.script}</pre>
                     </details>
                   )}
+
+                  {/* 开发任务结果（AI 改代码） */}
+                  {result.dev_files && result.dev_files.length > 0 && (
+                    <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-gradient-to-br from-violet-50/60 to-indigo-50/60 dark:from-violet-950/30 dark:to-indigo-950/30 p-4 space-y-3">
+                      <p className="text-xs font-medium text-violet-700 dark:text-violet-300 flex items-center gap-1.5">
+                        💻 AI 代码改动 {result.dev_summary ? `· ${result.dev_summary}` : ""}
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {result.dev_files.map((f) => (
+                          <span key={f.path} className="inline-flex items-center gap-1 rounded-lg bg-white/70 dark:bg-slate-900/70 border border-violet-200/60 dark:border-violet-800 px-2 py-1 text-[11px] text-slate-600 dark:text-slate-300 font-mono">
+                            {f.status === "新增" ? "🆕" : "✏️"} {f.path}
+                          </span>
+                        ))}
+                      </div>
+                      {result.dev_diff && (
+                        <details className="text-sm">
+                          <summary className="cursor-pointer text-muted-foreground hover:text-foreground select-none">查看代码改动 diff（{result.dev_diff.length} 字符）</summary>
+                          <pre className="mt-2 max-h-96 overflow-auto rounded-xl bg-slate-950 text-slate-100 p-4 text-[11px] leading-relaxed whitespace-pre-wrap">{result.dev_diff}</pre>
+                        </details>
+                      )}
+                      {result.dev_diff_url && (
+                        <a href={`${ASSETS_BASE}${result.dev_diff_url}`} target="_blank" rel="noreferrer"
+                          className="inline-flex items-center gap-1.5 text-xs font-medium text-violet-600 dark:text-violet-400 hover:underline">
+                          <Download className="w-3.5 h-3.5" /> 下载 diff 文件
+                        </a>
+                      )}
+                    </div>
+                  )}
                 </>
               )}
 

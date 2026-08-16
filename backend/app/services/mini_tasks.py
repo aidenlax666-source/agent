@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import sys
 import time
 import uuid
@@ -43,6 +44,23 @@ def _size_mb(path: str) -> str:
 def _is_report_request(requirement: str) -> bool:
     r = requirement.lower()
     return any(k in r for k in _REPORT_HINTS)
+
+
+# 开发类意图（改项目代码）：命中则走"仓库副本 + AI 改码 + 校验"流程
+_DEV_HINTS = ["改代码", "加一个功能", "加个功能", "新增功能", "修改项目", "项目代码", "重构",
+              "写一个函数", "写个函数", "加一个接口", "加个接口", "开发", "改这个项目", "给项目"]
+
+
+def _is_dev_request(requirement: str) -> bool:
+    r = requirement.lower()
+    if any(k in r for k in ("看视频", "上传视频", "开发票", "开发者", "开发计划")):
+        return False
+    if any(k in r for k in _DEV_HINTS):
+        return True
+    # "新增一个XX功能/接口/模块/页面" 这类也属开发（"新增"与功能词中间隔着词）
+    if "新增" in r and any(k in r for k in ("功能", "接口", "模块", "页面", "方法", "代码", "工具", "端点")):
+        return True
+    return False
 
 
 # 联机游戏意图关键词：命中则走多人游戏生成
@@ -562,6 +580,8 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
         modes.append("music")
     if _is_tts_request(requirement):
         modes.append("tts")
+    if _is_dev_request(requirement):
+        modes.append("dev")
     if not modes:
         modes.append("code")
     # 生成类与"明确要数据文件"意图并存时补代码任务（如"抓XX数据导出Excel，并做成XX网页"）
@@ -672,6 +692,13 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
                         merged["message_tts"] = f"配音已生成：/{fname}{note}"
                     else:
                         failed.append(f"配音: {tr.get('error', '失败')}")
+            elif mode == "dev":
+                # 开发类：仓库副本 + AI 改码 + 语法校验 → diff（DeepSeek 驱动，低成本）
+                dv = await _run_dev_task(task_id, requirement)
+                if dv.get("dev_diff"):
+                    merged.update({k: v for k, v in dv.items() if v is not None})
+                else:
+                    failed.append(f"开发: {dv.get('error', '失败')}")
             else:  # code：数据/抓取任务
                 from app.services.mini_generator import generate_and_verify
                 result = await generate_and_verify(requirement, url or None, image_paths=image_paths or None,
@@ -699,7 +726,7 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
                 else:
                     failed.append(f"数据处理: {result.get('error') or rs}")
 
-        if failed and not any(merged.get(k) for k in ("game_url", "report_url", "content_url", "video_url", "image_url", "image_urls", "music_url", "tts_url")):
+        if failed and not any(merged.get(k) for k in ("game_url", "report_url", "content_url", "video_url", "image_url", "image_urls", "music_url", "tts_url", "dev_diff")):
             merged["status"] = "failed"
             merged["error"] = "；".join(failed)[:300]
         elif merged.get("status") in ("no_data", "login_required", "robots_blocked"):
@@ -725,6 +752,195 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
         record["error"] = str(e)[:300]
         record["message"] = f"执行出错: {str(e)[:120]}"
         await update_mini_task(task_id, status="error", error=record["error"], message=record["message"])
+
+
+# ============================================================
+# 开发类任务（方案 B）：仓库副本 + AI 改码 + 校验 → diff
+# 用 DeepSeek 驱动，隔离副本保证安全，产出 diff 供用户确认/应用
+# ============================================================
+
+# 开发任务复制的源码目录（相对项目根），排除大/敏感目录
+DEV_SOURCE_DIRS = ["backend/app", "frontend/src"]
+DEV_EXCLUDE_DIRS = {"node_modules", ".next", "__pycache__", ".git", "web", "data", "tmp",
+                    "uploads", "browser_profile", "screens", "benchmark"}
+
+DEV_MODIFY_PROMPT = """你是一位资深软件工程师。用户需求：{requirement}
+
+项目源码已经复制到你的工作区，以下是目录结构：
+{tree}
+
+请完成需求：读取相关文件、理解现有代码逻辑，然后**修改/新增文件**实现该需求。
+
+只输出一个 JSON（不要输出其他内容）：
+{{"files": {{"相对路径": "该文件的完整新内容"}}, "summary": "一句话说明你改了什么"}}
+
+【严格要求】
+1. files 里只列出你需要**新增或修改**的文件；未列出的文件保持原样
+2. 每个文件内容必须**完整**（整个文件的全部代码，禁止用省略号/注释代替中间部分）
+3. 改动必须真实可用：import、函数定义、调用关系完整，逻辑自洽
+4. 优先小步改动：能加一个函数/文件解决的不要大改
+5. 中文 summary 说明改动内容
+"""
+
+DEV_VALIDATE_PROMPT = """你是软件工程师。下面是上一个 AI 按需求 {requirement} 改的代码，但校验报错：
+{errors}
+
+请修复：只输出 JSON {{"files": {{"相对路径": "修复后的完整文件内容"}}}}，
+只列出需要修改的文件（其他文件不用重复输出）。直接输出修复后的完整代码。"""
+
+
+def _dev_src_root() -> str:
+    return os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+
+
+def _copy_dev_repo(dst: str) -> list[str]:
+    """复制源码目录到工作区副本（排除大/敏感目录），返回相对文件清单。"""
+    src_root = _dev_src_root()
+    copied: list[str] = []
+
+    def ignore(directory, names):
+        return [n for n in names if n in DEV_EXCLUDE_DIRS]
+
+    for rel in DEV_SOURCE_DIRS:
+        s = os.path.join(src_root, rel)
+        if os.path.isdir(s):
+            d = os.path.join(dst, rel)
+            shutil.copytree(s, d, ignore=ignore)
+            for root, _dirs, files in os.walk(d):
+                for f in files:
+                    copied.append(os.path.relpath(os.path.join(root, f), dst).replace("\\", "/"))
+    return copied
+
+
+def _dev_tree(files: list[str], max_items: int = 80) -> str:
+    return "\n".join(sorted(files)[:max_items])
+
+
+def _dev_validate(files_map: dict, workspace: str) -> list[str]:
+    """校验改动的 .py 文件语法，返回错误列表（空=通过）。"""
+    errors = []
+    for rel, content in (files_map or {}).items():
+        if not rel.endswith(".py"):
+            continue
+        p = os.path.join(workspace, rel)
+        try:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(content)
+            compile(content, rel, "exec")
+        except SyntaxError as e:
+            errors.append(f"{rel}: 语法错误 line {e.lineno}: {e.msg}")
+        except Exception as e:
+            errors.append(f"{rel}: {str(e)[:120]}")
+    return errors
+
+
+def _dev_build_diff(files_map: dict, workspace: str, src_root: str) -> str:
+    """生成统一 diff 文本（改动文件 + 新内容；新文件标注 +，原文件对比摘要）。"""
+    lines = []
+    for rel, content in (files_map or {}).items():
+        orig = os.path.join(src_root, rel)
+        exists = os.path.exists(orig)
+        lines.append(f"--- a/{rel}")
+        lines.append(f"+++ b/{rel}  {'(新增文件)' if not exists else '(修改文件)'}")
+        if not exists:
+            body = content.splitlines()
+        else:
+            # 简化：展示新内容（原文件对比留给用户 git diff）
+            try:
+                old = open(orig, encoding="utf-8").read().splitlines()
+            except Exception:
+                old = []
+            added = len(content.splitlines()) - len(old)
+            lines.append(f"# 改动行数: +{max(added, 0)} 行" + ("" if added >= 0 else f" -{-added} 行"))
+            body = content.splitlines()
+        for i, ln in enumerate(body, 1):
+            lines.append(f"{i:5d} | {ln}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+async def _run_dev_task(task_id: str, requirement: str) -> dict:
+    """开发任务：仓库副本 → DeepSeek 改码（多文件 JSON）→ 语法校验 → diff。
+
+    产物：dev_diff（diff 文本）、dev_files（改动清单）、dev_summary、output_file（.diff 文件）
+    """
+    import json as _json
+    import shutil as _shutil
+    import tempfile
+    from app.services.llm_client import chat_completion_json
+
+    started = time.time()
+    src_root = _dev_src_root()
+    workspace = tempfile.mkdtemp(prefix="dev_ws_")
+    try:
+        files = _copy_dev_repo(workspace)
+        if not files:
+            return {"status": "failed", "error": "未找到项目源码目录", "elapsed": round(time.time() - started, 1)}
+
+        tree = _dev_tree(files)
+        files_map: dict = {}
+        summary = ""
+        for attempt in range(3):
+            try:
+                info = await chat_completion_json(
+                    DEV_MODIFY_PROMPT.format(requirement=requirement[:800], tree=tree),
+                    requirement, temperature=0.2, max_tokens=8000,
+                    model=get_settings().ai_model_reasoning,
+                )
+            except Exception as e:
+                return {"status": "failed", "error": f"开发模型调用失败: {str(e)[:120]}", "elapsed": round(time.time() - started, 1)}
+            files_map = info.get("files") or {}
+            summary = str(info.get("summary") or "")
+            if not files_map:
+                return {"status": "failed", "error": "模型未返回任何文件改动", "elapsed": round(time.time() - started, 1)}
+            errors = _dev_validate(files_map, workspace)
+            if not errors:
+                break
+            # 校验失败 → 把错误反馈给模型修复（reasoner）
+            try:
+                info2 = await chat_completion_json(
+                    DEV_VALIDATE_PROMPT.format(requirement=requirement[:800], errors="\n".join(errors)),
+                    requirement, temperature=0.2, max_tokens=8000,
+                    model=get_settings().ai_model_reasoning,
+                )
+                files_map = info2.get("files") or files_map
+                errors2 = _dev_validate(files_map, workspace)
+                if not errors2:
+                    break
+            except Exception:
+                break
+
+        if errors:
+            return {"status": "failed", "error": f"代码校验未通过: {'；'.join(errors)[:300]}", "elapsed": round(time.time() - started, 1)}
+
+        diff = _dev_build_diff(files_map, workspace, src_root)
+        # diff 落 web/ 便于下载/查看（产物域）
+        os.makedirs(_WEB_DIR, exist_ok=True)
+        diff_path = os.path.join(_WEB_DIR, f"dev_{task_id}.diff")
+        with open(diff_path, "w", encoding="utf-8") as f:
+            f.write(f"# 需求: {requirement}\n# 改动说明: {summary}\n\n" + diff)
+
+        dev_files = []
+        for rel, content in (files_map or {}).items():
+            orig = os.path.join(src_root, rel)
+            dev_files.append({"path": rel, "status": "新增" if not os.path.exists(orig) else "修改", "size": len(content)})
+
+        return {
+            "status": "ok",
+            "dev_diff": diff[:20000],
+            "dev_diff_url": f"/dev_{task_id}.diff",
+            "dev_files": dev_files,
+            "dev_summary": summary,
+            "output_file": diff_path,
+            "elapsed": round(time.time() - started, 1),
+            "error": None,
+        }
+    except Exception as e:
+        logger.exception("[dev_task:%s] failed", task_id)
+        return {"status": "failed", "error": f"开发任务执行出错: {str(e)[:200]}", "elapsed": round(time.time() - started, 1)}
+    finally:
+        _shutil.rmtree(workspace, ignore_errors=True)
 
 
 async def _run_report_task(task_id: str, requirement: str, url: str | None) -> dict:

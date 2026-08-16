@@ -161,6 +161,10 @@ export interface MiniTaskResult {
   image_urls?: string[];
   music_url?: string;
   tts_url?: string;
+  dev_diff?: string;
+  dev_diff_url?: string;
+  dev_files?: { path: string; status: string; size: number }[];
+  dev_summary?: string;
   answer?: string;
   columns?: string[];
 }
