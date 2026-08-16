@@ -1123,8 +1123,11 @@ DEV_MODIFY_PROMPT = """你是一位资深软件工程师。用户需求：{requi
 
 请基于上述真实源码完成需求：理解现有代码逻辑，然后**修改/新增文件**实现该需求。
 
-只输出一个 JSON（不要输出其他内容）：
+【输出格式（最重要，违反即失败）】
+只输出一个 JSON 对象，格式如下，除此之外**不允许输出任何内容**：
 {{"files": {{"相对路径": "该文件的完整新内容"}}, "summary": "一句话说明你改了什么"}}
+禁止输出：markdown 围栏（```）、目录树（├──/│）、文件名列表、任何解释/说明文字。
+JSON 必须完整闭合（每个字符串转义正确，不能中途截断）。
 
 【严格要求】
 1. files 里只列出你需要**新增或修改**的文件；未列出的文件保持原样
@@ -1336,14 +1339,20 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
         errors: list[str] = []
         for attempt in range(3):
             try:
+                prompt = DEV_MODIFY_PROMPT.format(requirement=requirement[:8000], context=tree, plan_part=plan_part)
+                if attempt > 0:
+                    # 上轮失败：把原因反馈给模型，强制纠正输出格式
+                    prompt += ("\n\n【上次输出不符合要求】你没有返回合法 JSON（可能输出了目录树/说明文字或被截断）。"
+                               "请这次**只输出一个完整闭合的 JSON 对象**（{\"files\": {...}, \"summary\": \"...\"}），"
+                               "绝对不要输出目录树、文件名列表或任何解释文字。")
                 info = await chat_completion_json(
-                    DEV_MODIFY_PROMPT.format(requirement=requirement[:8000], context=tree, plan_part=plan_part),
+                    prompt,
                     requirement, temperature=0.2, max_tokens=32000,  # 大项目/长文件：防 JSON 截断
                     model=get_settings().dev_modify_model or get_settings().ai_model,
                 )
             except Exception as e:
                 if attempt < 2:
-                    await asyncio.sleep(2)  # 偶发网络/JSON 错误 → 重试
+                    await asyncio.sleep(2)  # 偶发网络/JSON 错误 → 重试（带格式纠正提示）
                     continue
                 return {"status": "failed", "error": f"开发模型调用失败: {str(e)[:120]}", "elapsed": round(time.time() - started, 1)}
             files_map = info.get("files") or {}
@@ -1429,15 +1438,20 @@ async def _plan_dev_task(requirement: str, code_dir: str, feedback: str | None =
     info = None
     for attempt in range(3):
         try:
+            prompt = DEV_PLAN_PROMPT.format(requirement=requirement[:8000], context=tree) + fb_part
+            if attempt > 0:
+                prompt += ("\n\n【上次输出不符合要求】你没有返回合法 JSON。请这次**只输出一个完整闭合的 JSON 对象**"
+                           "（{\"plan\": \"...\", \"files\": [...], \"questions\": [...]}），"
+                           "不要输出目录树、markdown 围栏或任何解释文字。")
             info = await chat_completion_json(
-                DEV_PLAN_PROMPT.format(requirement=requirement[:8000], context=tree) + fb_part,
+                prompt,
                 requirement, temperature=0.2, max_tokens=5000,
                 model=get_settings().ai_model,  # 方案用便宜模型；改码/修复才用 reasoner
             )
             break
         except Exception as e:
             if attempt < 2:
-                await asyncio.sleep(2)  # 偶发网络/JSON 错误 → 重试
+                await asyncio.sleep(2)  # 偶发网络/JSON 错误 → 重试（带格式纠正提示）
                 continue
             return {"status": "failed", "error": f"方案生成失败: {str(e)[:120]}"}
     return {
