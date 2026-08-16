@@ -1291,83 +1291,127 @@ def _dev_build_diff(files_map: dict, workspace: str, orig_contents: dict) -> str
     return "\n".join(lines)
 
 
-def _run_dev_command_background(workspace: str, command: str, probe_seconds: int = 6) -> dict:
-    """后台启动长驻命令（web 服务等），探测进程存活后返回，不等待结束。
+_DEV_SHELL_BAD = [";", "|", ">", "<", "`", "$(", "rm ", "del ", "rmdir", "format ",
+                  "shutdown", "taskkill", "格式化", "删除全部", "rd /s"]
 
-    进程 stdout/stderr 写入临时日志文件；探测窗口内若进程退出则判定启动失败并返回输出。
+
+def _check_dev_command_safety(command: str) -> str | None:
+    """校验命令安全性：拒绝危险命令前缀与危险 shell 元字符。返回错误信息或 None。"""
+    low = (command or "").lower()
+    for bad in ("rm ", "del ", "rmdir", "format ", "shutdown", "taskkill", "格式化", "删除全部", "rd /s"):
+        if low.startswith(bad):
+            return f"命令被安全拦截（危险操作）: {command[:80]}"
+    for ch in _DEV_SHELL_BAD:
+        if ch in (command or ""):
+            return f"命令包含禁止的 shell 字符（{ch}）: {command[:80]}"
+    return None
+
+
+def _split_command_steps(command: str) -> list[str]:
+    """把命令按 && 拆成多条依次执行（不拆 ||，避免隐藏失败）。"""
+    return [s.strip() for s in (command or "").split("&&") if s.strip()]
+
+
+def _run_dev_command_background(workspace: str, command: str, probe_seconds: int = 6) -> dict:
+    """后台启动长驻命令（web 服务器等），探测进程存活后返回，不等待结束。
+
+    支持 && 串联（拆分为多条：安装依赖等前置步骤等待完成，最后的长驻命令后台运行）；
+    Windows 上用 cmd shell 执行（npm/pip 等 .cmd 包装器需要）。
     """
     import shlex
     import subprocess as _sp
     cmd = (command or "").strip()
     if not cmd:
         return {"ok": False, "error": "空命令"}
-    low = cmd.lower()
-    for bad in ("rm ", "del ", "rmdir", "format ", "shutdown", "taskkill", "格式化", "删除全部", "rd /s"):
-        if low.startswith(bad):
-            return {"ok": False, "error": f"命令被安全拦截（危险操作）: {cmd[:80]}"}
-    try:
-        args = shlex.split(cmd, posix=False)
-    except ValueError as e:
-        return {"ok": False, "error": f"命令解析失败: {str(e)[:100]}"}
+    err = _check_dev_command_safety(cmd)
+    if err:
+        return {"ok": False, "error": err}
+    steps = _split_command_steps(cmd)
     log_path = os.path.join(workspace, f".dev_run_{uuid.uuid4().hex[:8]}.log")
+    procs: list = []
     try:
-        with open(log_path, "w", encoding="utf-8") as lf:
-            proc = _sp.Popen(args, cwd=workspace, stdout=lf, stderr=_sp.STDOUT,
-                             encoding="utf-8", errors="replace", creationflags=0x08000000)  # CREATE_NO_WINDOW
-        # 探测窗口：进程存活即视为启动成功
+        logf = open(log_path, "w", encoding="utf-8")
+        for i, step in enumerate(steps):
+            if os.name == "nt":
+                proc = _sp.Popen(step, shell=True, cwd=workspace, stdout=logf, stderr=_sp.STDOUT,
+                                 encoding="utf-8", errors="replace", creationflags=0x08000000)
+            else:
+                proc = _sp.Popen(shlex.split(step), cwd=workspace, stdout=logf, stderr=_sp.STDOUT,
+                                 encoding="utf-8", errors="replace")
+            procs.append(proc)
+            if i < len(steps) - 1:
+                proc.wait(timeout=300)
+                if proc.returncode != 0:
+                    logf.close()
+                    with open(log_path, encoding="utf-8", errors="replace") as lf:
+                        out = lf.read()
+                    return {"ok": False, "exit_code": proc.returncode,
+                            "output": (out or f"前置步骤失败: {step[:100]}")[:4000]}
         import time as _t
         _t.sleep(probe_seconds)
-        if proc.poll() is not None:
-            # 启动后立刻退出 → 失败
-            try:
-                with open(log_path, encoding="utf-8", errors="replace") as lf:
-                    out = lf.read()
-            except Exception:
-                out = ""
+        last = procs[-1]
+        if last.poll() is not None:
+            logf.close()
+            with open(log_path, encoding="utf-8", errors="replace") as lf:
+                out = lf.read()
             try:
                 os.unlink(log_path)
             except OSError:
                 pass
-            return {"ok": False, "exit_code": proc.returncode, "output": (out or "(无输出)")[:4000]}
-        return {"ok": True, "pid": proc.pid, "output": f"进程已启动（日志: {os.path.basename(log_path)}）"}
+            return {"ok": False, "exit_code": last.returncode, "output": (out or "(无输出)")[:4000]}
+        logf.close()
+        return {"ok": True, "pid": last.pid, "output": f"进程已启动（日志: {os.path.basename(log_path)}）"}
+    except _sp.TimeoutExpired:
+        try:
+            logf.close()
+        except Exception:
+            pass
+        return {"ok": False, "error": "前置步骤执行超时（300s）"}
     except FileNotFoundError as e:
         return {"ok": False, "error": f"命令不存在: {e}"}
     except Exception as e:
         return {"ok": False, "error": f"启动失败: {str(e)[:120]}"}
 
 
-def _run_dev_command(workspace: str, command: str, timeout: int = 120) -> dict:
-    """在项目目录执行模型返回的命令（操作型需求：启动/运行/测试）。
+def _run_dev_command(workspace: str, command: str, timeout: int = 300) -> dict:
+    """在项目目录执行模型返回的命令（操作型需求：启动/运行/测试/安装依赖）。
 
-    安全：shlex 拆分参数（不用 shell）、危险命令黑名单、超时限制、输出截断。
+    安全：支持 && 串联（拆分成多条依次执行，任一失败即停）、危险命令/字符黑名单、
+    超时限制、输出截断。Windows 上用 cmd shell 执行（npm/pip 等 .cmd 包装器需要）。
     """
     import shlex
     import subprocess as _sp
     cmd = (command or "").strip()
     if not cmd:
         return {"ok": True, "output": ""}
-    low = cmd.lower()
-    for bad in ("rm ", "del ", "rmdir", "format ", "shutdown", "taskkill", "格式化", "删除全部", "rd /s"):
-        if low.startswith(bad):
-            return {"ok": False, "error": f"命令被安全拦截（危险操作）: {cmd[:80]}"}
-    try:
-        args = shlex.split(cmd, posix=False)
-    except ValueError as e:
-        return {"ok": False, "error": f"命令解析失败: {str(e)[:100]}"}
-    if not args:
-        return {"ok": False, "error": "空命令"}
-    try:
-        r = _sp.run(args, cwd=workspace, capture_output=True, text=True,
-                    timeout=timeout, encoding="utf-8", errors="replace")
+    err = _check_dev_command_safety(cmd)
+    if err:
+        return {"ok": False, "error": err}
+    steps = _split_command_steps(cmd)
+    outputs: list[str] = []
+    for step in steps:
+        try:
+            if os.name == "nt":
+                r = _sp.run(step, shell=True, cwd=workspace, capture_output=True, text=True,
+                            timeout=timeout, encoding="utf-8", errors="replace")
+            else:
+                args = shlex.split(step)
+                r = _sp.run(args, cwd=workspace, capture_output=True, text=True,
+                            timeout=timeout, encoding="utf-8", errors="replace")
+        except _sp.TimeoutExpired:
+            return {"ok": False, "error": f"命令执行超时（{timeout}s）: {step[:100]}"}
+        except FileNotFoundError as e:
+            return {"ok": False, "error": f"命令不存在: {e}"}
+        except Exception as e:
+            return {"ok": False, "error": f"命令执行失败: {str(e)[:120]}"}
         out = (r.stdout or "") + ("\n" + r.stderr if r.stderr else "")
-        return {"ok": r.returncode == 0, "exit_code": r.returncode,
-                "output": (out or "").strip()[:8000]}
-    except _sp.TimeoutExpired:
-        return {"ok": False, "error": f"命令执行超时（{timeout}s）"}
-    except FileNotFoundError as e:
-        return {"ok": False, "error": f"命令不存在: {e}"}
-    except Exception as e:
-        return {"ok": False, "error": f"命令执行失败: {str(e)[:120]}"}
+        outputs.append("$ " + step + "\n" + out.strip())
+        if r.returncode != 0:
+            joined = "\n".join(outputs)
+            return {"ok": False, "exit_code": r.returncode, "output": joined[:8000],
+                    "error": f"命令失败（退出码 {r.returncode}）: {step[:100]}"}
+    joined = "\n".join(outputs)
+    return {"ok": True, "exit_code": 0, "output": joined[:8000]}
 
 
 async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str | None = None,
