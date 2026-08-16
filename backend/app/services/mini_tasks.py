@@ -41,6 +41,27 @@ def _size_mb(path: str) -> str:
         return ""
 
 
+def _safe_output_src(path: str) -> bool:
+    """校验沙箱产物路径：只允许位于沙箱输出根（backend/tmp）或 web/ 目录内。
+
+    防 H2 任意文件读取：LLM 生成的脚本可打印 [OUTPUT_FILE] 任意存在的绝对路径
+    （如 .env、.ssh 密钥），若不加校验会被复制到 web/ 公开目录外泄。
+    """
+    try:
+        resolved = os.path.realpath(str(path))
+    except Exception:
+        return False
+    roots = (
+        os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "tmp")),  # 沙箱输出根 backend/tmp
+        _WEB_DIR,
+    )
+    for root in roots:
+        r = os.path.normpath(root)
+        if resolved == r or resolved.startswith(r + os.sep):
+            return True
+    return False
+
+
 def _is_report_request(requirement: str) -> bool:
     r = requirement.lower()
     return any(k in r for k in _REPORT_HINTS)
@@ -1049,7 +1070,8 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
                 # 技能任务产物发布（视频/音频/CAD 等）：从沙箱临时目录复制到 web/ 供预览/下载
                 if rs == "ok" and result.get("output_file") and os.path.exists(str(result["output_file"])):
                     _src = str(result["output_file"])
-                    if not os.path.normpath(_src).startswith(os.path.normpath(_WEB_DIR)):
+                    # 安全校验：产物必须来自沙箱输出目录（防 [OUTPUT_FILE] 指向任意文件被外泄）
+                    if _safe_output_src(_src) and not os.path.normpath(_src).startswith(os.path.normpath(_WEB_DIR)):
                         try:
                             _ext = os.path.splitext(_src)[1].lower() or ".bin"
                             _fname = f"content_{task_id}{_ext}"
@@ -2194,7 +2216,7 @@ async def _run_report_task(task_id: str, requirement: str, url: str | None) -> d
         }
 
     report_path = os.path.join(out_dir, report_name)
-    if result.output_file_path and os.path.exists(result.output_file_path):
+    if result.output_file_path and os.path.exists(result.output_file_path) and _safe_output_src(result.output_file_path):
         os.makedirs(out_dir, exist_ok=True)
         import shutil as _shutil
         _shutil.copyfile(result.output_file_path, report_path)
@@ -2385,7 +2407,7 @@ async def _run_music_task(task_id: str, requirement: str) -> dict:
 
     music_name = f"music_{task_id}.wav"
     music_path = os.path.join(out_dir, music_name)
-    if result.output_file_path and os.path.exists(result.output_file_path):
+    if result.output_file_path and os.path.exists(result.output_file_path) and _safe_output_src(result.output_file_path):
         os.makedirs(out_dir, exist_ok=True)
         import shutil as _shutil
         _shutil.copyfile(result.output_file_path, music_path)

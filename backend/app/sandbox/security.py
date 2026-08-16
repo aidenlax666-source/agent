@@ -351,6 +351,24 @@ def scan_dangerous_code(script_code: str, block_subprocess: bool = False) -> lis
             if arg and _is_escaping_path(arg):
                 violations.append(f"越权删除被禁止: {root}.{func.attr}({arg!r})")
 
+    # --- 登录态 Cookie 外泄拦截（整树一次，防重复判定）：_AUTH 只允许出现在
+    # browser.new_context(storage_state=_AUTH) —— 出现在 print/写盘/网络/其它赋值即外泄 ---
+    def _auth_unauthorized(n: ast.AST) -> bool:
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "new_context":
+            for _kw in n.keywords:
+                if _kw.arg == "storage_state" and _root_name(_kw.value) == "_AUTH":
+                    return False  # 合法位置：整个 new_context 调用放行
+            return any(_auth_unauthorized(a) for a in n.args) or any(
+                _auth_unauthorized(_kw.value) for _kw in n.keywords)
+        if isinstance(n, ast.Name):
+            return n.id == "_AUTH"
+        if isinstance(n, (ast.Attribute, ast.Subscript)):
+            return _root_name(n) == "_AUTH"
+        return any(_auth_unauthorized(c) for c in ast.iter_child_nodes(n))
+
+    if _auth_unauthorized(tree):
+        violations.append("禁止外泄登录态: _AUTH 只能传给 browser.new_context(storage_state=...)")
+
     # Deduplicate while preserving order
     seen: set[str] = set()
     unique: list[str] = []
