@@ -1124,11 +1124,12 @@ DEV_MODIFY_PROMPT = """你是一位资深软件工程师。用户需求：{requi
 files / command / analysis 至少填一个。
 
 【严格要求】
-1. files 里只列出需要新增或修改的文件；每个文件内容必须**完整**（整个文件全部代码）
-2. command 必须是可在项目目录执行的简单命令（python/npm/pip/pytest 等），不要用删除/格式化等危险命令
-3. background=true 只用于不会自己结束的长驻服务（web 服务器等）
-4. 改动必须真实可用：import、函数定义、调用关系完整
-5. 中文 summary 说明你做了什么
+1. files 里只列出需要新增或修改的文件；**尽量只改必要文件、小步改动**，不动的文件绝不列出
+2. 每个文件内容必须**完整且精炼**：只保留真实需要的代码，禁止输出未修改的大段原样内容（只完整输出你实际改动的文件）
+3. command 必须是可在项目目录执行的简单命令（python/npm/pip/pytest 等），不要用删除/格式化等危险命令
+4. background=true 只用于不会自己结束的长驻服务（web 服务器等）
+5. 改动必须真实可用：import、函数定义、调用关系完整
+6. 中文 summary 一句话说明你做了什么（尽量短）
 """
 
 # 第一步：只读代码、出修改方案（不写文件）——让用户确认后再动手
@@ -1146,7 +1147,7 @@ DEV_PLAN_PROMPT = """你是一位资深软件工程师。用户需求：{require
 1. 方案具体到文件级别：每个文件改什么、加什么
 2. 指出潜在风险和影响（比如会动公共函数、影响其他调用方）
 3. 如果需求有多种实现方式，在 questions 里让用户选择
-4. 中文
+4. 中文；**方案精炼**：只说必要的改动和关键风险，不要长篇分析（控制输出量）
 """
 
 DEV_VALIDATE_PROMPT = """你是软件工程师。下面是上一个 AI 按需求 {requirement} 改的代码，但校验报错：
@@ -1182,16 +1183,16 @@ def _requirement_keywords(requirement: str, limit: int = 24) -> set[str]:
 
 
 def _dev_context(workspace: str, files: list[str], requirement: str | None = None,
-                 max_items: int = 80, per_file: int = 4000, total_cap: int = 40000) -> str:
+                 max_items: int = 60, per_file: int = 2000, total_cap: int = 24000) -> str:
     """文件树 + 每个文件的内容（Claude Code 风格：让模型看到真实代码而非只看到文件名）。
 
-    上下文精简：requirement 给出时，按关键词给文件打分——
-    相关文件（文件名/开头命中需求关键词）给完整内容，其余文件只给前 300 字符摘要，
-    既大幅省 token（低成本），又不会漏掉任何文件名。
-    每个文件内容截断到 per_file 字符；总上下文上限 total_cap 字符。
+    低成本上下文：requirement 给出时，按关键词给文件打分——
+    相关文件（文件名/开头命中需求关键词）给完整内容（每文件 ≤2000 字符），
+    其余文件只给前 150 字符摘要，既大幅省 token（低成本），又不会漏掉任何文件名。
+    总上下文上限 24000 字符（控成本）。
     读取失败（二进制/编码问题）的文件跳过。
     """
-    kws = _requirement_keywords(requirement[:1500]) if requirement else set()
+    kws = _requirement_keywords(requirement[:800]) if requirement else set()
     entries: list[tuple[str, str, int]] = []
     for rel in sorted(files)[:max_items]:
         try:
@@ -1201,7 +1202,7 @@ def _dev_context(workspace: str, files: list[str], requirement: str | None = Non
             continue
         score = 0
         if kws:
-            hay = (rel + " " + content[:600]).lower()
+            hay = (rel + " " + content[:400]).lower()
             for k in kws:
                 if k in hay:
                     score += 1
@@ -1213,7 +1214,7 @@ def _dev_context(workspace: str, files: list[str], requirement: str | None = Non
     total = 0
     for rel, content, score in entries:
         if kws and score == 0:
-            body = content[:300] + ("\n...(仅摘要)" if len(content) > 300 else "")
+            body = content[:150] + ("\n...(仅摘要)" if len(content) > 150 else "")
         elif len(content) > per_file:
             body = content[:per_file] + "\n...(内容过长已截断)"
         else:
@@ -1456,7 +1457,7 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
         errors: list[str] = []
         for attempt in range(3):
             try:
-                prompt = DEV_MODIFY_PROMPT.format(requirement=requirement[:8000], context=tree, plan_part=plan_part)
+                prompt = DEV_MODIFY_PROMPT.format(requirement=requirement[:4000], context=tree, plan_part=plan_part)
                 if attempt > 0:
                     # 上轮失败：把原因反馈给模型，强制纠正输出格式
                     prompt += ("\n\n【上次输出不符合要求】你没有返回合法 JSON（可能输出了目录树/说明文字或被截断）。"
@@ -1490,7 +1491,7 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
                     # 校验失败 → 把错误反馈给模型修复（reasoner）
                     try:
                         info2 = await chat_completion_json(
-                            DEV_VALIDATE_PROMPT.format(requirement=requirement[:8000], errors="\n".join(errors)),
+                            DEV_VALIDATE_PROMPT.format(requirement=requirement[:4000], errors="\n".join(errors)),
                             requirement, temperature=0.2, max_tokens=32000,  # 防大文件 JSON 截断
                             model=get_settings().ai_model_reasoning,
                         )
@@ -1621,7 +1622,7 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
             "dev_output": dev_output[:8000],
             "dev_output_ok": dev_output_ok,
             "dev_running": dev_keep_dir,
-            "dev_analysis": analysis,
+            "dev_analysis": analysis[:4000],  # 分析结果截断，控制响应体积
             "output_file": diff_path,
             "elapsed": round(time.time() - started, 1),
             "error": None,
@@ -1648,7 +1649,7 @@ async def _plan_dev_task(requirement: str, code_dir: str, feedback: str | None =
     info = None
     for attempt in range(3):
         try:
-            prompt = DEV_PLAN_PROMPT.format(requirement=requirement[:8000], context=tree) + fb_part
+            prompt = DEV_PLAN_PROMPT.format(requirement=requirement[:4000], context=tree) + fb_part
             if attempt > 0:
                 prompt += ("\n\n【上次输出不符合要求】你没有返回合法 JSON。请这次**只输出一个完整闭合的 JSON 对象**"
                            "（{\"plan\": \"...\", \"files\": [...], \"questions\": [...]}），"
