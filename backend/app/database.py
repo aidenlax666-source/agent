@@ -483,13 +483,23 @@ def _add_reminder(user_id: str, time_str: str, text: str, source_task: str = "")
 def _list_reminders(user_id: str, enabled_only: bool = False) -> list[dict]:
     with _get_conn() as conn:
         if enabled_only:
-            rows = conn.execute(
-                "SELECT * FROM reminders WHERE user_id=? AND enabled=1 ORDER BY time", (user_id,)
-            ).fetchall()
+            if user_id and user_id != "*":
+                rows = conn.execute(
+                    "SELECT * FROM reminders WHERE user_id=? AND enabled=1 ORDER BY time", (user_id,)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM reminders WHERE enabled=1 ORDER BY time"
+                ).fetchall()
         else:
-            rows = conn.execute(
-                "SELECT * FROM reminders WHERE user_id=? ORDER BY created_at DESC", (user_id,)
-            ).fetchall()
+            if user_id and user_id != "*":
+                rows = conn.execute(
+                    "SELECT * FROM reminders WHERE user_id=? ORDER BY created_at DESC", (user_id,)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM reminders ORDER BY created_at DESC"
+                ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -549,13 +559,23 @@ def _add_monitor(user_id: str, monitor_type: str, keywords: str = "", condition:
 def _list_monitors(user_id: str, enabled_only: bool = False) -> list[dict]:
     with _get_conn() as conn:
         if enabled_only:
-            rows = conn.execute(
-                "SELECT * FROM monitors WHERE user_id=? AND enabled=1 ORDER BY created_at DESC", (user_id,)
-            ).fetchall()
+            if user_id and user_id != "*":
+                rows = conn.execute(
+                    "SELECT * FROM monitors WHERE user_id=? AND enabled=1 ORDER BY created_at DESC", (user_id,)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM monitors WHERE enabled=1 ORDER BY created_at DESC"
+                ).fetchall()
         else:
-            rows = conn.execute(
-                "SELECT * FROM monitors WHERE user_id=? ORDER BY created_at DESC", (user_id,)
-            ).fetchall()
+            if user_id and user_id != "*":
+                rows = conn.execute(
+                    "SELECT * FROM monitors WHERE user_id=? ORDER BY created_at DESC", (user_id,)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM monitors ORDER BY created_at DESC"
+                ).fetchall()
     return [dict(r) for r in rows]
 
 

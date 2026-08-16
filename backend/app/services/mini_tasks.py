@@ -611,8 +611,11 @@ def _next_mini_run(task: dict, now_ts: float) -> float | None:
 
 
 async def mini_scheduler_loop() -> None:
-    """调度循环：每分钟检查一次到期的 mini 定时任务、定时提醒、监控任务；每天清理超期产物。"""
-    logger.info("[mini调度器] 启动，每 60 秒检查一次")
+    """调度循环：每 30 秒检查一次到期的 mini 定时任务、定时提醒、监控任务；每天清理超期产物。
+
+    30 秒间隔保证提醒（1 分钟窗口）不会因整分钟边界错过。
+    """
+    logger.info("[mini调度器] 启动，每 30 秒检查一次")
     _last_cleanup_day = -1
     while True:
         try:
@@ -669,7 +672,7 @@ async def mini_scheduler_loop() -> None:
                 _cleanup_assets()
         except Exception as e:
             logger.error(f"[mini调度器] 检查异常: {e}")
-        await asyncio.sleep(60)
+        await asyncio.sleep(30)
 
 
 def _cleanup_assets() -> None:
