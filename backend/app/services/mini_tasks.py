@@ -394,8 +394,9 @@ def _next_mini_run(task: dict, now_ts: float) -> float | None:
 
 
 async def mini_scheduler_loop() -> None:
-    """调度循环：每分钟检查一次到期的 mini 定时任务，到点重新提交。"""
+    """调度循环：每分钟检查一次到期的 mini 定时任务，到点重新提交；每天清理超期产物。"""
     logger.info("[mini调度器] 启动，每 60 秒检查一次")
+    _last_cleanup_day = -1
     while True:
         try:
             import time as _t
@@ -411,9 +412,42 @@ async def mini_scheduler_loop() -> None:
                 nxt = _next_mini_run(mtask, now_ts)
                 start_background(key, update_mini_run(tid, now_ts, nxt))
                 logger.info(f"[mini调度器] 定时触发: {tid[:8]} - {(mtask.get('requirement') or '')[:40]}")
+            # 每天清理一次超期产物（配置 asset_cleanup_days>0 时启用）
+            day = int(_t.time() // 86400)
+            if day != _last_cleanup_day:
+                _last_cleanup_day = day
+                _cleanup_assets()
         except Exception as e:
             logger.error(f"[mini调度器] 检查异常: {e}")
         await asyncio.sleep(60)
+
+
+def _cleanup_assets() -> None:
+    """清理超过 asset_cleanup_days 天的 web/ 产物与 uploads/ 上传文件（防磁盘无限增长）。"""
+    try:
+        days = get_settings().asset_cleanup_days
+        if not days or days <= 0:
+            return
+        cutoff = time.time() - days * 86400
+        removed = 0
+        for d in (_WEB_DIR, os.path.join(os.path.dirname(__file__), "..", "..", "..", "backend", "uploads")):
+            d = os.path.normpath(d)
+            if not os.path.isdir(d):
+                continue
+            for name in os.listdir(d):
+                p = os.path.join(d, name)
+                if not os.path.isfile(p):
+                    continue
+                try:
+                    if os.path.getmtime(p) < cutoff:
+                        os.unlink(p)
+                        removed += 1
+                except Exception:
+                    pass
+        if removed:
+            logger.info("[清理] 已删除 %d 个超期产物（保留 %d 天）", removed, days)
+    except Exception as e:
+        logger.warning("[清理] 失败: %s", str(e)[:120])
 
 
 def confirm_task(task_id: str, user_id: str = "") -> dict | None:
@@ -694,8 +728,7 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
 
 
 async def _run_report_task(task_id: str, requirement: str, url: str | None) -> dict:
-    """报告模式：LLM 生成脚本 → 本地运行 → report.html 落 web 目录（公网可访问）。"""
-    import subprocess
+    """报告模式：LLM 生成脚本 → 沙箱执行 → report.html 落 web 目录（公网可访问）。"""
     from app.services.llm_client import chat_completion
 
     started = time.time()

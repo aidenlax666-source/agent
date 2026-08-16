@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     # 产物页面（游戏/内容/报告等）需要连接的 API 域（与产物静态服务不同源，防止同源 XSS）
     public_api_base: str = "http://localhost:8000"
 
+    # 产物/上传文件清理（天）：0=不清理（默认）。>0 时每天清理超过 N 天的 web/ 产物与 uploads/ 上传文件
+    asset_cleanup_days: int = 0
+
     # Sandbox
     sandbox_image: str = "python:3.11-slim"
     sandbox_timeout: int = 60
