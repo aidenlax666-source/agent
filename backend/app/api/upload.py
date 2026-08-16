@@ -23,17 +23,16 @@ _ANON_UPLOAD_MAX = 5
 _ANON_UPLOAD_WINDOW = 30
 
 
-def _check_upload_rate(request: Request) -> None:
-    peer = request.client.host if request.client else "unknown"
-    xff = request.headers.get("x-forwarded-for")
-    # 与 mini.py 一致：仅可信代理（本机回环）时信任 XFF
-    if xff and peer in ("127.0.0.1", "::1"):
-        peer = xff.split(",")[0].strip() or peer
+def _check_upload_rate(request: Request, anon: bool) -> None:
+    from app.api.mini import _client_ip
+    peer = _client_ip(request)
     now = time.time()
     q = _anon_upload[peer]
     while q and now - q[0] > _ANON_UPLOAD_WINDOW:
         q.popleft()
-    if len(q) >= _ANON_UPLOAD_MAX:
+    # 匿名 30s/5 次；注册用户放宽到 30s/20 次（仍防无限刷磁盘）
+    limit = _ANON_UPLOAD_MAX if anon else _ANON_UPLOAD_MAX * 4
+    if len(q) >= limit:
         raise HTTPException(429, "上传过于频繁，请稍后再试")
     q.append(now)
     if len(_anon_upload) > 10000:
@@ -61,9 +60,8 @@ async def upload_file(
 
     前端拿到路径后，拼进需求，AI 生成的脚本读取这个路径的文件。
     """
-    # 匿名用户按 IP 限速（防无限刷磁盘）
-    if (user.get("email") or "").startswith("anon_"):
-        _check_upload_rate(request)
+    # 按 IP 限速（匿名/注册用户都限，防无限刷磁盘）
+    _check_upload_rate(request, anon=(user.get("email") or "").startswith("anon_"))
     # 文件名清洗：只取 basename，去除可能的路径成分
     original_name = Path(file.filename or "file").name
     ext = Path(original_name).suffix.lower()
@@ -71,7 +69,7 @@ async def upload_file(
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(400, f"不支持的文件类型: {ext or '(无扩展名)'}")
 
-    # 读取并限制大小
+    # 流式读取并限制大小（不整块入内存）
     content = await file.read(MAX_UPLOAD_SIZE + 1)
     if len(content) > MAX_UPLOAD_SIZE:
         raise HTTPException(413, "文件过大，最大支持 200MB")

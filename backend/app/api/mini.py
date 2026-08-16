@@ -45,9 +45,9 @@ async def dev_task(requirement: str = Form(...), file: UploadFile = File(...),
 
     # 安全解压：防 zip-slip 路径穿越
     tmp = _unzip_dev_project(content)
-    await _charge_dev_credit(user, request)
-
+    result: dict = {}
     try:
+        await _charge_dev_credit(user, request)
         task_id = _uuid.uuid4().hex[:12]
         result = await mini_tasks._run_dev_task(task_id, requirement, code_dir=tmp)
         if result.get("status") != "ok":
@@ -78,6 +78,7 @@ def _unzip_dev_project(content: bytes) -> str:
 
     限制：解压后总字节 ≤ MAX_DEV_EXTRACT_TOTAL、成员数 ≤ MAX_DEV_EXTRACT_FILES、
     单文件 ≤ MAX_DEV_EXTRACT_FILE。任何失败都会清理已创建的临时目录。
+    zip 炸弹按**实际写出字节**计数（不信任 zip 头声明的 file_size，可谎报写爆磁盘）。
     """
     import io as _io
     import shutil as _shutil
@@ -95,12 +96,22 @@ def _unzip_dev_project(content: bytes) -> str:
                 target = os.path.normpath(os.path.join(tmp, member.filename))
                 if not target.startswith(tmp + os.sep) and target != tmp:
                     raise HTTPException(status_code=400, detail="项目 zip 包含非法路径")
+                if member.is_dir():
+                    os.makedirs(target, exist_ok=True)
+                    continue
                 if member.file_size > MAX_DEV_EXTRACT_FILE:
                     raise HTTPException(status_code=400, detail=f"项目 zip 内单文件过大（最大 {MAX_DEV_EXTRACT_FILE // (1024 * 1024)}MB）")
-                total += member.file_size
-                if total > MAX_DEV_EXTRACT_TOTAL:
-                    raise HTTPException(status_code=400, detail=f"项目 zip 解压后总大小超限（最大 {MAX_DEV_EXTRACT_TOTAL // (1024 * 1024)}MB）")
-            zf.extractall(tmp)
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                # 流式解压 + 按实际写出字节计数（防 zip 炸弹谎报 file_size）
+                with zf.open(member) as src, open(target, "wb") as dst:
+                    while True:
+                        chunk = src.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > MAX_DEV_EXTRACT_TOTAL:
+                            raise HTTPException(status_code=400, detail=f"项目 zip 解压后总大小超限（最大 {MAX_DEV_EXTRACT_TOTAL // (1024 * 1024)}MB）")
+                        dst.write(chunk)
     except HTTPException:
         _shutil.rmtree(tmp, ignore_errors=True)
         raise
@@ -176,8 +187,9 @@ async def dev_apply(requirement: str = Form(...), plan: str = Form(...),
     if len(requirement) > MAX_REQUIREMENT_LEN:
         raise HTTPException(status_code=400, detail=f"requirement 过长（最大 {MAX_REQUIREMENT_LEN} 字）")
     tmp = _unzip_dev_project(await _dev_zip_from_form(file))
-    await _charge_dev_credit(user, request)
+    result: dict = {}
     try:
+        await _charge_dev_credit(user, request)
         task_id = _uuid.uuid4().hex[:12]
         result = await mini_tasks._run_dev_task(task_id, requirement, code_dir=tmp,
                                                 plan=plan, feedback=(feedback or "").strip() or None)
