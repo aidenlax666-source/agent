@@ -1339,7 +1339,7 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
                 info = await chat_completion_json(
                     DEV_MODIFY_PROMPT.format(requirement=requirement[:8000], context=tree, plan_part=plan_part),
                     requirement, temperature=0.2, max_tokens=32000,  # 大项目/长文件：防 JSON 截断
-                    model=get_settings().ai_model_reasoning,
+                    model=get_settings().dev_modify_model or get_settings().ai_model,
                 )
             except Exception as e:
                 if attempt < 2:

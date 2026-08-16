@@ -450,7 +450,7 @@ export default function ClaudePage() {
                             <Button size="sm" onClick={() => confirmPlan(b.planText || "", b.requirement || "")} disabled={busy}
                               className="gap-1.5 rounded-xl bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:opacity-90 text-white">
                               {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-                              {busy ? "AI 正在改码…" : "确认并改码"}
+                              {busy ? "AI 正在生成代码…（大项目约 1-3 分钟）" : "确认并改码"}
                             </Button>
                             <Button size="sm" variant="ghost" onClick={clearAll} disabled={busy}>清空对话</Button>
                           </div>

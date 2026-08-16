@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     deepseek_base_url: str = "https://api.deepseek.com"
     ai_model: str = "deepseek-chat"
     ai_model_reasoning: str = "deepseek-reasoner"  # 复杂任务用的推理模型
+    # 开发改码（/dev/apply 主生成）使用的模型：空 = 用 ai_model（deepseek-chat，快）；
+    # 需要更高质量的大项目代码可在 .env 设为 deepseek-reasoner（慢但更稳）
+    dev_modify_model: str = ""
 
     # AI - 豆包（火山方舟，多模态视觉：DeepSeek 识别不了图片时用它识别并总结）
     doubao_api_key: str = ""  # ark- 开头的火山方舟 key
