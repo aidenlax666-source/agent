@@ -648,7 +648,7 @@ export default function MiniPage() {
           </Card>
         )}
 
-        {/* 开发任务结果（上传 zip 改代码）已迁移到 /claude 改码助手（选文件夹），此处移除 */}
+        {/* 开发任务结果（上传 zip 改代码）已迁移到 /assistant 改码助手（选文件夹），此处移除 */}
 
         <footer className="text-center text-[11px] text-muted-foreground pb-6">
           AI 自动化工作台 · 任务与数据问答自动识别 · 生成产物自动校验（数量 / 字段 / 覆盖 / 数值）

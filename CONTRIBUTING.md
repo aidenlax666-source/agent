@@ -19,7 +19,7 @@ cd frontend && npm install
 
 1. **代码可运行**：改动的模块能正常 import/启动
 2. **语法正确**：`python -m py_compile <file>`
-3. **不破坏核心闭环**：至少跑通一次一句话任务（`/mini`）或开发助手（`/claude`）
+3. **不破坏核心闭环**：至少跑通一次一句话任务（`/mini`）或开发助手（`/assistant`）
 4. **安全**：任何"生成代码并执行"相关的改动，请阅读 [SECURITY.md](docs/SECURITY.md)，确保不绕过静态扫描/路径校验
 
 ## 代码规范

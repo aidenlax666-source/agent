@@ -32,7 +32,7 @@ English: [README.en.md](README.en.md)
 | 🩹 **多轮自愈引擎** | 运行失败时把完整错误反馈给推理模型（deepseek-reasoner），自动换实现方案（如原生编译失败改纯 JS 替代），最多 5 轮，可中途 `give_up` 明确放弃 |
 | 📝 **apply_patch 协议** | 模型只输出**改动行（diff）**而非整个文件，输出 token 大幅下降；后端 difflib 应用 + 行号不准时内容模糊匹配兜底 |
 | 📂 **两阶段上下文** | 大项目先给文件清单让模型点菜（`files_to_read`），只读需要的文件；支持 **grep 搜索**定位调用点/定义点（实测 17 文件项目只读 1-2 个文件） |
-| 🔧 **AI 开发助手**（`/claude`） | 选本地文件夹 → AI 规划→确认→改码→自动应用回本地，支持运行/测试/启动长驻服务，改动自动 diff 预览 |
+| 🔧 **AI 开发助手**（`/assistant`） | 选本地文件夹 → AI 规划→确认→改码→自动应用回本地，支持运行/测试/启动长驻服务，改动自动 diff 预览 |
 | 🛡️ **纵深安全设计** | AST 静态扫描（拦 eval/exec/命令注入/SSRF/敏感文件读取/登录态外泄）+ Docker 沙箱 + zip-slip/zip 炸弹防护 + 同源 XSS 隔离（详见 [安全设计](#-安全设计)） |
 | 🧩 **技能系统** | `SKILL.md` 声明式技能（FFmpeg 视频剪辑、ezdxf CAD 绘图…），关键词自动匹配，零代码扩展 |
 | ⏰ **自动化** | 定时提醒、窗口/屏幕监控、循环任务，30s 调度器 + 去重 + 防重叠 |
@@ -74,7 +74,7 @@ python -m http.server 8001 --directory web
 ```
 
 访问：
-- 前端 **http://localhost:3000**（一句话自动化 `/mini`、开发助手 `/claude`、分享中心 `/gallery`、自动化管理 `/automations`）
+- 前端 **http://localhost:3000**（一句话自动化 `/mini`、开发助手 `/assistant`、分享中心 `/gallery`、自动化管理 `/automations`）
 - 后端 API 文档 **http://localhost:8000/docs**
 
 ### CLI 开发助手（持续对话改你的项目）

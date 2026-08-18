@@ -9,7 +9,7 @@ import type { User } from "@/lib/types";
 
 const LINKS = [
   { href: "/mini", label: "工作台", icon: Sparkles },
-  { href: "/claude", label: "改码助手", icon: FolderGit2 },
+  { href: "/assistant", label: "改码助手", icon: FolderGit2 },
   { href: "/automations", label: "定时监控", icon: AlarmClock },
   { href: "/history", label: "任务历史", icon: History },
   { href: "/gallery", label: "分享中心", icon: QrCode },

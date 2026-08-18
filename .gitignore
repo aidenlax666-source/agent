@@ -64,6 +64,8 @@ diag_*.png
 batch_*.py
 batch_*_result.json
 test_*.py
+!backend/tests/
+!backend/tests/*.py
 audit_*.py
 audit_*.txt
 *_result.json

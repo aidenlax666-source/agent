@@ -17,6 +17,8 @@ import logging
 
 from app.config import get_settings
 from app.services.long_task import start_background, is_running, cancel
+# 模块级引用：测试可替换 chat_completion_json 做 mock（agent 循环/分类等）
+from app.services.llm_client import chat_completion_json as chat_completion_json
 
 logger = logging.getLogger("app.services.mini_tasks")
 
@@ -993,8 +995,6 @@ async def _run_agent_task(task_id: str, requirement: str, record: dict,
     run/write 的结果会拼回上下文，让模型看到实际输出再决定下一步。
     """
     import tempfile as _tf
-    from app.services.llm_client import chat_completion_json
-    from app.database import update_mini_task
 
     workspace = _tf.mkdtemp(prefix="agent_ws_", dir=os.path.join(os.path.dirname(__file__), "..", "..", "tmp"))
     history: list[str] = []
