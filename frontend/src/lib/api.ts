@@ -300,3 +300,27 @@ export const notificationsApi = {
   toggleMonitor: (id: string) =>
     request<{ ok: boolean; enabled: boolean }>(`/api/monitors/${id}/toggle`, { method: "POST" }),
 };
+
+// ===== 我的文件管理（产物列表/重命名/删除）=====
+export interface FileItem {
+  filename: string;
+  path: string;
+  size: number;
+  size_human: string;
+  modified: number;
+  type: string;
+  name: string;
+}
+
+export const filesApi = {
+  list: () => request<{ items: FileItem[] }>("/api/files"),
+
+  rename: (filename: string, new_name: string) =>
+    request<{ ok: boolean; filename: string }>("/api/files/rename", {
+      method: "POST",
+      body: JSON.stringify({ filename, new_name }),
+    }),
+
+  remove: (filename: string) =>
+    request<{ ok: boolean }>(`/api/files/${encodeURIComponent(filename)}`, { method: "DELETE" }),
+};

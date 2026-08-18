@@ -493,7 +493,24 @@ export default function MiniPage() {
                   {result.error && (
                     <div className="flex items-start gap-2 text-sm text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950 rounded-xl px-4 py-3">
                       <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
-                      <span>{result.error}</span>
+                      <div>
+                        <div>{result.error}</div>
+                        {result.error_human && (
+                          <div className="mt-1 text-emerald-600 dark:text-emerald-400 font-medium">
+                            💡 {result.error_human}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Agent 模式过程日志 */}
+                  {Array.isArray(result.steps) && result.steps.length > 0 && (
+                    <div className="text-xs text-muted-foreground bg-slate-50 dark:bg-slate-900 rounded-xl px-4 py-3 space-y-1">
+                      <div className="font-medium text-slate-500 dark:text-slate-400">🤖 执行过程</div>
+                      {result.steps.map((s, i) => (
+                        <div key={i} className="font-mono truncate">{s}</div>
+                      ))}
                     </div>
                   )}
 

@@ -17,6 +17,19 @@ class Settings(BaseSettings):
     # 需要更高质量的大项目代码可在 .env 设为 deepseek-reasoner（慢但更稳）
     dev_modify_model: str = ""
 
+    # 可选 LLM 提供商（统一走 OpenAI 兼容 /chat/completions 接口；留空则只用 DeepSeek）
+    llm_provider: str = "deepseek"  # deepseek | openai | anthropic | ollama | custom
+    openai_api_key: str = ""        # llm_provider=openai 时必填
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_model: str = "gpt-4o-mini"
+    anthropic_api_key: str = ""     # llm_provider=anthropic 时必填
+    anthropic_model: str = "claude-3-5-sonnet-20241022"
+    ollama_base_url: str = "http://localhost:11434/v1"  # Ollama 本地（OpenAI 兼容端点）
+    ollama_model: str = "qwen2.5:7b"
+    custom_openai_base_url: str = ""   # 任何 OpenAI 兼容服务（如 OneAPI/LiteLLM）
+    custom_openai_key: str = ""
+    custom_openai_model: str = ""
+
     # AI - 豆包（火山方舟，多模态视觉：DeepSeek 识别不了图片时用它识别并总结）
     doubao_api_key: str = ""  # ark- 开头的火山方舟 key
     doubao_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"

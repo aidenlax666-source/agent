@@ -118,3 +118,87 @@ async def download_zip(user=Depends(get_current_user)):
         media_type="application/zip",
         headers={"Content-Disposition": "attachment; filename=works.zip"},
     )
+
+
+# ============================================================
+# 我的文件管理：列出/重命名/删除本人产物（只允许操作 web/ 内、属于当前用户的文件）
+# ============================================================
+
+def _own_artifact_path(user_id: str, filename: str) -> Path | None:
+    """校验 filename 属于当前用户且位于 web/ 内，返回完整路径；非法返回 None。"""
+    if not filename or "/" in filename or "\\" in filename or ".." in filename:
+        return None
+    own = _user_artifact_names(user_id)
+    if filename not in own:
+        return None
+    p = (WEB_DIR / filename).resolve()
+    if not str(p).startswith(str(WEB_DIR.resolve()) + os.sep):
+        return None
+    return p if p.is_file() else None
+
+
+@router.get("/files")
+async def list_files(user=Depends(get_current_user)):
+    """列出当前用户的全部产物文件（含大小/修改时间/类型）。"""
+    own = _user_artifact_names(user["id"])
+    items: list[dict] = []
+    if WEB_DIR.is_dir():
+        for f in sorted(WEB_DIR.iterdir()):
+            if f.is_file() and f.name in own:
+                info = _classify(f.name) or {}
+                stat = f.stat()
+                items.append({
+                    "filename": f.name,
+                    "path": f"/{f.name}",
+                    "size": stat.st_size,
+                    "size_human": _size_human(f),
+                    "modified": stat.st_mtime,
+                    "type": info.get("type", "file"),
+                    "name": info.get("name", f.name),
+                })
+    return {"items": items}
+
+
+@router.post("/files/rename")
+async def rename_file(data: dict, user=Depends(get_current_user)):
+    """重命名产物：{filename, new_name}（只允许改扩展名不变、仍属当前用户）。"""
+    old = str(data.get("filename") or "").strip()
+    new = str(data.get("new_name") or "").strip()
+    p = _own_artifact_path(user["id"], old)
+    if p is None:
+        from fastapi import HTTPException
+        raise HTTPException(404, "文件不存在或不属于当前用户")
+    if not new or "/" in new or "\\" in new or ".." in new:
+        from fastapi import HTTPException
+        raise HTTPException(400, "新文件名不合法")
+    # 保持扩展名一致（防类型混淆：html 改 exe 之类）
+    if os.path.splitext(old)[1].lower() != os.path.splitext(new)[1].lower():
+        from fastapi import HTTPException
+        raise HTTPException(400, "重命名不能改变文件扩展名")
+    dest = (WEB_DIR / new).resolve()
+    if not str(dest).startswith(str(WEB_DIR.resolve()) + os.sep):
+        from fastapi import HTTPException
+        raise HTTPException(400, "目标路径不合法")
+    if dest.exists():
+        from fastapi import HTTPException
+        raise HTTPException(409, "目标文件名已存在")
+    try:
+        p.rename(dest)
+    except OSError as e:
+        from fastapi import HTTPException
+        raise HTTPException(500, f"重命名失败: {e}")
+    return {"ok": True, "filename": new}
+
+
+@router.delete("/files/{filename}")
+async def delete_file(filename: str, user=Depends(get_current_user)):
+    """删除产物（仅当前用户自己的文件）。"""
+    from fastapi import HTTPException
+    p = _own_artifact_path(user["id"], filename)
+    if p is None:
+        raise HTTPException(404, "文件不存在或不属于当前用户")
+    try:
+        p.unlink()
+    except OSError as e:
+        raise HTTPException(500, f"删除失败: {e}")
+    return {"ok": True}

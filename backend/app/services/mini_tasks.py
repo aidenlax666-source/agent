@@ -41,6 +41,32 @@ def _size_mb(path: str) -> str:
         return ""
 
 
+async def _explain_failure(requirement: str, error: str, output: str = "") -> str:
+    """把任务失败的技术错误转成用户能看懂的大白话（可能原因 + 建议操作）。
+
+    用便宜的 chat 模型做"翻译"，失败时降级返回原始错误（不阻塞任务收尾）。
+    """
+    from app.services.llm_client import chat_completion
+    try:
+        output_part = ("执行输出片段：\n" + output[:800]) if output else ""
+        explain_prompt = (
+            f"用户让 AI 助手做这个任务：{requirement[:500]}\n\n"
+            f"任务执行失败了，技术错误信息如下：\n{error[:800]}\n"
+            f"{output_part}\n\n"
+            "请用大白话（中文，非技术用户能懂）解释：1) 大概是什么原因导致失败；"
+            "2) 用户可以怎么调整（比如换个说法/检查什么/换种方式）。"
+            "控制在 80 字以内，两句话，不要贴代码。如果确实看不出来，就说\"可能是临时问题，请重试\"。"
+        )
+        text = await chat_completion(
+            "你是面向非技术用户的 AI 助手客服，把技术错误翻译成人话。",
+            explain_prompt, temperature=0.3, max_tokens=300,
+        )
+        text = (text or "").strip()
+        return text[:300] if text else error
+    except Exception:
+        return error
+
+
 def _safe_output_src(path: str) -> bool:
     """校验沙箱产物路径：只允许位于沙箱输出根（backend/tmp）或 web/ 目录内。
 
@@ -886,14 +912,225 @@ def iterate(task_id: str, feedback: str, user_id: str = "") -> dict | None:
     return {"id": task_id, "status": "queued" if started else "error", "message": "迭代修改已提交"}
 
 
+async def _extract_memory(requirement: str, user_id: str, result_summary: str = "") -> None:
+    """任务成功后，从需求+结果中提取用户偏好/习惯存入长期记忆（零成本正则优先，LLM 兜底）。
+
+    提取规则（简单可靠，不打断任务）：
+    - 需求里带"我喜欢/我喜欢用/习惯/偏好/每次都/记得"等 → 直接记下
+    - 明确格式偏好（如"要 Excel""用中文""带图表"）→ 记下
+    """
+    if not user_id:
+        return
+    from app.database import remember
+    req = requirement or ""
+    candidates: list[str] = []
+    # 1. 显式偏好表达（只取偏好短语本身，截断到第一个标点）
+    for kw in ("我喜欢", "我爱用", "习惯", "偏好", "每次都", "记得我", "我一般"):
+        idx = req.find(kw)
+        if idx >= 0:
+            tail = req[idx + len(kw):].strip("，。,.！？ ")
+            # 截断到第一个标点/动词边界，只保留偏好短语
+            import re as _re2
+            m = _re2.match(r"([^，。,.！？；;]{1,20})", tail)
+            tail = m.group(1) if m else tail
+            if tail and len(tail) >= 2:
+                candidates.append(tail)
+    # 2. 明确的格式/语言偏好
+    for pat, memo in (
+        (r"要?excel|导出excel|xlsx", "输出用 Excel 格式"),
+        (r"要?csv|导出csv", "输出用 CSV 格式"),
+        (r"用中文", "用中文输出"),
+        (r"带?图表|加图表", "输出带图表"),
+        (r"要?word|docx", "输出用 Word 格式"),
+        (r"英文输出|用英文", "用英文输出"),
+    ):
+        if re.search(pat, req, re.IGNORECASE):
+            candidates.append(memo)
+    # 3. 去重后入库（最多记 3 条，防噪音）
+    seen: set[str] = set()
+    for c in candidates:
+        c = c[:80]
+        if c and c not in seen:
+            seen.add(c)
+            try:
+                await remember(user_id, "preference", c)
+            except Exception:
+                pass
+        if len(seen) >= 3:
+            break
+
+
+# ============================================================
+# Agent 循环模式（复杂任务）：模型多轮自主决策 run/write/finish
+# 普通模式 = 单轮"编译"（便宜，适合大多数任务）；Agent 模式 = 多轮动态决策
+# 成本控制：默认关闭，仅需求明显复杂或用户显式要求时启用；每轮用 chat 模型
+# ============================================================
+
+_AGENT_HINT_WORDS = [
+    "调研", "对比", "比较", "多步", "多个", "分别", "依次", "然后", "接着", "再",
+    "搜集", "整理成", "汇总", "综合", "分步", "循环", "逐", "每家", "每个", "全部",
+    "agent", "多轮", "自主", "复杂",
+]
+
+
+def _needs_agent(requirement: str) -> bool:
+    """判断需求是否需要 agent 循环：命中多个复杂意图词，或用户显式要求 agent/多轮。"""
+    req = (requirement or "").lower()
+    if "agent" in req or "多轮" in req or "自主" in req or "复杂任务" in req:
+        return True
+    hits = sum(1 for w in _AGENT_HINT_WORDS if w in req)
+    return hits >= 3  # 命中 ≥3 个复杂意图词才启用（防误伤普通任务）
+
+
+async def _run_agent_task(task_id: str, requirement: str, record: dict,
+                          max_rounds: int = 8) -> dict:
+    """Agent 循环：模型自主决定每步动作，后端执行并回填结果，直到 finish 或超轮次。
+
+    每轮模型输出 JSON（action 必填）：
+      {"action": "run",   "cmd": "shell 命令"}                     → 在独立工作区执行
+      {"action": "write", "file": "相对路径", "content": "内容"}   → 写入工作区文件
+      {"action": "finish", "summary": "...", "output_file": "相对路径"}
+    run/write 的结果会拼回上下文，让模型看到实际输出再决定下一步。
+    """
+    import tempfile as _tf
+    from app.services.llm_client import chat_completion_json
+    from app.database import update_mini_task
+
+    workspace = _tf.mkdtemp(prefix="agent_ws_", dir=os.path.join(os.path.dirname(__file__), "..", "..", "tmp"))
+    history: list[str] = []
+    final: dict = {"status": "ok", "summary": "", "output_file": "", "steps": []}
+    last_cmd_output = ""
+    for round_no in range(1, max_rounds + 1):
+        record["message"] = f"Agent 第 {round_no}/{max_rounds} 轮..."
+        record["progress"] = min(95, int(90 * round_no / max_rounds))
+        await update_mini_task(task_id, status="running", message=record["message"])
+
+        _history_text = "\n".join(history[-12:]) if history else "(无)"
+        _last_out = (last_cmd_output or "(无)")[:2000]
+        prompt = (
+            "你是一个自主执行的 AI Agent，目标是**尽快完成任务**（最多 8 轮，轮次宝贵）。用户需求：\n"
+            f"{requirement}\n\n"
+            "每轮只输出一个 JSON 动作：\n"
+            "1. {\"action\": \"write\", \"file\": \"相对路径\", \"content\": \"文件完整内容\"} —— 创建脚本/文件\n"
+            "2. {\"action\": \"run\", \"cmd\": \"命令\"} —— 执行脚本/命令（如 python x.py）\n"
+            "3. {\"action\": \"finish\", \"summary\": \"完成说明\", \"output_file\": \"最终产物相对路径(可空)\"} —— 任务完成，**一旦得到结果立即 finish**\n\n"
+            "执行策略：**最多 2-3 轮**完成——write 一个脚本 → run 一次 → 看结果立即 finish。\n"
+            "不要做环境探测（python --version、pwd 之类）——环境已就绪，直接写业务脚本。\n"
+            "**脚本保持精简**：单文件 ≤150 行，内容完整但不要写多余注释/空行；超长逻辑拆多个文件分步写。\n"
+            "如果 run 报错，修脚本再 run 一次，然后 finish。\n"
+            f"已完成的动作：\n{_history_text}\n"
+            f"最近一次命令输出：\n{_last_out}"
+        )
+        try:
+            info = await chat_completion_json(
+                prompt, requirement, temperature=0.2, max_tokens=20000,
+                model=get_settings().ai_model,
+            )
+        except Exception as e:
+            history.append(f"[第{round_no}轮] 模型调用失败: {str(e)[:100]}")
+            continue
+        action = str(info.get("action") or "").strip().lower()
+
+        if action == "run":
+            cmd = str(info.get("cmd") or "").strip()
+            if cmd:
+                err = _check_dev_command_safety(cmd)
+                if err:
+                    last_cmd_output = f"命令被安全拦截: {err}"
+                else:
+                    r = await asyncio.to_thread(_run_dev_command, workspace, cmd, timeout=120)
+                    last_cmd_output = r.get("output") or r.get("error") or "(无输出)"
+                    if not r.get("ok"):
+                        last_cmd_output = f"执行失败：{last_cmd_output}"
+                    elif r.get("ok"):
+                        # run 成功且工作区出现产物文件 → 自动收尾（不用等模型 finish）
+                        out_files = [f for f in os.listdir(workspace)
+                                     if os.path.isfile(os.path.join(workspace, f))
+                                     and os.path.splitext(f)[1].lower() in
+                                     (".txt", ".csv", ".xlsx", ".json", ".html", ".png", ".pdf", ".md", ".log")]
+                        if out_files:
+                            _pick = sorted(out_files, key=lambda f: os.path.getmtime(os.path.join(workspace, f)))[-1]
+                            final["summary"] = f"命令执行成功，产物: {_pick}"
+                            _fname = f"agent_{task_id}_{_pick}"
+                            _dst = os.path.join(_WEB_DIR, _fname)
+                            os.makedirs(_WEB_DIR, exist_ok=True)
+                            shutil.copyfile(os.path.join(workspace, _pick), _dst)
+                            final["output_file"] = _dst
+                            final["content_url"] = f"/{_fname}"
+                            history.append(f"[第{round_no}轮] run: {cmd}")
+                            history.append(f"[第{round_no}轮] 检测到产物 {_pick}，自动完成")
+                            final["steps"] = history
+                            final["last_cmd"] = cmd
+                            break
+                history.append(f"[第{round_no}轮] run: {cmd}")
+        elif action == "write":
+            rel = str(info.get("file") or "").strip()
+            content = str(info.get("content") or "")
+            safe = _safe_dev_rel(rel, workspace)
+            if safe is None:
+                last_cmd_output = f"非法路径: {rel}"
+            else:
+                p = os.path.join(workspace, safe)
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write(content)
+                last_cmd_output = f"已写入 {safe} ({len(content)} 字符)"
+                history.append(f"[第{round_no}轮] write: {safe}")
+        elif action == "finish":
+            final["summary"] = str(info.get("summary") or "")[:300]
+            out_rel = str(info.get("output_file") or "").strip()
+            if out_rel:
+                src = os.path.join(workspace, out_rel)
+                if os.path.isfile(src) and _safe_output_src(src):
+                    # 复制到 web/ 发布（安全校验：必须来自 agent 工作区）
+                    _fname = f"agent_{task_id}_{os.path.basename(out_rel)}"
+                    _dst = os.path.join(_WEB_DIR, _fname)
+                    os.makedirs(_WEB_DIR, exist_ok=True)
+                    shutil.copyfile(src, _dst)
+                    final["output_file"] = _dst
+                    final["content_url"] = f"/{_fname}"
+                else:
+                    final["summary"] += f"（提示：产物 {out_rel} 不存在或路径非法，未发布）"
+            final["steps"] = history
+            break
+        else:
+            last_cmd_output = f"未知动作: {action}（应为 run/write/finish）"
+            history.append(f"[第{round_no}轮] 无效动作: {action}")
+    else:
+        final["summary"] = (final.get("summary") or "") + f"（已达 {max_rounds} 轮上限，自动结束）"
+        final["steps"] = history
+
+    # 清理工作区（产物已复制到 web/）
+    try:
+        shutil.rmtree(workspace, ignore_errors=True)
+    except Exception:
+        pass
+    if not final.get("output_file") and not final.get("summary"):
+        final["status"] = "failed"
+        final["error"] = "Agent 未产出任何结果"
+        final["error_human"] = "AI 在复杂模式下没有完成目标，可以换个更具体的说法重试，或改用普通模式。"
+    return final
+
+
 async def _run_task(task_id: str, requirement: str, url: str | None, record: dict) -> None:
     """后台执行一个任务（联机游戏/报告/内容/视频/图片/音乐/代码任务，可组合多模式），同步 SQLite。"""
-    from app.database import save_mini_task, update_mini_task
+    from app.database import save_mini_task, update_mini_task, get_memory
 
     record["status"] = "running"
     record["message"] = "正在执行..."
     image_paths = record.get("image_paths") or []
     data_paths = record.get("data_paths") or []
+
+    # ---- 记忆注入：把该用户长期记忆（偏好/习惯/事实）拼进需求，让 LLM 按用户习惯执行 ----
+    user_id = record.get("user_id") or ""
+    if user_id:
+        try:
+            memories = await get_memory(user_id, limit=15)
+            if memories:
+                mem_text = "；".join(f"{m.get('content', '')}" for m in memories)
+                requirement = f"{requirement}\n\n【用户偏好记忆】{mem_text}\n（如果需求与此冲突，以用户本次明确的说法为准；无冲突则默认按记忆执行）"
+        except Exception:
+            pass
 
     # ---- 统一入口：LLM 判断"数据问答"还是"任务执行" ----
     intent = await _classify_intent(requirement, bool(data_paths))
@@ -910,6 +1147,32 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
         skill = select_skill(requirement)
     except Exception:
         skill = None
+
+    # ---- Agent 循环模式（复杂任务）：模型多轮自主决策；普通模式（默认）走单轮编译 ----
+    # 需求命中复杂意图（或含 agent/多轮/自主）→ 走 agent 循环；技能任务不走 agent
+    use_agent = _needs_agent(requirement) and not skill
+    if use_agent:
+        try:
+            await save_mini_task(record)
+            record["message"] = "检测到复杂需求，使用 Agent 多轮模式..."
+            await update_mini_task(task_id, status="running", message=record["message"])
+            agent_result = await _run_agent_task(task_id, requirement, record)
+            record["result"] = agent_result
+            record["status"] = "done" if agent_result.get("status") == "ok" else "error"
+            record["message"] = "完成" if agent_result.get("status") == "ok" else "Agent 未完成"
+            record["progress"] = 100
+            if user_id and agent_result.get("status") == "ok":
+                try:
+                    await _extract_memory(requirement, user_id)
+                except Exception:
+                    pass
+            await update_mini_task(task_id, status=record["status"], message=record["message"],
+                                   result=json.dumps(agent_result, ensure_ascii=False),
+                                   error=None if agent_result.get("status") == "ok" else agent_result.get("error"))
+            return
+        except Exception as e:
+            logger.exception("[mini:%s] agent 模式失败，回退普通模式", task_id)
+
     if skill:
         modes = ["code"]
         record["message"] = f"技能: {skill['name']}，开始执行..."
@@ -944,7 +1207,15 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
 
         merged: dict = {"status": "ok", "rows": 0, "preview": [], "elapsed": 0, "error": None}
         failed: list[str] = []
+        steps: list[str] = []  # 过程可见性：记录每个执行步骤（前端实时展示）
+        _MODE_LABEL = {"game": "生成联机游戏", "report": "生成可视化报告", "content": "生成内容作品",
+                       "video": "生成视频", "image": "生成图片", "music": "生成音乐", "tts": "生成语音", "code": "执行代码任务"}
         for mode in modes:
+            steps.append(_MODE_LABEL.get(mode, mode))
+            record["steps"] = steps
+            record["progress"] = min(95, 10 + int(85 * len(steps) / max(1, len(modes))))
+            record["message"] = f"正在{_MODE_LABEL.get(mode, mode)}..."
+            await update_mini_task(task_id, status="running", message=record["message"])
             if mode == "game":
                 from app.services.game_generator import generate_multiplayer_game
                 g = await generate_multiplayer_game(requirement)
@@ -1087,6 +1358,12 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
         if failed and not any(merged.get(k) for k in ("game_url", "report_url", "content_url", "video_url", "image_url", "image_urls", "music_url", "tts_url", "dev_diff")):
             merged["status"] = "failed"
             merged["error"] = "；".join(failed)[:300]
+            # 把技术错误翻译成用户能看懂的大白话（降级：失败也不影响收尾）
+            try:
+                merged["error_human"] = await _explain_failure(
+                    requirement, merged["error"], (record.get("result") or {}).get("stdout", "") if isinstance(record.get("result"), dict) else "")
+            except Exception:
+                merged["error_human"] = merged["error"]
         elif merged.get("status") in ("no_data", "login_required", "robots_blocked"):
             pass  # 保留业务状态（无数据/需登录/禁止抓取），前端有对应友好展示
         else:
@@ -1095,9 +1372,18 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
                 merged["partial_errors"] = failed
 
         record["result"] = merged
+        if steps:
+            merged["steps"] = steps  # 过程日志随结果返回（前端展示）
+            merged["message_final"] = "完成" + ("（部分失败，见详情）" if failed else "")
         record["status"] = "done"
         record["message"] = "完成"
         record["progress"] = 100
+        # 任务成功 → 提取用户偏好进长期记忆（供后续任务使用）
+        if user_id and merged.get("status") == "ok":
+            try:
+                await _extract_memory(requirement, user_id)
+            except Exception:
+                pass
         await update_mini_task(task_id, status="done", message="完成",
                                result=json.dumps(merged, ensure_ascii=False), error=None)
     except asyncio.CancelledError:
@@ -1109,7 +1395,15 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
         record["status"] = "error"
         record["error"] = str(e)[:300]
         record["message"] = f"执行出错: {str(e)[:120]}"
-        await update_mini_task(task_id, status="error", error=record["error"], message=record["message"])
+        # 大白话解释（降级：失败不影响收尾）
+        try:
+            record["error_human"] = await _explain_failure(requirement, str(e)[:300])
+        except Exception:
+            record["error_human"] = record["message"]
+        _res = dict(record.get("result") or {})
+        _res["error_human"] = record.get("error_human", "")
+        await update_mini_task(task_id, status="error", error=record["error"], message=record["message"],
+                               result=json.dumps(_res, ensure_ascii=False))
 
 
 # ============================================================

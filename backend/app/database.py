@@ -113,6 +113,15 @@ def _init_db():
                 created_at REAL NOT NULL
             );
 
+            -- 用户长期记忆（记住用户偏好/习惯，任务提交时注入上下文）
+            CREATE TABLE IF NOT EXISTS user_memory (
+                user_id TEXT NOT NULL,
+                kind TEXT NOT NULL,                 -- preference(偏好) | fact(事实) | habit(习惯)
+                content TEXT NOT NULL,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (user_id, content)
+            );
+
             -- Guest user created by API on first request if needed
         """)
     # 老库迁移：补 image_paths/data_paths 列（不存在才加）
@@ -481,6 +490,61 @@ async def unread_notification_count(user_id: str) -> int:
 
 async def mark_notifications_read(user_id: str, ids: list[str] | None = None) -> None:
     return await _run_async(_mark_notifications_read, user_id, ids)
+
+
+# ============================================================
+# User Memory（用户长期记忆：偏好/事实/习惯）
+# ============================================================
+
+def _remember(user_id: str, kind: str, content: str, max_items: int = 50) -> None:
+    """记住一条记忆（同内容覆盖更新时间）；超上限删最旧的。"""
+    content = (content or "").strip()
+    if not content or not kind:
+        return
+    with _get_conn() as conn:
+        conn.execute(
+            "INSERT INTO user_memory (user_id, kind, content, updated_at) VALUES (?,?,?,?) "
+            "ON CONFLICT(user_id, content) DO UPDATE SET updated_at=excluded.updated_at",
+            (user_id, kind, content, time.time()),
+        )
+        # 上限控制：保留最近 max_items 条
+        rows = conn.execute(
+            "SELECT content FROM user_memory WHERE user_id=? ORDER BY updated_at DESC",
+            (user_id,),
+        ).fetchall()
+        if len(rows) > max_items:
+            for r in rows[max_items:]:
+                conn.execute("DELETE FROM user_memory WHERE user_id=? AND content=?", (user_id, r["content"]))
+
+
+def _get_memory(user_id: str, limit: int = 20) -> list[dict]:
+    with _get_conn() as conn:
+        rows = conn.execute(
+            "SELECT kind, content, updated_at FROM user_memory WHERE user_id=? ORDER BY updated_at DESC LIMIT ?",
+            (user_id, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _forget(user_id: str, content: str | None = None) -> None:
+    """删除记忆：content 给定时删单条，否则清空该用户全部。"""
+    with _get_conn() as conn:
+        if content:
+            conn.execute("DELETE FROM user_memory WHERE user_id=? AND content=?", (user_id, content))
+        else:
+            conn.execute("DELETE FROM user_memory WHERE user_id=?", (user_id,))
+
+
+async def remember(user_id: str, kind: str, content: str, max_items: int = 50) -> None:
+    return await _run_async(_remember, user_id, kind, content, max_items)
+
+
+async def get_memory(user_id: str, limit: int = 20) -> list[dict]:
+    return await _run_async(_get_memory, user_id, limit)
+
+
+async def forget(user_id: str, content: str | None = None) -> None:
+    return await _run_async(_forget, user_id, content)
 
 
 # ============================================================
