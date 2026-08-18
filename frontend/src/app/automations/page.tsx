@@ -9,7 +9,7 @@ import AppNav from "@/components/AppNav";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { notificationsApi, type ReminderItem, type MonitorItem } from "@/lib/api";
-import { Clock, MonitorCheck, Plus, Trash2, Loader2, Bell } from "lucide-react";
+import { Clock, MonitorCheck, Plus, Trash2, Loader2, Bell, Pencil, Check, X } from "lucide-react";
 
 export default function AutomationsPage() {
   const [reminders, setReminders] = useState<ReminderItem[]>([]);
@@ -25,6 +25,13 @@ export default function AutomationsPage() {
   const [monAction, setMonAction] = useState("仅提醒");
   const [saving, setSaving] = useState(false);
   const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
+
+  // 编辑状态：{ type: "rem"|"mon", id, time?, text?, keyword?, action? }
+  const [editing, setEditing] = useState<{
+    kind: "rem" | "mon"; id: string;
+    time?: string; text?: string; keyword?: string; action?: string;
+  } | null>(null);
+  const [editError, setEditError] = useState<string | null>(null);
 
   const inFlight = (id: string) => pendingIds.has(id);
   const withPending = async (id: string, fn: () => Promise<void>) => {
@@ -95,6 +102,53 @@ export default function AutomationsPage() {
     });
   };
 
+  // ---- 编辑（inline）----
+  const startEditRem = (r: ReminderItem) => {
+    setEditError(null);
+    setEditing({ kind: "rem", id: r.id, time: r.time, text: r.text });
+  };
+  const startEditMon = (m: MonitorItem) => {
+    setEditError(null);
+    setEditing({ kind: "mon", id: m.id, keyword: m.keywords || "", action: m.action_requirement || "" });
+  };
+  const cancelEdit = () => { setEditing(null); setEditError(null); };
+
+  const saveEdit = async () => {
+    if (!editing) return;
+    if (inFlight(editing.id)) return;
+    setEditError(null);
+    if (editing.kind === "rem") {
+      const t = editing.time || "";
+      const txt = (editing.text || "").trim();
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(t)) { setEditError("时间格式应为 HH:MM（如 08:30）"); return; }
+      if (!txt) { setEditError("提醒内容不能为空"); return; }
+      if (txt.length > 200) { setEditError("提醒内容最多 200 字"); return; }
+      await withPending(editing.id, async () => {
+        try {
+          await notificationsApi.updateReminder(editing.id, { time: t, text: txt });
+          setEditing(null);
+          setError(null);
+        } catch (e) { setEditError(e instanceof Error ? e.message : String(e)); }
+        await load();
+      });
+    } else {
+      const kw = (editing.keyword || "").trim();
+      const act = (editing.action || "").trim();
+      if (!kw) { setEditError("窗口监控需要填写关键词"); return; }
+      await withPending(editing.id, async () => {
+        try {
+          await notificationsApi.updateMonitor(editing.id, {
+            keywords: kw,
+            action_requirement: act === "仅提醒" ? "" : act,
+          });
+          setEditing(null);
+          setError(null);
+        } catch (e) { setEditError(e instanceof Error ? e.message : String(e)); }
+        await load();
+      });
+    }
+  };
+
   const createReminder = async () => {
     if (!remText.trim() || saving) return;
     setSaving(true);
@@ -137,6 +191,7 @@ export default function AutomationsPage() {
         </div>
 
         {error && <p className="text-sm text-red-500 bg-red-50 dark:bg-red-950 rounded-xl px-4 py-2.5">{error}</p>}
+        {editError && <p className="text-sm text-red-500 bg-red-50 dark:bg-red-950 rounded-xl px-4 py-2.5">{editError}</p>}
 
         {/* ---- 定时提醒 ---- */}
         <Card className="rounded-3xl border-violet-200/70 dark:border-violet-800/70 bg-white/80 dark:bg-slate-900/70 backdrop-blur-xl shadow-xl shadow-violet-500/5">
@@ -167,17 +222,38 @@ export default function AutomationsPage() {
                   {reminders.map((r) => (
                     <div key={r.id} className={`flex items-center gap-3 rounded-xl border px-4 py-2.5 ${r.enabled ? "border-violet-200/60 dark:border-violet-800" : "border-slate-200 dark:border-slate-700 opacity-55"}`}>
                       <Bell className={`w-4 h-4 shrink-0 ${r.enabled ? "text-violet-500" : "text-slate-400"}`} />
-                      <span className={`font-mono text-sm shrink-0 ${r.enabled ? "text-violet-600 dark:text-violet-300" : "text-slate-400"}`}>每天 {r.time}</span>
-                      <span className={`flex-1 text-sm ${r.enabled ? "text-slate-700 dark:text-slate-200" : "text-slate-400"}`}>{r.text}</span>
-                      {/* 开关 */}
-                      <button onClick={() => toggleRem(r.id)} disabled={inFlight(r.id)} title={r.enabled ? "停用" : "启用"}
-                        className={`relative w-10 h-5 rounded-full transition-colors shrink-0 disabled:opacity-40 ${r.enabled ? "bg-violet-500" : "bg-slate-300 dark:bg-slate-600"}`}>
-                        <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${r.enabled ? "left-5" : "left-0.5"}`} />
-                      </button>
-                      {/* 删除 */}
-                      <button onClick={() => delRem(r.id)} disabled={inFlight(r.id)} title="删除" className="p-1.5 rounded-lg text-muted-foreground hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/50 transition-colors shrink-0 disabled:opacity-40">
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      {editing?.kind === "rem" && editing.id === r.id ? (
+                        <>
+                          <input type="time" value={editing.time || ""}
+                            onChange={(e) => setEditing((ed) => (ed ? { ...ed, time: e.target.value } : ed))}
+                            className="w-28 rounded-lg border border-violet-300 dark:border-violet-700 bg-white dark:bg-slate-900 px-2 py-1 text-sm text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-violet-400" />
+                          <input value={editing.text || ""}
+                            onChange={(e) => setEditing((ed) => (ed ? { ...ed, text: e.target.value } : ed))}
+                            placeholder="提醒内容"
+                            className="flex-1 min-w-0 rounded-lg border border-violet-300 dark:border-violet-700 bg-white dark:bg-slate-900 px-2 py-1 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 outline-none focus:ring-2 focus:ring-violet-400" />
+                          <button onClick={saveEdit} disabled={inFlight(r.id)} title="保存" className="p-1.5 rounded-lg text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 disabled:opacity-40 shrink-0">
+                            {inFlight(r.id) ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                          </button>
+                          <button onClick={cancelEdit} title="取消" className="p-1.5 rounded-lg text-muted-foreground hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0">
+                            <X className="w-4 h-4" />
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <span className={`font-mono text-sm shrink-0 ${r.enabled ? "text-violet-600 dark:text-violet-300" : "text-slate-400"}`}>每天 {r.time}</span>
+                          <span className={`flex-1 text-sm ${r.enabled ? "text-slate-700 dark:text-slate-200" : "text-slate-400"}`}>{r.text}</span>
+                          <button onClick={() => startEditRem(r)} disabled={inFlight(r.id)} title="编辑" className="p-1.5 rounded-lg text-muted-foreground hover:text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-950/50 transition-colors shrink-0 disabled:opacity-40">
+                            <Pencil className="w-4 h-4" />
+                          </button>
+                          <button onClick={() => toggleRem(r.id)} disabled={inFlight(r.id)} title={r.enabled ? "停用" : "启用"}
+                            className={`relative w-10 h-5 rounded-full transition-colors shrink-0 disabled:opacity-40 ${r.enabled ? "bg-violet-500" : "bg-slate-300 dark:bg-slate-600"}`}>
+                            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${r.enabled ? "left-5" : "left-0.5"}`} />
+                          </button>
+                          <button onClick={() => delRem(r.id)} disabled={inFlight(r.id)} title="删除" className="p-1.5 rounded-lg text-muted-foreground hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/50 transition-colors shrink-0 disabled:opacity-40">
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -228,19 +304,41 @@ export default function AutomationsPage() {
                       <span className={`text-xs font-mono px-1.5 py-0.5 rounded-md shrink-0 ${m.enabled ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300" : "bg-slate-100 text-slate-400"}`}>
                         {m.monitor_type === "window" ? "窗口" : "屏幕"}
                       </span>
-                      <span className={`flex-1 text-sm truncate ${m.enabled ? "text-slate-700 dark:text-slate-200" : "text-slate-400"}`}>
-                        {m.keywords || m.condition || "（条件未填）"} <span className="text-slate-400">→</span> {m.action_requirement || "仅提醒"}
-                      </span>
-                      <span className="text-[11px] text-muted-foreground shrink-0 hidden sm:inline">每{m.check_interval}s</span>
-                      {/* 开关 */}
-                      <button onClick={() => toggleMon(m.id)} disabled={inFlight(m.id)} title={m.enabled ? "停用" : "启用"}
-                        className={`relative w-10 h-5 rounded-full transition-colors shrink-0 disabled:opacity-40 ${m.enabled ? "bg-emerald-500" : "bg-slate-300 dark:bg-slate-600"}`}>
-                        <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${m.enabled ? "left-5" : "left-0.5"}`} />
-                      </button>
-                      {/* 删除 */}
-                      <button onClick={() => delMon(m.id)} disabled={inFlight(m.id)} title="删除" className="p-1.5 rounded-lg text-muted-foreground hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/50 transition-colors shrink-0 disabled:opacity-40">
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      {editing?.kind === "mon" && editing.id === m.id ? (
+                        <>
+                          <input value={editing.keyword || ""}
+                            onChange={(e) => setEditing((ed) => (ed ? { ...ed, keyword: e.target.value } : ed))}
+                            placeholder="窗口关键词"
+                            className="flex-1 min-w-0 rounded-lg border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-slate-900 px-2 py-1 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 outline-none focus:ring-2 focus:ring-emerald-400" />
+                          <input value={editing.action || ""}
+                            onChange={(e) => setEditing((ed) => (ed ? { ...ed, action: e.target.value } : ed))}
+                            placeholder="触发动作（仅提醒/任务需求）"
+                            className="flex-1 min-w-0 rounded-lg border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-slate-900 px-2 py-1 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 outline-none focus:ring-2 focus:ring-emerald-400" />
+                          <button onClick={saveEdit} disabled={inFlight(m.id)} title="保存" className="p-1.5 rounded-lg text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 disabled:opacity-40 shrink-0">
+                            {inFlight(m.id) ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                          </button>
+                          <button onClick={cancelEdit} title="取消" className="p-1.5 rounded-lg text-muted-foreground hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0">
+                            <X className="w-4 h-4" />
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <span className={`flex-1 text-sm truncate ${m.enabled ? "text-slate-700 dark:text-slate-200" : "text-slate-400"}`}>
+                            {m.keywords || m.condition || "（条件未填）"} <span className="text-slate-400">→</span> {m.action_requirement || "仅提醒"}
+                          </span>
+                          <span className="text-[11px] text-muted-foreground shrink-0 hidden sm:inline">每{m.check_interval}s</span>
+                          <button onClick={() => startEditMon(m)} disabled={inFlight(m.id)} title="编辑" className="p-1.5 rounded-lg text-muted-foreground hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 transition-colors shrink-0 disabled:opacity-40">
+                            <Pencil className="w-4 h-4" />
+                          </button>
+                          <button onClick={() => toggleMon(m.id)} disabled={inFlight(m.id)} title={m.enabled ? "停用" : "启用"}
+                            className={`relative w-10 h-5 rounded-full transition-colors shrink-0 disabled:opacity-40 ${m.enabled ? "bg-emerald-500" : "bg-slate-300 dark:bg-slate-600"}`}>
+                            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${m.enabled ? "left-5" : "left-0.5"}`} />
+                          </button>
+                          <button onClick={() => delMon(m.id)} disabled={inFlight(m.id)} title="删除" className="p-1.5 rounded-lg text-muted-foreground hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/50 transition-colors shrink-0 disabled:opacity-40">
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </>
+                      )}
                     </div>
                   ))}
                 </div>

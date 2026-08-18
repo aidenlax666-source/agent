@@ -601,6 +601,24 @@ def _toggle_reminder(user_id: str, reminder_id: str) -> bool | None:
         return bool(row["enabled"]) if row else None
 
 
+def _update_reminder(user_id: str, reminder_id: str, time_str: str | None = None,
+                     text: str | None = None) -> bool:
+    """更新提醒的时间/内容（None 的字段保持不变）。返回是否更新成功。"""
+    sets, vals = [], []
+    if time_str is not None:
+        sets.append("time=?")
+        vals.append(time_str)
+    if text is not None:
+        sets.append("text=?")
+        vals.append(text)
+    if not sets:
+        return True
+    vals += [reminder_id, user_id]
+    with _get_conn() as conn:
+        cur = conn.execute(f"UPDATE reminders SET {', '.join(sets)} WHERE id=? AND user_id=?", vals)
+        return cur.rowcount > 0
+
+
 async def add_reminder(user_id: str, time_str: str, text: str, source_task: str = "") -> None:
     return await _run_async(_add_reminder, user_id, time_str, text, source_task)
 
@@ -685,6 +703,34 @@ def _toggle_monitor(user_id: str, monitor_id: str) -> bool | None:
         return bool(row["enabled"]) if row else None
 
 
+def _update_monitor(user_id: str, monitor_id: str, keywords: str | None = None,
+                    condition: str | None = None, action_requirement: str | None = None,
+                    check_interval: int | None = None, monitor_type: str | None = None) -> bool:
+    """更新监控配置（None 的字段保持不变）。返回是否更新成功。"""
+    sets, vals = [], []
+    if keywords is not None:
+        sets.append("keywords=?")
+        vals.append(keywords)
+    if condition is not None:
+        sets.append("condition=?")
+        vals.append(condition)
+    if action_requirement is not None:
+        sets.append("action_requirement=?")
+        vals.append(action_requirement)
+    if check_interval is not None:
+        sets.append("check_interval=?")
+        vals.append(max(5, min(int(check_interval), 3600)))
+    if monitor_type is not None:
+        sets.append("monitor_type=?")
+        vals.append(monitor_type)
+    if not sets:
+        return True
+    vals += [monitor_id, user_id]
+    with _get_conn() as conn:
+        cur = conn.execute(f"UPDATE monitors SET {', '.join(sets)} WHERE id=? AND user_id=?", vals)
+        return cur.rowcount > 0
+
+
 async def add_monitor(user_id: str, monitor_type: str, keywords: str = "", condition: str = "",
                       action_requirement: str = "", check_interval: int = 60, source_task: str = "") -> str:
     return await _run_async(_add_monitor, user_id, monitor_type, keywords, condition,
@@ -705,6 +751,18 @@ async def delete_monitor(user_id: str, monitor_id: str) -> bool:
 
 async def toggle_monitor(user_id: str, monitor_id: str) -> bool | None:
     return await _run_async(_toggle_monitor, user_id, monitor_id)
+
+
+async def update_monitor(user_id: str, monitor_id: str, keywords: str | None = None,
+                         condition: str | None = None, action_requirement: str | None = None,
+                         check_interval: int | None = None, monitor_type: str | None = None) -> bool:
+    return await _run_async(_update_monitor, user_id, monitor_id, keywords, condition,
+                            action_requirement, check_interval, monitor_type)
+
+
+async def update_reminder(user_id: str, reminder_id: str, time_str: str | None = None,
+                          text: str | None = None) -> bool:
+    return await _run_async(_update_reminder, user_id, reminder_id, time_str, text)
 
 
 # ============================================================

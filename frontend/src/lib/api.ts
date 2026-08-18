@@ -224,6 +224,11 @@ export const miniApi = {
       method: "POST",
     }),
 
+  remove: (taskId: string) =>
+    request<{ ok: boolean; deleted: boolean }>(`/api/mini/tasks/${taskId}`, {
+      method: "DELETE",
+    }),
+
   schedule: (taskId: string, schedule_type: string, schedule_value: string, enabled: boolean) =>
     request<{ id: string; enabled: boolean }>(`/api/mini/tasks/${taskId}/schedule`, {
       method: "POST",
@@ -291,11 +296,23 @@ export const notificationsApi = {
   deleteReminder: (id: string) =>
     request<{ ok: boolean }>(`/api/reminders/${id}`, { method: "DELETE" }),
 
+  updateReminder: (id: string, data: { time?: string; text?: string }) =>
+    request<{ ok: boolean; missing?: boolean }>(`/api/reminders/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+
   toggleReminder: (id: string) =>
     request<{ ok: boolean; enabled: boolean }>(`/api/reminders/${id}/toggle`, { method: "POST" }),
 
   deleteMonitor: (id: string) =>
     request<{ ok: boolean }>(`/api/monitors/${id}`, { method: "DELETE" }),
+
+  updateMonitor: (id: string, data: { type?: string; keywords?: string; condition?: string; action_requirement?: string; check_interval?: number }) =>
+    request<{ ok: boolean; missing?: boolean }>(`/api/monitors/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
 
   toggleMonitor: (id: string) =>
     request<{ ok: boolean; enabled: boolean }>(`/api/monitors/${id}/toggle`, { method: "POST" }),

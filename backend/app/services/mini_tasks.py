@@ -2842,3 +2842,35 @@ def cancel_task(task_id: str, user_id: str = "") -> bool:
         if rec.get("user_id") and rec["user_id"] != user_id:
             return False
     return cancel(task_id)
+
+
+def delete_task(task_id: str, user_id: str = "") -> bool:
+    """删除任务记录（内存 + SQLite）；user_id 非空时校验归属。"""
+    if user_id:
+        rec = _TASKS.get(task_id)
+        if rec is None:
+            try:
+                import sqlite3
+                from app.database import DB_PATH
+                conn = sqlite3.connect(str(DB_PATH))
+                conn.row_factory = sqlite3.Row
+                row = conn.execute("SELECT user_id FROM mini_tasks WHERE id=?", (task_id,)).fetchone()
+                conn.close()
+                if not row:
+                    return False
+                rec = dict(row)
+            except Exception:
+                return False
+        if rec.get("user_id") and rec["user_id"] != user_id:
+            return False
+    # 运行中的任务先取消
+    if is_running(task_id):
+        cancel(task_id)
+    _TASKS.pop(task_id, None)
+    try:
+        from app.database import _get_conn
+        with _get_conn() as conn:
+            conn.execute("DELETE FROM mini_tasks WHERE id=?", (task_id,))
+    except Exception:
+        pass
+    return True

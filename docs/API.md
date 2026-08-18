@@ -18,6 +18,7 @@ Base URL: `http://localhost:8000/api` · 交互文档: `http://localhost:8000/do
 | POST | `/mini/tasks/{id}/cancel` | 取消运行中 | |
 | POST | `/mini/tasks/{id}/schedule` | 定时执行 | `{schedule_type: interval\|daily, schedule_value, enabled}` |
 | GET | `/mini/tasks/{id}/download` | 下载结果文件 | 强制下载 + nosniff |
+| DELETE | `/mini/tasks/{id}` | 删除任务记录（仅本人） | |
 
 ## 开发助手（/dev）
 
@@ -35,9 +36,11 @@ dev 接口都支持模型输出 **patch（unified diff）** 而非完整文件�
 |---|---|---|
 | GET | `/automations` | 提醒 + 监控列表 |
 | POST | `/reminders` | 创建提醒 `{time: "HH:MM", text}` |
+| PUT | `/reminders/{rid}` | 编辑提醒 `{time?, text?}`（可部分更新，带格式校验） |
 | DELETE | `/reminders/{rid}` | 删除（幂等） |
 | POST | `/reminders/{rid}/toggle` | 启停 |
 | POST | `/monitors` | 创建监控 `{type: window\|screen, ...}` |
+| PUT | `/monitors/{mid}` | 编辑监控 `{type?, keywords?, condition?, action_requirement?, check_interval?}` |
 | DELETE | `/monitors/{mid}` | 删除（幂等） |
 | POST | `/monitors/{mid}/toggle` | 启停 |
 

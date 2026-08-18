@@ -5,7 +5,7 @@ import Link from "next/link";
 import { miniApi } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
-import { History as HistoryIcon, Loader2, ArrowRight, Inbox } from "lucide-react";
+import { History as HistoryIcon, Loader2, ArrowRight, Inbox, Trash2 } from "lucide-react";
 import AppNav from "@/components/AppNav";
 
 const STATUS_STYLE: Record<string, { label: string; cls: string }> = {
@@ -60,6 +60,22 @@ export default function HistoryPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  const [deleting, setDeleting] = useState<string | null>(null);
+
+  const removeTask = async (id: string) => {
+    if (deleting) return;
+    if (!window.confirm("确定删除这条任务记录吗？删除后不可恢复。")) return;
+    setDeleting(id);
+    try {
+      await miniApi.remove(id);
+      setTasks((prev) => prev.filter((t) => t.id !== id));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDeleting(null);
+    }
+  };
 
   const shown = filter === "全部" ? tasks : tasks.filter((t) => STATUS_STYLE[t.status]?.label === filter);
 
@@ -116,20 +132,29 @@ export default function HistoryPage() {
                 {shown.map((h) => {
                   const st = STATUS_STYLE[h.status];
                   return (
-                    <Link
-                      key={h.id}
-                      href={`/mini?task=${h.id}`}
-                      className="block w-full text-left rounded-2xl px-4 py-3 text-sm transition-all hover:bg-indigo-50/60 dark:hover:bg-indigo-950/30 group"
-                    >
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-muted-foreground text-xs font-mono">#{h.id.slice(0, 8)}</span>
-                        {st && <Badge className={`${st.cls} text-[10px]`}>{st.label}</Badge>}
-                        <span className="text-xs text-muted-foreground">{fmtTime(h.created_at)}</span>
-                        <ArrowRight className="w-3.5 h-3.5 ml-auto text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
-                      </div>
-                      <div className="mt-1 text-foreground/85 line-clamp-2">{h.requirement}</div>
-                      {h.message && <div className="mt-0.5 text-xs text-muted-foreground truncate">{h.message}</div>}
-                    </Link>
+                    <div key={h.id} className="group flex items-stretch gap-1 rounded-2xl border border-transparent hover:border-indigo-200/60 dark:hover:border-indigo-800/60 hover:bg-indigo-50/50 dark:hover:bg-indigo-950/30 transition-all">
+                      <Link
+                        href={`/mini?task=${h.id}`}
+                        className="flex-1 min-w-0 block text-left rounded-2xl px-4 py-3 text-sm"
+                      >
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-muted-foreground text-xs font-mono">#{h.id.slice(0, 8)}</span>
+                          {st && <Badge className={`${st.cls} text-[10px]`}>{st.label}</Badge>}
+                          <span className="text-xs text-muted-foreground">{fmtTime(h.created_at)}</span>
+                          <ArrowRight className="w-3.5 h-3.5 ml-auto text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </div>
+                        <div className="mt-1 text-foreground/85 line-clamp-2">{h.requirement}</div>
+                        {h.message && <div className="mt-0.5 text-xs text-muted-foreground truncate">{h.message}</div>}
+                      </Link>
+                      <button
+                        onClick={() => removeTask(h.id)}
+                        disabled={deleting === h.id}
+                        title="删除这条任务记录"
+                        className="self-center p-2 mr-2 rounded-lg text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/50 transition-all disabled:opacity-40 shrink-0"
+                      >
+                        {deleting === h.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                      </button>
+                    </div>
                   );
                 })}
               </div>

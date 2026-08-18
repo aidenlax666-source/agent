@@ -462,6 +462,30 @@ async def create_monitor(data: dict, user=Depends(get_current_user)):
             "condition": condition, "action_requirement": action, "check_interval": interval}
 
 
+@router.put("/reminders/{rid}")
+async def update_reminder(rid: str, data: dict, user=Depends(get_current_user)):
+    """编辑定时提醒：{time?: "HH:MM", text?: "内容"}（字段可部分更新）。"""
+    import re as _re
+    from app.database import update_reminder as _db_update
+    t = data.get("time")
+    text = data.get("text")
+    if t is not None:
+        t = str(t).strip()
+        if not _re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", t):
+            raise HTTPException(status_code=400, detail="time 需要 HH:MM 格式（如 08:30）")
+    if text is not None:
+        text = str(text).strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="text 不能为空")
+        if len(text) > 200:
+            raise HTTPException(status_code=400, detail="text 过长（最多 200 字）")
+    ok = await _db_update(user["id"], rid, time_str=t, text=text)
+    if not ok:
+        # 幂等：不存在返回 missing，前端据此刷新
+        return {"ok": False, "missing": True}
+    return {"ok": True}
+
+
 @router.delete("/reminders/{rid}")
 async def delete_reminder(rid: str, user=Depends(get_current_user)):
     from app.database import delete_reminder as _db_del_rem
@@ -478,6 +502,41 @@ async def toggle_reminder(rid: str, user=Depends(get_current_user)):
         # 幂等：不存在返回当前无效状态，前端据此刷新列表
         return {"ok": True, "enabled": False, "missing": True}
     return {"ok": True, "enabled": enabled}
+
+
+@router.put("/monitors/{mid}")
+async def update_monitor(mid: str, data: dict, user=Depends(get_current_user)):
+    """编辑监控任务：{type?, keywords?, condition?, action_requirement?, check_interval?}（字段可部分更新）。"""
+    from app.database import update_monitor as _db_update, list_monitors
+    mtype = data.get("type")
+    keywords = data.get("keywords")
+    condition = data.get("condition")
+    action = data.get("action_requirement")
+    interval = data.get("check_interval")
+
+    if mtype is not None:
+        mtype = str(mtype).strip()
+        if mtype not in ("window", "screen"):
+            raise HTTPException(status_code=400, detail="type 只能是 window 或 screen")
+    if keywords is not None:
+        keywords = str(keywords).strip()
+        if mtype in (None, "window") and not keywords:
+            raise HTTPException(status_code=400, detail="window 监控需要 keywords（窗口标题关键词）")
+    if condition is not None:
+        condition = str(condition).strip()[:100]
+    if action is not None:
+        action = str(action).strip()[:300]
+    if interval is not None:
+        try:
+            interval = max(5, min(int(interval), 3600))
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="check_interval 需要 5~3600 的整数（秒）")
+
+    ok = await _db_update(user["id"], mid, keywords=keywords, condition=condition,
+                          action_requirement=action, check_interval=interval, monitor_type=mtype)
+    if not ok:
+        return {"ok": False, "missing": True}
+    return {"ok": True}
 
 
 @router.delete("/monitors/{mid}")
@@ -515,6 +574,13 @@ async def task_status(task_id: str, user=Depends(get_current_user)):
 async def cancel_task(task_id: str, user=Depends(get_current_user)):
     ok = mini_tasks.cancel_task(task_id, user["id"])
     return {"cancelled": ok}
+
+
+@router.delete("/mini/tasks/{task_id}")
+async def delete_task(task_id: str, user=Depends(get_current_user)):
+    """删除任务历史（仅本人；运行中先取消）。幂等：不存在返回 ok。"""
+    ok = mini_tasks.delete_task(task_id, user["id"])
+    return {"ok": True, "deleted": ok}
 
 
 @router.post("/mini/tasks/{task_id}/iterate")
