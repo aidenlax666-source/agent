@@ -22,6 +22,7 @@ export default function SessionsPage() {
   const [message, setMessage] = useState("");
   const [hasProfile, setHasProfile] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [expiresAt, setExpiresAt] = useState(0);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const stopPoll = () => {
@@ -32,6 +33,7 @@ export default function SessionsPage() {
     try {
       const r = await sessionsApi.check();
       setHasProfile(Boolean(r.has_profile));
+      setExpiresAt(r.expires_at || 0);
     } catch { /* ignore */ }
   }, []);
 
@@ -114,8 +116,17 @@ export default function SessionsPage() {
         return <span className="inline-flex items-center gap-1.5 text-sm text-emerald-600 dark:text-emerald-400"><CheckCircle2 className="w-4 h-4" /> {message}</span>;
       case "error":
         return <span className="inline-flex items-center gap-1.5 text-sm text-red-600 dark:text-red-400"><AlertTriangle className="w-4 h-4" /> {message}</span>;
-      default:
-        return <span className="text-sm text-muted-foreground">{hasProfile ? "已有已保存的登录态，可直接使用" : "尚未保存登录态"}</span>;
+      default: {
+        if (hasProfile && expiresAt > 0) {
+          const remaining = Math.max(0, Math.round((expiresAt - Date.now() / 1000) / 60));
+          if (remaining <= 0) {
+            return <span className="inline-flex items-center gap-1.5 text-sm text-amber-600 dark:text-amber-400"><AlertTriangle className="w-4 h-4" /> 登录态已过期，需要重新登录</span>;
+          }
+          const exp = new Date(expiresAt * 1000).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+          return <span className="inline-flex items-center gap-1.5 text-sm text-emerald-600 dark:text-emerald-400"><CheckCircle2 className="w-4 h-4" /> 登录态有效，约 {exp} 过期（剩 {remaining} 分钟）</span>;
+        }
+        return <span className="text-sm text-muted-foreground">{hasProfile ? "已有登录态" : "尚未保存登录态（有效期 2 小时，用于登录抓取）"}</span>;
+      }
     }
   };
 
@@ -168,8 +179,8 @@ export default function SessionsPage() {
               <p className="font-medium text-slate-600 dark:text-slate-300">使用说明</p>
               <p>1. 输入需要登录的网站（如电商/社交平台），点「打开浏览器登录」</p>
               <p>2. 在弹出的真实浏览器窗口里手动登录（输账号密码 / 扫码）</p>
-              <p>3. 点「我已完成登录」→ 登录态保存到你的账号，抓取任务自动复用</p>
-              <p className="text-amber-600 dark:text-amber-400">⚠️ 登录态仅保存在本机，不会上传；请只登录自己信任的网站</p>
+              <p>3. 点「我已完成登录」→ 登录态短时保存，抓取任务自动复用</p>
+              <p className="text-amber-600 dark:text-amber-400">⏱️ 登录态有效期 2 小时（第三方 Cookie 会过期），过期需重新登录；仅保存在本机，不会上传</p>
             </div>
           </CardContent>
         </Card>

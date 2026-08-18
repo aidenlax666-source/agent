@@ -1,8 +1,11 @@
 from __future__ import annotations
-"""Login via Playwright persistent context - login once, reuse forever.
+"""Login via Playwright persistent context - login once, reuse for a short window.
 
 登录态按账号隔离：每个用户（含匿名会话）的登录 cookie 存到独立目录
 browser_profile/{user_id}/，任务沙箱只加载该用户自己的登录态。
+
+**短时存储**：第三方网站登录态（Cookie）会过期，这里只做短时保存（默认 2 小时），
+过期自动失效并清理——够"登录→抓取"用一次即可，不长期保留登录凭证。
 """
 
 import re
@@ -21,6 +24,9 @@ router = APIRouter()
 PROFILE_DIR = Path(__file__).parent.parent.parent / "browser_profile"
 PROFILE_DIR.mkdir(exist_ok=True)
 
+# 登录态有效期（秒）：第三方 Cookie 会过期，短时保存即可（默认 2 小时）
+LOGIN_TTL_SECONDS = 2 * 3600
+
 _login_status: dict = {"status": "idle", "message": ""}
 
 # 每个用户一个登录窗口槽位（不再全局单槽：避免一人开窗阻塞全站）
@@ -36,12 +42,43 @@ def _safe_domain(url: str) -> str:
 
 
 def _save_state(ctx, domain: str, profile_dir: str) -> None:
-    """Persist the browser context's login state to {user_profile}/{domain}.json."""
+    """把登录态存为短时文件：JSON 里带 _saved_at 时间戳（过期清理用）。"""
     state = ctx.storage_state()
     Path(profile_dir).mkdir(parents=True, exist_ok=True)
+    record = {"_saved_at": time.time(), "state": state}
     (Path(profile_dir) / f"{domain}.json").write_text(
-        json.dumps(state, ensure_ascii=False), encoding="utf-8"
+        json.dumps(record, ensure_ascii=False), encoding="utf-8"
     )
+
+
+def _state_valid_at(profile_dir: str, domain: str, now: float | None = None) -> bool:
+    """判断某域名登录态文件是否仍在有效期内。"""
+    now = now or time.time()
+    p = Path(profile_dir) / f"{domain}.json"
+    if not p.is_file():
+        return False
+    try:
+        rec = json.loads(p.read_text(encoding="utf-8"))
+        saved = rec.get("_saved_at") or 0
+        return now - saved < LOGIN_TTL_SECONDS
+    except Exception:
+        return False
+
+
+def _cleanup_expired(user_id: str) -> None:
+    """清理该用户已过期的登录态文件（短时存储，过期即删）。"""
+    user_dir = PROFILE_DIR / str(user_id)
+    if not user_dir.is_dir():
+        return
+    now = time.time()
+    for f in user_dir.glob("*.json"):
+        try:
+            rec = json.loads(f.read_text(encoding="utf-8"))
+            saved = rec.get("_saved_at") or 0
+            if now - saved >= LOGIN_TTL_SECONDS:
+                f.unlink(missing_ok=True)
+        except Exception:
+            f.unlink(missing_ok=True)  # 损坏文件直接清掉
 
 
 @router.post("/sessions/login")
@@ -152,11 +189,25 @@ async def login_status(user=Depends(get_current_user)):
 
 @router.get("/sessions/check")
 async def check_profile(user=Depends(get_current_user)):
-    """Check if the current account has any saved login state.（不暴露服务器路径）"""
+    """Check if the current account has a VALID (non-expired) login state.（不暴露服务器路径）"""
     user_dir = PROFILE_DIR / str(user["id"])
+    _cleanup_expired(str(user["id"]))  # 先清过期，只算有效的
     files = list(user_dir.glob("*.json")) if user_dir.is_dir() else []
+    has_valid = False
+    expires_at = 0.0
+    for f in files:
+        try:
+            rec = json.loads(f.read_text(encoding="utf-8"))
+            saved = rec.get("_saved_at") or 0
+            if saved > expires_at:
+                expires_at = saved + LOGIN_TTL_SECONDS
+            has_valid = True
+        except Exception:
+            continue
     return {
-        "has_profile": any(f.stat().st_size > 100 for f in files),
+        "has_profile": has_valid,
+        "expires_at": expires_at,
+        "ttl_seconds": LOGIN_TTL_SECONDS,
     }
 
 

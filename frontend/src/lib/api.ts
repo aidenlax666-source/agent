@@ -138,7 +138,7 @@ export const sessionsApi = {
     request<{ status: string; message: string; domain?: string }>("/api/sessions/status"),
 
   check: () =>
-    request<{ has_profile: boolean }>("/api/sessions/check"),
+    request<{ has_profile: boolean; expires_at?: number; ttl_seconds?: number }>("/api/sessions/check"),
 };
 
 // ---- Mini Generator（自然语言任务：一句话 → 自动脚本 → 校验 → 结果） ----

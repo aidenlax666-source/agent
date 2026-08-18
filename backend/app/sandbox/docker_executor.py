@@ -247,17 +247,26 @@ async def _execute_in_sandbox_impl(
     auth_dir = profile_dir or os.path.join(os.path.dirname(__file__), "..", "..", "browser_profile")
     auth_dir = os.path.normpath(auth_dir)
     if os.path.exists(auth_dir):
+        _ttl = getattr(settings, "sandbox_login_ttl", 7200)
         auth_injection = (
-            "\n# === AUTH STATE INJECTION (merge all saved domains) ===\n"
-            "import json as _json, os as _os, glob as _glob\n"
+            "\n# === AUTH STATE INJECTION (merge valid, non-expired domains) ===\n"
+            "import json as _json, os as _os, glob as _glob, time as _time\n"
             f"_AUTH_DIR = r'{auth_dir}'\n"
+            f"_AUTH_TTL = {_ttl}\n"
             "def _load_auth():\n"
             "    try:\n"
             "        merged = {'cookies': [], 'origins': []}\n"
+            "        _now = _time.time()\n"
             "        for _f in _glob.glob(_os.path.join(_AUTH_DIR, '*.json')):\n"
             "            try:\n"
             "                with open(_f, encoding='utf-8') as _fp:\n"
-            "                    _s = _json.load(_fp)\n"
+            "                    _rec = _json.load(_fp)\n"
+            "                # 短时登录态：无 _saved_at（旧格式）或超 TTL 均视为过期跳过\n"
+            "                if not isinstance(_rec, dict) or not _rec.get('_saved_at'):\n"
+            "                    continue\n"
+            "                if _now - _rec['_saved_at'] > _AUTH_TTL:\n"
+            "                    continue\n"
+            "                _s = _rec.get('state', {})\n"
             "                merged['cookies'].extend(_s.get('cookies', []))\n"
             "                merged['origins'].extend(_s.get('origins', []))\n"
             "            except: pass\n"

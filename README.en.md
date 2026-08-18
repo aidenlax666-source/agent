@@ -174,7 +174,7 @@ See [docs/SECURITY.md](docs/SECURITY.md) for the full threat model.
 
 - 100 general tasks: **98%+** pass rate (Excel/Word/PPT/files/data/text/API/image/PDF)
 - Complex multi-dimensional tasks (3-6 dimensions): **9/9** pass, data verified against official APIs
-- Xiaohongshu login-state scraping 3/3; multimodal (vision/video/img2video) tested
+- Login-state scraping 3/3; multimodal (vision/video/img2video) tested
 - 4-layer verification catches false passes (missing count/fields/features/wrong values → auto-fix)
 - apply_patch: existing-file changes output only a few diff lines (measured: search feature +4/+9 lines, no duplication)
 - Two-stage context: 17-file project reads only 1-2 relevant files (grep locates hidden call sites)
