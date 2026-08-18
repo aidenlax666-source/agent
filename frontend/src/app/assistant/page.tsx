@@ -77,6 +77,19 @@ function base64ToUint8(b64: string): Uint8Array {
   return bytes;
 }
 
+// 下载修改后的文件 zip（兼容模式：无法写回本地文件夹时取回改动）
+function downloadZipB64(zipB64: string) {
+  try {
+    const blob = new Blob([base64ToUint8(zipB64)], { type: "application/zip" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "modified_files.zip";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch { /* ignore */ }
+}
+
 function uint8ToBlob(bytes: Uint8Array, type: string): Blob {
   // 兼容 TS 的 ArrayBufferLike 泛型：取精确的 ArrayBuffer 切片
   const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
@@ -491,6 +504,14 @@ export default function ClaudePage() {
                             <pre className="max-h-48 overflow-auto whitespace-pre-wrap text-[11px] text-slate-600 dark:text-slate-300">{b.devOutput}</pre>
                           )}
                         </div>
+                      )}
+                      {b.zipB64 && b.applied === undefined && (
+                        <button
+                          onClick={() => downloadZipB64(b.zipB64 || "")}
+                          className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-300 hover:underline rounded-lg border border-emerald-300/60 dark:border-emerald-700/60 px-3 py-1.5 hover:bg-emerald-100/60 dark:hover:bg-emerald-900/30 transition-colors"
+                        >
+                          <Download className="w-3.5 h-3.5" /> 下载修改后的文件（zip）
+                        </button>
                       )}
                     </div>
                   ) : null}

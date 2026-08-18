@@ -59,7 +59,7 @@ dev 接口都支持模型输出 **patch（unified diff）** 而非完整文件�
 | GET | `/files` | 我的文件（产物列表，仅本人） |
 | POST | `/files/rename` | 重命名产物（禁止改扩展名） |
 | DELETE | `/files/{filename}` | 删除产物（仅本人） |
-| GET | `/game/rooms` | 创建联机房间 |
+| POST | `/game/rooms` | 创建联机房间 |
 | GET | `/game/rooms/{room_id}` | 房间信息 |
 
 ## 任务状态机

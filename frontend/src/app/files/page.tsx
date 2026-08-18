@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Download, Pencil, RefreshCw, Trash2, FileText, FolderOpen, AlertTriangle } from "lucide-react";
 import { filesApi, type FileItem } from "@/lib/api";
 import { ASSETS_BASE } from "@/lib/api";
+import AppNav from "@/components/AppNav";
 
 function sizeHuman(size: number): string {
   if (size < 1024) return `${size}B`;
@@ -86,7 +87,9 @@ export default function FilesPage() {
   };
 
   return (
-    <div className="max-w-4xl mx-auto px-4 py-8">
+    <div className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-indigo-50/40 dark:from-slate-950 dark:via-slate-950 dark:to-indigo-950/30">
+      <AppNav />
+      <div className="max-w-4xl mx-auto px-4 py-8">
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">
           <FolderOpen className="w-6 h-6 text-indigo-500" />
@@ -162,6 +165,7 @@ export default function FilesPage() {
           ))}
         </div>
       )}
+      </div>
     </div>
   );
 }

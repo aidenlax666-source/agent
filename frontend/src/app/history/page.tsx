@@ -43,19 +43,20 @@ export default function HistoryPage() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("全部");
   const [error, setError] = useState<string | null>(null);
+  const [limit, setLimit] = useState(50);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const r = await miniApi.list(50);
+      const r = await miniApi.list(limit);
       setTasks(r.tasks || []);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [limit]);
 
   useEffect(() => {
     load();
@@ -157,6 +158,13 @@ export default function HistoryPage() {
                     </div>
                   );
                 })}
+              </div>
+            )}
+            {!loading && !error && shown.length > 0 && tasks.length >= limit && (
+              <div className="mt-3 text-center">
+                <button onClick={() => setLimit((l) => l + 50)} className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline">
+                  加载更多（当前 {tasks.length} 条）
+                </button>
               </div>
             )}
           </CardContent>

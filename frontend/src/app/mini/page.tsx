@@ -73,6 +73,7 @@ export default function MiniPage() {
   const [dataPaths, setDataPaths] = useState<string[]>([]);
   const [dataFiles, setDataFiles] = useState<{ name: string; path: string }[]>([]);
   const [scheduleValue, setScheduleValue] = useState("30");
+  const [scheduleType, setScheduleType] = useState<"interval" | "daily">("interval");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const stopPolling = useCallback(() => {
@@ -271,7 +272,7 @@ export default function MiniPage() {
   const handleSchedule = async (enabled: boolean) => {
     if (!task) return;
     try {
-      await miniApi.schedule(task.id, "interval", scheduleValue || "30", enabled);
+      await miniApi.schedule(task.id, scheduleType, scheduleValue || (scheduleType === "daily" ? "09:00" : "30"), enabled);
       setSubmitError(null);
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : String(e));
@@ -622,9 +623,25 @@ export default function MiniPage() {
                   </div>
                   <div className="flex items-center gap-2 flex-wrap text-xs">
                     <span className="text-muted-foreground">定时执行：</span>
-                    <input value={scheduleValue} onChange={(e) => setScheduleValue(e.target.value)}
-                      className="w-20 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-xs outline-none focus:ring-2 focus:ring-indigo-400" placeholder="分钟" />
-                    <span className="text-muted-foreground">分钟</span>
+                    <div className="flex items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-700 p-0.5">
+                      <button onClick={() => setScheduleType("interval")}
+                        className={`px-2 py-0.5 rounded-md transition-colors ${scheduleType === "interval" ? "bg-indigo-600 text-white" : "text-muted-foreground hover:text-foreground"}`}>每隔</button>
+                      <button onClick={() => setScheduleType("daily")}
+                        className={`px-2 py-0.5 rounded-md transition-colors ${scheduleType === "daily" ? "bg-indigo-600 text-white" : "text-muted-foreground hover:text-foreground"}`}>每天</button>
+                    </div>
+                    {scheduleType === "interval" ? (
+                      <>
+                        <input value={scheduleValue} onChange={(e) => setScheduleValue(e.target.value)}
+                          className="w-16 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-xs outline-none focus:ring-2 focus:ring-indigo-400 text-slate-900 dark:text-slate-100" placeholder="分钟" />
+                        <span className="text-muted-foreground">分钟</span>
+                      </>
+                    ) : (
+                      <>
+                        <input type="time" value={scheduleValue} onChange={(e) => setScheduleValue(e.target.value)}
+                          className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-xs outline-none focus:ring-2 focus:ring-indigo-400 text-slate-900 dark:text-slate-100" />
+                        <span className="text-muted-foreground">执行</span>
+                      </>
+                    )}
                     <Button variant="outline" size="sm" onClick={() => handleSchedule(true)}>开启</Button>
                     <Button variant="ghost" size="sm" onClick={() => handleSchedule(false)} className="text-red-500">关闭</Button>
                   </div>

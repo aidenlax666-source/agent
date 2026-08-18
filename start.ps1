@@ -33,7 +33,9 @@ if ($tunnel) {
     Write-Host "[4/4] 启动公网隧道 (cloudflared) ..." -ForegroundColor Yellow
     $cf = Join-Path $Root "..\cloudflared.exe"
     if (Test-Path $cf) {
-        Start-Process -WindowStyle Hidden $cf -ArgumentList "tunnel","--url","http://localhost:8001","--no-autoupdate" -WorkingDirectory $Root
+        # 隧道暴露前端 3000（访问者先进页面浏览作品）；如还需分享产物直链，
+        # 可再开一条隧道指向 8001，并把 .env 的 PUBLIC_ASSETS_URL 设为该地址
+        Start-Process -WindowStyle Hidden $cf -ArgumentList "tunnel","--url","http://localhost:3000","--no-autoupdate" -WorkingDirectory $Root
         Write-Host "隧道启动中，公网地址请查看 cloudflared 输出窗口" -ForegroundColor Yellow
     } else {
         Write-Host "未找到 cloudflared.exe（放在项目上级目录），跳过隧道" -ForegroundColor Red

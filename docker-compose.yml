@@ -28,3 +28,13 @@ services:
       - .env
     depends_on:
       - backend
+
+  # 分享服务：web/ 产物静态托管（与 API 不同源，防同源 XSS）
+  assets:
+    image: python:3.11-slim
+    command: python -m http.server 8001 --directory /web
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./web:/web:ro
+    restart: unless-stopped

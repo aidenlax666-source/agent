@@ -36,8 +36,8 @@ const features = [
   },
   {
     icon: <Eye className="w-6 h-6" />,
-    title: "预览确认机制",
-    desc: "展示前 5 条示例结果，用户确认满意后再运行完整版",
+    title: "结果预览确认",
+    desc: "生成产物自动预览（示例数据/文件链接），确认满意后一键下载",
     color: "from-violet-500 to-purple-600",
   },
   {
