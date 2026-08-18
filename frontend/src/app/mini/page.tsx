@@ -346,7 +346,7 @@ export default function MiniPage() {
                 value={requirement}
                 onChange={(e) => setRequirement(e.target.value)}
                 placeholder={"描述你要做的事，例如：\n「生成100行销售数据（列：产品、数量、单价、日期），按产品汇总总金额，导出Excel」\n「分析我上传的数据，哪个产品销量最高？」\n「生成一段橘猫在花园追蝴蝶的短视频」"}
-                className="w-full min-h-36 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-900/90 p-4 text-sm shadow-inner outline-none focus:ring-4 focus:ring-indigo-400/20 focus:border-indigo-400 transition-all resize-y"
+                className="w-full min-h-36 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-900/90 p-4 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 shadow-inner outline-none focus:ring-4 focus:ring-indigo-400/20 focus:border-indigo-400 transition-all resize-y"
               />
               <div className="absolute right-3 bottom-3 flex items-center gap-2">
                 {uploading && <Loader2 className="w-4 h-4 animate-spin text-indigo-500" />}
@@ -631,7 +631,7 @@ export default function MiniPage() {
                   <div className="flex flex-col sm:flex-row gap-2">
                     <textarea value={feedback} onChange={(e) => setFeedback(e.target.value)}
                       placeholder="修改意见，如：只要产品名和金额两列 / 换成按月份统计 / 数据太多只要前5条…"
-                      className="flex-1 min-h-16 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-400 resize-y" />
+                      className="flex-1 min-h-16 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 outline-none focus:ring-2 focus:ring-indigo-400 resize-y" />
                     <Button variant="outline" size="sm" onClick={handleIterate} disabled={!feedback.trim() || acting} className="gap-2 rounded-xl">
                       <RefreshCw className="w-4 h-4" /> 迭代修改
                     </Button>

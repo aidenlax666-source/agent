@@ -50,10 +50,21 @@
 }
 
 @layer base {
+  :root {
+    /* 浏览器原生控件（滚动条/表单/日期选择等）跟随浅色主题 */
+    color-scheme: light;
+  }
+
+  .dark {
+    color-scheme: dark;
+  }
+
   * {
     @apply border-border;
   }
   body {
     @apply bg-background text-foreground;
+    /* 保证正文与输入框文字对比度足够（深色下亮、浅色下深） */
+    -webkit-font-smoothing: antialiased;
   }
 }

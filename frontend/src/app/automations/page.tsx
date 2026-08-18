@@ -150,9 +150,9 @@ export default function AutomationsPage() {
             {/* 新建 */}
             <div className="flex flex-col sm:flex-row gap-2 items-stretch">
               <input type="time" value={remTime} onChange={(e) => setRemTime(e.target.value)}
-                className="w-32 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-violet-400" />
+                className="w-32 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 outline-none focus:ring-2 focus:ring-violet-400" />
               <input value={remText} onChange={(e) => setRemText(e.target.value)} placeholder="提醒内容，如：喝水 / 打卡 / 开会"
-                className="flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-violet-400" />
+                className="flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 outline-none focus:ring-2 focus:ring-violet-400" />
               <Button size="sm" onClick={createReminder} disabled={saving || !remText.trim()} className="gap-1.5 rounded-xl bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:opacity-90 text-white">
                 {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />} 添加提醒
               </Button>
@@ -205,12 +205,12 @@ export default function AutomationsPage() {
               <div className="flex flex-col sm:flex-row gap-2">
                 {monType === "window" ? (
                   <input value={monKeyword} onChange={(e) => setMonKeyword(e.target.value)} placeholder="窗口标题关键词，如：浏览器 / 微信 / 记事本"
-                    className="flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-400" />
+                    className="flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 outline-none focus:ring-2 focus:ring-emerald-400" />
                 ) : (
                   <input value="屏幕画面发生变化" disabled className="flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-sm text-slate-400" />
                 )}
                 <input value={monAction} onChange={(e) => setMonAction(e.target.value)} placeholder="触发后动作（默认仅提醒，可填任务需求）"
-                  className="flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-400" />
+                  className="flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 outline-none focus:ring-2 focus:ring-emerald-400" />
                 <Button size="sm" onClick={createMonitor} disabled={saving || (monType === "window" && !monKeyword.trim())} className="gap-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:opacity-90 text-white">
                   {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />} 添加监控
                 </Button>

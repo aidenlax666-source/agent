@@ -436,7 +436,7 @@ export default function ClaudePage() {
                           <div className="flex flex-col sm:flex-row gap-2">
                             <textarea value={feedback} onChange={(e) => setFeedback(e.target.value)}
                               placeholder="对方案有意见？在这里输入，AI 会重新规划。没意见直接点「确认并改码」"
-                              className="flex-1 min-h-12 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-violet-400 resize-y" />
+                              className="flex-1 min-h-12 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 outline-none focus:ring-2 focus:ring-violet-400 resize-y" />
                             <Button variant="outline" size="sm" onClick={() => replan(b.planText || "", b.requirement || "")}
                               disabled={!feedback.trim() || busy} className="gap-1.5 rounded-xl text-violet-600 dark:text-violet-400">
                               <RefreshCw className="w-3.5 h-3.5" /> 重新规划
@@ -514,7 +514,7 @@ export default function ClaudePage() {
                   }
                 }}
                 placeholder={"输入需求，如：给 todo.py 加一个删除任务的功能（Enter 发送 / Shift+Enter 换行）"}
-                className="flex-1 min-h-[60px] rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-900/90 px-4 py-3 text-sm shadow-inner outline-none focus:ring-4 focus:ring-violet-400/20 focus:border-violet-400 transition-all resize-y"
+                className="flex-1 min-h-[60px] rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-900/90 px-4 py-3 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 shadow-inner outline-none focus:ring-4 focus:ring-violet-400/20 focus:border-violet-400 transition-all resize-y"
               />
               <Button onClick={sendRequirement} disabled={!requirement.trim() || busy}
                 className="gap-2 h-[60px] px-6 rounded-2xl bg-gradient-to-r from-violet-600 via-fuchsia-600 to-indigo-600 hover:opacity-90 text-white font-semibold shadow-lg shadow-violet-500/30 disabled:opacity-50">

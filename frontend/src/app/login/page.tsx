@@ -7,25 +7,37 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
-import { Loader2, LogIn, Sparkles } from "lucide-react";
+import { Loader2, LogIn, Sparkles, Eye, EyeOff, AlertCircle } from "lucide-react";
 import { authApi, setAuthToken } from "@/lib/api";
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [fieldError, setFieldError] = useState<{ email?: string; password?: string }>({});
+
+  const validate = () => {
+    const fe: { email?: string; password?: string } = {};
+    if (!email.trim()) fe.email = "请输入邮箱";
+    else if (!EMAIL_RE.test(email.trim())) fe.email = "邮箱格式不正确，示例：you@example.com";
+    if (!password) fe.password = "请输入密码";
+    else if (password.length < 4) fe.password = "密码至少 4 位";
+    setFieldError(fe);
+    return Object.keys(fe).length === 0;
+  };
 
   const handleLogin = async () => {
-    if (!email.trim() || !password.trim()) {
-      setError("请输入邮箱和密码");
-      return;
-    }
+    if (loading) return;
     setError("");
+    if (!validate()) return;
     setLoading(true);
     try {
-      const result = await authApi.login(email, password);
+      const result = await authApi.login(email.trim(), password);
       setAuthToken(result.access_token);
       router.push("/mini");
     } catch (e: unknown) {
@@ -47,42 +59,63 @@ export default function LoginPage() {
             <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500 via-violet-500 to-fuchsia-500 mb-4 shadow-lg shadow-indigo-500/30">
               <LogIn className="w-6 h-6 text-white" />
             </div>
-            <h2 className="text-xl font-bold">登录</h2>
-            <p className="text-sm text-muted-foreground mt-1">登录后，你的任务和数据只属于你的账号</p>
+            <h2 className="text-xl font-bold text-slate-900 dark:text-slate-50">登录</h2>
+            <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">登录后，你的任务和数据只属于你的账号</p>
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="email">邮箱</Label>
+            <Label htmlFor="email" className="text-slate-700 dark:text-slate-300">邮箱</Label>
             <Input id="email" type="email" placeholder="you@example.com"
-              value={email} onChange={(e) => setEmail(e.target.value)}
-              disabled={loading} className="rounded-xl" />
+              value={email}
+              onChange={(e) => { setEmail(e.target.value); if (fieldError.email) setFieldError((f) => ({ ...f, email: undefined })); }}
+              disabled={loading}
+              className={`rounded-xl ${fieldError.email ? "border-red-400 focus-visible:ring-red-400" : ""}`} />
+            {fieldError.email && (
+              <p className="text-xs text-red-600 dark:text-red-400 flex items-center gap-1 mt-1">
+                <AlertCircle className="w-3 h-3" /> {fieldError.email}
+              </p>
+            )}
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="password">密码</Label>
-            <Input id="password" type="password" placeholder="请输入密码"
-              value={password} onChange={(e) => setPassword(e.target.value)}
-              disabled={loading} className="rounded-xl"
-              onKeyDown={(e) => e.key === "Enter" && handleLogin()} />
+            <Label htmlFor="password" className="text-slate-700 dark:text-slate-300">密码</Label>
+            <div className="relative">
+              <Input id="password" type={showPassword ? "text" : "password"} placeholder="请输入密码"
+                value={password}
+                onChange={(e) => { setPassword(e.target.value); if (fieldError.password) setFieldError((f) => ({ ...f, password: undefined })); }}
+                disabled={loading}
+                onKeyDown={(e) => e.key === "Enter" && handleLogin()}
+                className={`rounded-xl pr-10 ${fieldError.password ? "border-red-400 focus-visible:ring-red-400" : ""}`} />
+              <button type="button" tabIndex={-1} onClick={() => setShowPassword((v) => !v)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
+                aria-label={showPassword ? "隐藏密码" : "显示密码"}>
+                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+            {fieldError.password && (
+              <p className="text-xs text-red-600 dark:text-red-400 flex items-center gap-1 mt-1">
+                <AlertCircle className="w-3 h-3" /> {fieldError.password}
+              </p>
+            )}
           </div>
 
           {error && (
-            <div className="text-sm text-red-600 bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 p-3 rounded-xl">
+            <div className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 p-3 rounded-xl">
               {error}
             </div>
           )}
 
-          <Button className="w-full h-11 rounded-xl bg-gradient-to-r from-indigo-600 via-violet-600 to-fuchsia-600 shadow-lg shadow-indigo-500/30"
+          <Button className="w-full h-11 rounded-xl bg-gradient-to-r from-indigo-600 via-violet-600 to-fuchsia-600 hover:from-indigo-700 hover:via-violet-700 hover:to-fuchsia-700 shadow-lg shadow-indigo-500/30 text-white font-medium"
             onClick={handleLogin} disabled={loading}>
-            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : "登 录"}
+            {loading ? <><Loader2 className="w-4 h-4 animate-spin" /> 登录中...</> : "登 录"}
           </Button>
 
-          <p className="text-xs text-center text-muted-foreground">
+          <p className="text-xs text-center text-slate-500 dark:text-slate-400">
             还没有账号？{" "}
             <Link href="/register" className="text-indigo-600 hover:underline font-medium">立即注册</Link>
           </p>
 
-          <div className="flex items-center gap-2 justify-center text-xs text-muted-foreground">
+          <div className="flex items-center gap-2 justify-center text-xs text-slate-500 dark:text-slate-400">
             <Sparkles className="w-3 h-3" />
             <Link href="/mini" className="hover:text-indigo-500 hover:underline">先匿名试用，不登录也能玩</Link>
           </div>

@@ -93,17 +93,23 @@ def make_token(user_id: str) -> str:
 
 @router.post("/register")
 async def register(data: dict, request: Request):
+    import re as _re
     if not isinstance(data.get("email"), str) or not isinstance(data.get("password"), str):
-        raise HTTPException(400, "Email and password must be text")
+        raise HTTPException(400, "邮箱和密码必须是文本")
     email = data["email"].strip()
     pwd = data["password"].strip()
     name = data.get("name")
     name = name.strip() if isinstance(name, str) and name.strip() else None
 
+    # 前端同款校验（服务端权威）：邮箱格式 + 密码长度
     if not email or not pwd:
-        raise HTTPException(400, "Email and password required")
-    if len(pwd) < 4:
-        raise HTTPException(400, "Password too short")
+        raise HTTPException(400, "邮箱和密码不能为空")
+    if not _re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+        raise HTTPException(400, "邮箱格式不正确")
+    if len(pwd) < 6:
+        raise HTTPException(400, "密码至少 6 位")
+    if name and len(name) > 20:
+        raise HTTPException(400, "昵称最多 20 个字")
 
     # 注册限速（防批量注册刷 10 积分）
     ip = request.client.host if request.client else "unknown"
