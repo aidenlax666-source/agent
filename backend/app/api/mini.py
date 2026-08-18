@@ -6,7 +6,7 @@ from collections import defaultdict, deque
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from app.api.dependencies import get_current_user
 from app.services import mini_tasks
@@ -738,3 +738,65 @@ async def download_output(task_id: str, user=Depends(get_current_user)):
     }.get(ext, "application/octet-stream")
     return FileResponse(path, media_type=media, filename=filename,
                         headers={"X-Content-Type-Options": "nosniff"})
+
+
+@router.get("/mini/tasks/{task_id}/stream")
+async def stream_output(task_id: str, request: Request, user=Depends(get_current_user)):
+    """流式输出产物（视频/音频等大文件）：支持 Range，边下边播，不整块加载内存。
+
+    浏览器 <video>/<audio> 拿到流式响应后立即开始播放（seek 用 Range 头）。
+    """
+    import os as _os
+
+    status = mini_tasks.get_status(task_id, user_id=user["id"])
+    if status is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    result = status.get("result") or {}
+    path = result.get("output_file")
+    if not path or not _os.path.exists(path):
+        raise HTTPException(status_code=404, detail="没有可流式输出的文件")
+    size = _os.path.getsize(path)
+    ext = _os.path.splitext(path)[1].lower()
+    media = {
+        ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
+        ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4", ".aac": "audio/aac",
+    }.get(ext, "application/octet-stream")
+
+    # Range 支持：视频/音频 seek 播放必需
+    range_header = request.headers.get("range", "")
+    start, end = 0, size - 1
+    if range_header and range_header.startswith("bytes="):
+        try:
+            rng = range_header[6:].split("-")
+            start = int(rng[0]) if rng[0] else 0
+            if len(rng) > 1 and rng[1]:
+                end = min(int(rng[1]), size - 1)
+            if start > end or start >= size:
+                return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
+        except ValueError:
+            pass
+
+    chunk_size = 1024 * 256
+
+    def _iter_file():
+        with open(path, "rb") as f:
+            f.seek(start)
+            remaining = end - start + 1
+            while remaining > 0:
+                data = f.read(min(chunk_size, remaining))
+                if not data:
+                    break
+                remaining -= len(data)
+                yield data
+
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Range": f"bytes {start}-{end}/{size}",
+        "Content-Disposition": f'inline; filename="{_os.path.basename(path)}"',
+    }
+    return StreamingResponse(
+        _iter_file(),
+        media_type=media,
+        status_code=206 if range_header else 200,
+        headers=headers,
+    )

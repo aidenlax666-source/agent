@@ -168,3 +168,93 @@ async def tts_speak(
     if os.path.getsize(output_path) == 0:
         return {"success": False, "file_path": None, "error": "豆包 TTS 输出为空文件"}
     return {"success": True, "file_path": output_path, "error": None}
+
+
+def _split_tts_text(text: str, limit: int = 1000) -> list[str]:
+    """长文本分段（每段 ≤ limit 字），避免单次合成超限/截断。
+
+    优先在句末（。！？；…）切，其次逗号，最后硬切——保证语义完整不丢字。
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+    if len(text) <= limit:
+        return [text]
+
+    import re as _re
+    # 统一按句末标点 + 逗号 + 空格切成"小段"，再贪心合并到 limit
+    parts = _re.findall(r"[^。！？；…，,、\n]+[。！？；…，,、]?", text)
+    if not parts:
+        # 无任何标点：直接硬切
+        return [text[i:i + limit] for i in range(0, len(text), limit)]
+
+    segments: list[str] = []
+    cur = ""
+    for p in parts:
+        if not p:
+            continue
+        if len(cur) + len(p) <= limit:
+            cur += p
+            continue
+        # cur 满了 → 收段
+        if cur:
+            segments.append(cur)
+            cur = ""
+        # 单段超长（连续长句无标点内分隔）：硬切
+        while len(p) > limit:
+            segments.append(p[:limit])
+            p = p[limit:]
+        cur = p
+    if cur:
+        segments.append(cur)
+    return [s for s in segments if s.strip()]
+
+
+async def tts_speak_long(
+    text: str,
+    output_path: str,
+    voice: str = DEFAULT_VOICE,
+    emotion: str | None = None,
+    speech_rate: int = 0,
+    resource_id: str = "seed-tts-2.0",
+    progress: callable | None = None,
+) -> dict:
+    """长文本语音合成：分段调用 TTS 并拼接为完整 MP3（不再截断到 3000 字）。
+
+    流式体验：每段合成完即回调 progress(已合成段, 总段数)，调用方可展示进度；
+    音频字节按段顺序拼接，最终得到全文朗读文件。
+    """
+    segments = _split_tts_text(text)
+    if not segments:
+        return {"success": False, "file_path": None, "error": "文本为空"}
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)) or ".", exist_ok=True)
+    out_parts: list[bytes] = []
+    last_err = ""
+    for i, seg in enumerate(segments, 1):
+        # 每段存临时文件再读回（复用 tts_speak 的写入逻辑）
+        tmp_path = f"{output_path}.part{i}.mp3"
+        r = await tts_speak(seg, tmp_path, voice=voice, emotion=emotion,
+                            speech_rate=speech_rate, resource_id=resource_id)
+        if not r.get("success"):
+            last_err = r.get("error") or ""
+            break
+        try:
+            with open(tmp_path, "rb") as f:
+                out_parts.append(f.read())
+            os.remove(tmp_path)
+        except Exception as e:
+            last_err = f"读取分段音频失败: {e}"
+            break
+        if progress:
+            try:
+                progress(i, len(segments))
+            except Exception:
+                pass
+
+    if not out_parts:
+        return {"success": False, "file_path": None, "error": last_err or "分段合成失败"}
+
+    with open(output_path, "wb") as f:
+        f.write(b"".join(out_parts))
+    return {"success": True, "file_path": output_path, "segments": len(segments), "error": None}

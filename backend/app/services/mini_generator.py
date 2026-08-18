@@ -98,6 +98,36 @@ STRUCTURE_SYSTEM_PROMPT = """你是任务理解专家。把用户的一句话需
 SKELETON = '''import pandas as pd, time, random, json
 from playwright.sync_api import sync_playwright  # 只有网页任务才需要这行
 
+def lazy_scroll_load(page, target_count=None, max_scrolls=30):
+    """处理懒加载/无限滚动：反复滚动直到没有新内容或数量达标。
+    返回当前已加载的条目数量（可由调用方与目标数量对比）。
+    """
+    prev = 0
+    stable = 0
+    for _ in range(max_scrolls):
+        page.mouse.wheel(0, 1000)
+        time.sleep(random.uniform(1, 2))
+        try:
+            cur = page.evaluate("() => document.body.scrollHeight")
+        except Exception:
+            cur = prev
+        if cur == prev:
+            stable += 1
+            if stable >= 3:
+                break  # 连续 3 次滚动高度不变 = 到底了
+        else:
+            stable = 0
+        prev = cur
+        # 有「加载更多」按钮时点击（懒加载的另一种形态）
+        try:
+            btn = page.locator("text=加载更多, 查看更多, load more").first
+            if btn.count() > 0 and btn.is_visible():
+                btn.click(timeout=2000)
+                time.sleep(1)
+        except Exception:
+            pass
+    return prev
+
 def run_task():
     results = []  # list[dict]，每个 dict 是一行数据
     # ==== 你的逻辑写在这里 ====
@@ -107,6 +137,7 @@ def run_task():
     #     page = browser.new_page()
     #     page.goto("URL", wait_until="domcontentloaded", timeout=15000)
     #     time.sleep(3)
+    #     lazy_scroll_load(page, target_count=100)  # 页面懒加载时调用
     #     for item in page.locator("选择器").all():
     #         results.append({"标题": item.inner_text()})
     #     browser.close()
@@ -162,6 +193,14 @@ GEN_SYSTEM_PROMPT = f"""你是自动化脚本专家。根据用户需求生成�
    点击或设置后 print('[STEP] 已切换到XX') 并 time.sleep(2-3) 等内容刷新。
    只有尝试后确实找不到任何排序/筛选控件时，才 print('[STEP] 页面无排序选项，按默认顺序抓取')。
    禁止不做任何尝试就按默认顺序抓取。
+ 8.5 懒加载/无限滚动（重要）：现代网站常用懒加载（滚动才加载更多内容）。规则：
+   a) 抓取列表前先检查页面是否有懒加载特征：滚动条可继续滚 / 有「加载更多/查看更多」按钮 / 底部有加载动画。
+   b) 有无限滚动：用小步滚动反复触发加载——每次向下滚 800-1200px，time.sleep(random.uniform(1,2)) 等新内容渲染，
+      直到滚到底部后连续 2-3 次滚动新内容数量不再增加（或达到用户要求的数量）才停止。每滚 5 次 print('[STEP] 已滚动加载 N 条')。
+   c) 有「加载更多」按钮：循环点击按钮直到没有更多或数量达标，每次点击后 time.sleep(1-2)。
+   d) 图片懒加载：抓取图片/封面时若 src 为空或占位图，用 page.locator("img").nth(i).get_attribute("data-src")
+      或 "data-original"/"data-lazy-src" 等真实地址；必要时先滚动到该元素附近再取（page.locator(...).scroll_into_view_if_needed()）。
+   e) 若用户明确要求 N 条但页面无限滚动：滚动直到抓满 N 条即停，不要无限滚。
 9. 网络/API 任务（重要）：调 HTTP API 时 requests 默认会走系统代理，在部分代理环境下可能报
    SSLError / SSLEOFError / ConnectionError 等 TLS 类错误。处理规则：
    a) 优先考虑用 urllib.request（不走 requests 的代理栈），或

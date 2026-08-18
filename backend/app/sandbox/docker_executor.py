@@ -8,6 +8,7 @@ import os
 import time
 import shutil
 import signal
+import threading
 import uuid
 from dataclasses import dataclass, field
 
@@ -19,7 +20,19 @@ from app.sandbox.auto_fix import apply_auto_fixes
 settings = get_settings()
 
 # 全局并发信号量：限制同时执行的脚本数，超出排队（防止开太多浏览器打爆资源）
-_sandbox_semaphore = asyncio.Semaphore(settings.sandbox_max_concurrency)
+# 惰性创建：asyncio.Semaphore 在 Python 3.9 会在无事件循环时绑定 get_event_loop()，
+# 模块导入时若恰好无 loop（如测试中 asyncio.run 之后）会抛错，故延迟到首次使用
+_sandbox_semaphore: asyncio.Semaphore | None = None
+_sandbox_sem_lock = threading.Lock()
+
+
+def _get_sandbox_semaphore() -> asyncio.Semaphore:
+    global _sandbox_semaphore
+    if _sandbox_semaphore is None:
+        with _sandbox_sem_lock:
+            if _sandbox_semaphore is None:
+                _sandbox_semaphore = asyncio.Semaphore(get_settings().sandbox_max_concurrency)
+    return _sandbox_semaphore
 
 # 沙箱临时文件目录：放到项目盘（backend/tmp），避免写满 C 盘系统 Temp
 _SANDBOX_TMP = os.path.join(os.path.dirname(__file__), "..", "..", "tmp")
@@ -147,7 +160,7 @@ async def execute_in_sandbox(
 
     profile_dir: 该任务所属用户的登录态目录（按账号隔离）；None 时回退全局目录。
     """
-    async with _sandbox_semaphore:
+    async with _get_sandbox_semaphore():
         return await _execute_in_sandbox_impl(script_code, timeout, preview_mode, profile_dir)
 
 

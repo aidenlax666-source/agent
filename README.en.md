@@ -190,9 +190,10 @@ See [docs/SECURITY.md](docs/SECURITY.md) for the full threat model.
 - [x] Automation (reminders / monitors / recurring)
 - [x] Multi-model backends (DeepSeek/OpenAI/Anthropic/Ollama switchable)
 - [x] Agent dual-mode (single-shot compile + multi-round autonomous loop)
-- [x] Test suite (35+ pytest cases + auto-test on commit)
-- [ ] Streaming video/audio output
-- [ ] Browser automation reliability (captcha/lazy-load scenarios)
+- [x] Test suite (50+ pytest cases + auto-test on commit)
+- [x] Streaming video/audio output (TTS long-text segmentation + Range streaming endpoint)
+- [x] Browser automation reliability (lazy-load/infinite-scroll + captcha detection/wait)
+- [ ] Multimodal input (audio/video understanding)
 
 ---
 
