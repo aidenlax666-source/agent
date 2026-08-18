@@ -1624,7 +1624,7 @@ def _dev_grep(workspace: str, files: list[str], queries: list[str],
 
 def _dev_context(workspace: str, files: list[str], requirement: str | None = None,
                  max_items: int = 80, per_file: int = 4000, total_cap: int = 40000) -> str:
-    """文件树 + 每个文件的内容（Claude Code 风格：让模型看到真实代码而非只看到文件名）。
+    """文件树 + 每个文件的内容（让模型看到真实代码而非只看到文件名）。
 
     上下文精简：requirement 给出时，按关键词给文件打分——
     相关文件（文件名/开头命中需求关键词）给完整内容，其余文件只给前 300 字符摘要，
@@ -2062,7 +2062,7 @@ async def _run_dev_task(task_id: str, requirement: str, code_dir: str, plan: str
     workspace = os.path.normpath(code_dir)  # 外部代码目录本身就是隔离副本
     try:
         files = _walk_files(workspace)
-        # 空文件夹也允许：AI 从零创建项目（像 Claude Code 在空目录建项目）
+        # 空文件夹也允许：AI 从零创建项目
         if not files:
             logger.info("[dev_task:%s] 空项目目录，从零创建", task_id)
         # 改前文件内容快照（diff 对比用；写文件前取；utf-8-sig 去 BOM，与上下文/patch 定位一致）

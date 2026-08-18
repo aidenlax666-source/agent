@@ -8,7 +8,7 @@ from __future__ import annotations
   正文 = 给 LLM 的专家指南（工具、命令模板、输出规范）。
 
 任务生成时按需求关键词自动加载命中的技能，把指南注入生成 prompt
-（类 Claude Code / Codex 的 skill 机制，零 LLM 成本、按需生效）。
+（声明式技能机制，零 LLM 成本、按需生效）。
 """
 
 import logging

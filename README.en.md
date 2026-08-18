@@ -18,9 +18,9 @@ This is not a "prompt wrapper" — it's a real engineering effort around **LLM-a
 |---|---|
 | 🧠 **LLM-as-Compiler pipeline** | Requirement → structured understanding → Python script generation → sandbox execution → **4-layer verification** (count / fields / feature coverage / values) → self-healing |
 | 🩹 **Multi-round self-healing** | On failure, full stderr is fed back to the reasoning model (deepseek-reasoner); it can swap implementations (e.g. native compile failure → pure-JS alternative), up to 5 rounds, with an explicit `give_up` escape |
-| 📝 **apply_patch protocol** | Inspired by Codex: the model outputs **only changed lines (diff)** instead of rewriting whole files — dramatically fewer output tokens; backend applies with difflib + fuzzy matching when line numbers drift |
+| 📝 **apply_patch protocol** | The model outputs **only changed lines (diff)** instead of rewriting whole files — dramatically fewer output tokens; backend applies with difflib + fuzzy matching when line numbers drift |
 | 📂 **Two-stage context** | For large projects, first show a file manifest and let the model pick what to read (`files_to_read`) + **grep** to locate call sites / definitions (measured: only 1-2 of 17 files read) |
-| 🔧 **Claude Code-style dev assistant** (`/claude`) | Pick a local folder → AI plans → confirm → edits → auto-applies back, with run/test/background-service support and diff preview |
+| 🔧 **AI dev assistant** (`/claude`) | Pick a local folder → AI plans → confirm → edits → auto-applies back, with run/test/background-service support and diff preview |
 | 🛡️ **Defense-in-depth security** | AST static scanning (eval/exec, command injection, SSRF, sensitive-file reads, login-state exfiltration) + Docker sandbox + zip-slip/bomb protection + same-origin XSS isolation (see [Security](#-security)) |
 | 🧩 **Skill system** | Declarative `SKILL.md` skills (FFmpeg video editing, ezdxf CAD drawing…) auto-matched by keywords, zero-code extension |
 | ⏰ **Automation** | Timed reminders, window/screen monitors, recurring tasks — 30s scheduler with dedup and overlap protection |
@@ -59,7 +59,7 @@ Access:
 - Web UI **http://localhost:3000** (`/mini` one-shot automation, `/claude` dev assistant, `/gallery` gallery, `/automations` automation manager)
 - API docs **http://localhost:8000/docs**
 
-### CLI dev assistant (like Claude Code)
+### CLI dev assistant (conversational project editing)
 
 ```bash
 python agent-cli.py                      # interactive session in cwd
@@ -186,7 +186,7 @@ See [docs/SECURITY.md](docs/SECURITY.md) for the full threat model.
 - [x] LLM-as-Compiler loop + 4-layer verification + self-healing
 - [x] Multimodal (vision/video/image/TTS)
 - [x] Skill system (FFmpeg / CAD)
-- [x] Claude Code-style dev assistant + apply_patch + two-stage context + grep
+- [x] AI dev assistant + apply_patch + two-stage context + grep
 - [x] Automation (reminders / monitors / recurring)
 - [ ] Multi-model backends (Anthropic/Gemini/local)
 - [ ] Agentic multi-step tool loop (read→edit→run, replacing single-shot compile)

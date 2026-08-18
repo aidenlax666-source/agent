@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from app.config import get_settings
 from app.services.llm_client import chat_completion
 
-HEALING_SYSTEM_PROMPT = """你是一位 Python + Playwright 自动化脚本调试专家，类似 Claude Code 的自动修复模式。
+HEALING_SYSTEM_PROMPT = """你是一位 Python + Playwright 自动化脚本调试专家，擅长自动修复脚本错误。
 
 你的任务是：分析脚本执行错误，精准修复，使脚本能正常运行。
 

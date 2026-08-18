@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * 本地改码助手（像 Claude Code 的浏览器版）：
+ * 本地改码助手（浏览器版）：
  * 选择本地文件夹 → 输入需求 → AI 出方案（中间聊天区）→ 确认/提意见 → 改码 → 应用回本地文件夹。
  * 复用后端 /api/dev/plan + /api/dev/apply（DeepSeek，方案用便宜模型、改码用 reasoner）。
  */
@@ -353,7 +353,7 @@ export default function ClaudePage() {
             <div className="flex items-center gap-3 flex-wrap">
               <div className="flex-1 min-w-0">
                 <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight bg-gradient-to-r from-violet-600 via-fuchsia-600 to-indigo-600 dark:from-violet-400 dark:via-fuchsia-400 dark:to-indigo-400 bg-clip-text text-transparent">
-                  AI 改码助手（像 Claude Code）
+                  AI 改码助手
                 </h1>
                 <p className="mt-1 text-xs text-muted-foreground">
                   选一个本地文件夹，用自然语言让它改代码：先出方案 → 你确认或提意见 → 改码 → 应用回文件夹。

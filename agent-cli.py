@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""AI 自动化 Agent 本地 CLI —— 像 Claude Code 一样持续对话改你的项目。
+"""AI 自动化 Agent 本地 CLI —— 持续对话改你的项目。
 
 用法：
     python agent-cli.py                        # 在当前目录进入交互会话
@@ -249,7 +249,7 @@ HELP_TEXT = """支持指令:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="AI 自动化 Agent 本地 CLI：像 Claude Code 一样持续对话改你的项目")
+    ap = argparse.ArgumentParser(description="AI 自动化 Agent 本地 CLI：持续对话改你的项目")
     ap.add_argument("project", nargs="?", default=".", help="项目目录（默认当前目录）")
     ap.add_argument("--api", default="http://localhost:8000", help="后端地址")
     ap.add_argument("--resume", action="store_true", help="恢复该项目上次的会话（保留之前轮次记录）")
@@ -278,7 +278,7 @@ def main() -> None:
         print(f"  {c_dim('·')} 改动: {', '.join((last.get('files') or [])[:5])}")
 
     print("=" * 60)
-    print(c_bold(" AI 通用 Agent · 交互改码会话（像 Claude Code）"))
+    print(c_bold(" AI 通用 Agent · 交互改码会话"))
     print(f" 项目目录: {root}")
     print(f" 后端: {args.api}" + (c_dim("   |  git 自动提交已开启（--no-commit 关闭）") if git_repo else "   |  非 git 仓库"))
     print(" 输入需求开始改码；输入 exit 或 q 退出；help 查看指令")
