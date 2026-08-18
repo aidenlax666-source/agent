@@ -36,6 +36,9 @@ English: [README.en.md](README.en.md)
 | 🛡️ **纵深安全设计** | AST 静态扫描（拦 eval/exec/命令注入/SSRF/敏感文件读取/登录态外泄）+ Docker 沙箱 + zip-slip/zip 炸弹防护 + 同源 XSS 隔离（详见 [安全设计](#-安全设计)） |
 | 🧩 **技能系统** | `SKILL.md` 声明式技能（FFmpeg 视频剪辑、ezdxf CAD 绘图…），关键词自动匹配，零代码扩展 |
 | ⏰ **自动化** | 定时提醒、窗口/屏幕监控、循环任务，30s 调度器 + 去重 + 防重叠 |
+| 🧠 **记忆系统** | AI 自动记住你的偏好/习惯（如"喜欢 Excel 输出"），后续任务自动按此执行；`/memory` 可查看/管理 |
+| 🤖 **Agent 双模式** | 普通任务走单轮编译（省成本）；复杂任务自动切换多轮自主循环（write→run→finish，可 `give_up`），最多 8 轮 |
+| 🎬 **流式输出** | TTS 长文本分段合成（不截断）、产物 Range 流式播放（视频/音频边下边播） |
 | 🎨 **内容生成全家桶** | HTML 报告、网页游戏、AI 音乐/视频/图片、TTS 配音、数据问答 |
 
 ---
@@ -74,7 +77,7 @@ python -m http.server 8001 --directory web
 ```
 
 访问：
-- 前端 **http://localhost:3000**（一句话自动化 `/mini`、开发助手 `/assistant`、分享中心 `/gallery`、自动化管理 `/automations`、登录态管理 `/sessions`、我的文件 `/files`）
+- 前端 **http://localhost:3000**（一句话自动化 `/mini`、开发助手 `/assistant`、分享中心 `/gallery`、自动化管理 `/automations`、登录态管理 `/sessions`、我的文件 `/files`、AI 记忆 `/memory`、任务历史 `/history`）
 - 后端 API 文档 **http://localhost:8000/docs**
 
 ### CLI 开发助手（持续对话改你的项目）

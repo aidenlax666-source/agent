@@ -24,6 +24,9 @@ This is not a "prompt wrapper" — it's a real engineering effort around **LLM-a
 | 🛡️ **Defense-in-depth security** | AST static scanning (eval/exec, command injection, SSRF, sensitive-file reads, login-state exfiltration) + Docker sandbox + zip-slip/bomb protection + same-origin XSS isolation (see [Security](#-security)) |
 | 🧩 **Skill system** | Declarative `SKILL.md` skills (FFmpeg video editing, ezdxf CAD drawing…) auto-matched by keywords, zero-code extension |
 | ⏰ **Automation** | Timed reminders, window/screen monitors, recurring tasks — 30s scheduler with dedup and overlap protection |
+| 🧠 **Memory system** | AI remembers your preferences/habits (e.g. "I like Excel output") and applies them to future tasks; manage at `/memory` |
+| 🤖 **Agent dual-mode** | Simple tasks: single-shot compile (low cost); complex tasks: auto multi-round loop (write→run→finish, up to 8 rounds) |
+| 🎬 **Streaming output** | TTS long-text segmentation (no truncation), Range streaming playback for video/audio |
 | 🎨 **Content generation suite** | HTML reports, web games, AI music/video/image, TTS, data Q&A |
 
 ---
@@ -56,7 +59,7 @@ python -m http.server 8001 --directory web
 ```
 
 Access:
-- Web UI **http://localhost:3000** (`/mini` one-shot automation, `/assistant` dev assistant, `/gallery` gallery, `/automations` automation manager)
+- Web UI **http://localhost:3000** (`/mini` one-shot automation, `/assistant` dev assistant, `/gallery` gallery, `/automations` automation manager, `/sessions` login state, `/files` files, `/memory` AI memory, `/history` history)
 - API docs **http://localhost:8000/docs**
 
 ### CLI dev assistant (conversational project editing)

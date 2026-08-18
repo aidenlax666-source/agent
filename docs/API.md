@@ -59,6 +59,11 @@ dev 接口都支持模型输出 **patch（unified diff）** 而非完整文件�
 | GET | `/files` | 我的文件（产物列表，仅本人） |
 | POST | `/files/rename` | 重命名产物（禁止改扩展名） |
 | DELETE | `/files/{filename}` | 删除产物（仅本人） |
+| GET | `/memory` | AI 记忆列表（偏好/习惯，仅本人） |
+| POST | `/memory` | 手动添加记忆 `{kind?, content}` |
+| DELETE | `/memory` | 清空记忆 |
+| DELETE | `/memory/{content}` | 删除单条记忆 |
+| GET | `/mini/tasks/{id}/stream` | 流式输出产物（视频/音频，支持 Range） |
 | POST | `/game/rooms` | 创建联机房间 |
 | GET | `/game/rooms/{room_id}` | 房间信息 |
 
