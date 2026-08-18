@@ -7,7 +7,16 @@
 
 Built with **FastAPI + DeepSeek + Next.js** · 开箱即用 · 支持 Docker
 
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](backend/app)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-teal.svg)](backend/app/main.py)
+[![Next.js](https://img.shields.io/badge/Next.js-14-black.svg)](frontend)
+[![DeepSeek](https://img.shields.io/badge/LLM-DeepSeek%20%2F%20Doubao-purple.svg)](.env.example)
+[![Docker](https://img.shields.io/badge/Docker-ready-2496ed.svg)](docker-compose.yml)
+
 [功能](#-核心能力) · [快速开始](#-快速开始) · [架构](#-架构) · [安全设计](#-安全设计) · [文档](#-文档) · [路线图](#-roadmap)
+
+English: [README.en.md](README.en.md)
 
 </div>
 
