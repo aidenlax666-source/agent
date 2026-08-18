@@ -347,3 +347,26 @@ export const filesApi = {
   remove: (filename: string) =>
     request<{ ok: boolean }>(`/api/files/${encodeURIComponent(filename)}`, { method: "DELETE" }),
 };
+
+// ===== 用户记忆管理（AI 记住的偏好/习惯）=====
+export interface MemoryItem {
+  kind: string;
+  content: string;
+  updated_at: number;
+}
+
+export const memoryApi = {
+  list: () => request<{ items: MemoryItem[] }>("/api/memory"),
+
+  add: (content: string, kind: string = "preference") =>
+    request<{ ok: boolean }>("/api/memory", {
+      method: "POST",
+      body: JSON.stringify({ content, kind }),
+    }),
+
+  remove: (content: string) =>
+    request<{ ok: boolean }>(`/api/memory/${encodeURIComponent(content)}`, { method: "DELETE" }),
+
+  clear: () =>
+    request<{ ok: boolean }>("/api/memory", { method: "DELETE" }),
+};

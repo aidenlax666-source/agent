@@ -414,6 +414,55 @@ async def mark_notifications_read(data: dict, user=Depends(get_current_user)):
 
 
 # ============================================================
+# 用户记忆管理（偏好/事实/习惯 —— AI 自动记住，用户可查看/删除）
+# ============================================================
+
+@router.get("/memory")
+async def list_memory(user=Depends(get_current_user)):
+    """查看 AI 记住的关于你的偏好/习惯（长期记忆，任务自动注入）。"""
+    from app.database import get_memory
+    items = await get_memory(user["id"], limit=50)
+    return {"items": items}
+
+
+@router.post("/memory")
+async def add_memory(data: dict, user=Depends(get_current_user)):
+    """手动添加一条记忆：{kind?: "preference"|"fact"|"habit", content: "..."}"""
+    from app.database import remember
+    content = str(data.get("content") or "").strip()
+    kind = str(data.get("kind") or "preference").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content 不能为空")
+    if len(content) > 200:
+        raise HTTPException(status_code=400, detail="记忆内容最多 200 字")
+    if kind not in ("preference", "fact", "habit"):
+        kind = "preference"
+    await remember(user["id"], kind, content)
+    return {"ok": True}
+
+
+@router.delete("/memory")
+async def clear_memory(user=Depends(get_current_user)):
+    """清空全部记忆。"""
+    from app.database import forget
+    await forget(user["id"])
+    return {"ok": True}
+
+
+@router.delete("/memory/{content}")
+async def delete_memory(content: str, user=Depends(get_current_user)):
+    """删除单条记忆（按内容精确匹配）。"""
+    from app.database import forget
+    import urllib.parse
+    try:
+        decoded = urllib.parse.unquote(content)
+    except Exception:
+        decoded = content
+    await forget(user["id"], decoded)
+    return {"ok": True}
+
+
+# ============================================================
 # 定时提醒 / 监控任务管理
 # ============================================================
 
