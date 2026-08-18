@@ -1,50 +1,61 @@
-# 🤖 AI 通用自动化 Agent
+<div align="center">
 
-> 一句话描述需求 → AI 自动写代码、执行、四重校验、迭代修改、分享结果。
-> 支持网页抓取、办公文档、图片/PDF、AI 漫剧、音乐、视频生成等，无需写代码。
+# 🤖 AI Automation Generator · AI 通用自动化 Agent
 
-## 核心能力
+**Describe it in one sentence → AI writes the code, runs it, verifies it, and ships it.**
+一句话描述需求 → AI 自动写代码、沙箱执行、四重校验、自愈修复、产出可分享结果。
 
-### 一句话自动化（`/mini`）
-- **自然语言 → 脚本 → 执行 → 四重校验**（数量/字段/功能覆盖/数据值），发现错误自动修复
-- **迭代修改**：对结果不满意，直接提修改意见，AI 在原任务上重跑
-- **确认流**：满意一键确认，结果即最终版
-- **任务历史**：SQLite 持久化，重启不丢，随时回看
-- **定时执行**：任务可设置每隔 N 分钟 / 每天 HH:MM 自动重复
-- **图片上传**：上传需求截图/参考图，豆包视觉识别后自动传入 DeepSeek
+Built with **FastAPI + DeepSeek + Next.js** · 开箱即用 · 支持 Docker
 
-### 内容生成（分享中心 `/gallery`）
-- **可视化报告**：需求含"报告/可视化"自动生成精美 HTML 报告（统计卡片+SVG 图表），公网可分享
-- **网页游戏 / AI 漫剧 / AI 音乐 / AI 视频 / AI 图片**：输入主题即生成，二维码+链接分享
-- **zip 打包**：全部作品一键打包下载
+[功能](#-核心能力) · [快速开始](#-快速开始) · [架构](#-架构) · [安全设计](#-安全设计) · [文档](#-文档) · [路线图](#-roadmap)
 
-### 多模态（火山方舟/豆包）
-| 能力 | 模型 | 用途 |
-|---|---|---|
-| 图片理解 | `doubao-seed-1-6-vision-250815` | DeepSeek 看不懂图片时识别总结传给它 |
-| 文生视频 | `doubao-seedance-2-0-260128` | 提示词 → 5s 视频 |
-| 图生视频 | seedance（带参考图） | 图片 → 动态视频 |
-| 文生图 | `doubao-seedream-4-0-250828` | 提示词 → 插画图片 |
-| TTS 配音 | 豆包语音（`seed-tts-2.0`） | 文本 → 语音 MP3（火山引擎语音控制台 key） |
+</div>
 
-### 数据处理（`/mini` 数据问答）
-- 上传 Excel/CSV → 自然语言提问（"哪个产品销量最高？"）→ AI 直接回答
+---
 
-## 快速启动
+## ✨ 项目亮点（Why this project）
+
+这个项目不是简单的"提示词包装"，而是一个 **LLM-as-Compiler 引擎**：把自然语言需求当作"源代码"，编译成可执行产物，并在编译-运行-校验-修复的闭环中不断逼近正确结果。核心工程亮点：
+
+| 亮点 | 说明 |
+|---|---|
+| 🧠 **LLM-as-Compiler 管线** | 需求 → 结构化理解 → 生成 Python 脚本 → 沙箱执行 → **四重校验**（数量/字段/功能覆盖/数据值）→ 自愈重跑 |
+| 🩹 **多轮自愈引擎** | 运行失败时把完整错误反馈给推理模型（deepseek-reasoner），自动换实现方案（如原生编译失败改纯 JS 替代），最多 5 轮，可中途 `give_up` 明确放弃 |
+| 📝 **apply_patch 协议** | 学 Codex：模型只输出**改动行（diff）**而非整个文件，输出 token 大幅下降；后端 difflib 应用 + 行号不准时内容模糊匹配兜底 |
+| 📂 **两阶段上下文** | 大项目先给文件清单让模型点菜（`files_to_read`），只读需要的文件；支持 **grep 搜索**定位调用点/定义点（实测 17 文件项目只读 1-2 个文件） |
+| 🔧 **Claude Code 风格开发助手**（`/claude`） | 选本地文件夹 → AI 规划→确认→改码→自动应用回本地，支持运行/测试/启动长驻服务，改动自动 diff 预览 |
+| 🛡️ **纵深安全设计** | AST 静态扫描（拦 eval/exec/命令注入/SSRF/敏感文件读取/登录态外泄）+ Docker 沙箱 + zip-slip/zip 炸弹防护 + 同源 XSS 隔离（详见 [安全设计](#-安全设计)） |
+| 🧩 **技能系统** | `SKILL.md` 声明式技能（FFmpeg 视频剪辑、ezdxf CAD 绘图…），关键词自动匹配，零代码扩展 |
+| ⏰ **自动化** | 定时提醒、窗口/屏幕监控、循环任务，30s 调度器 + 去重 + 防重叠 |
+| 🎨 **内容生成全家桶** | HTML 报告、网页游戏、AI 音乐/视频/图片、TTS 配音、数据问答 |
+
+---
+
+## 🚀 快速开始
+
+### 环境要求
+- Python 3.10+ · Node.js 18+ · （可选）Docker
+
+### 一键启动（Windows）
 
 ```powershell
-# 一键启动（后端 8000 + 前端 3000 + 分享服务 8001）
+# 1. 配置密钥
+Copy-Item .env.example .env
+# 编辑 .env，填入 DEEPSEEK_API_KEY（必填），JWT_SECRET_KEY
+
+# 2. 一键启动（后端 8000 + 前端 3000 + 分享服务 8001）
 powershell -ExecutionPolicy Bypass -File start.ps1
 
 # 加公网隧道（可分享链接）
 powershell -ExecutionPolicy Bypass -File start.ps1 -tunnel
 ```
 
-或手动：
+### 手动启动
+
 ```bash
 # 后端
 cd backend && pip install -r requirements.txt
-uvicorn app.main:app --port 8000
+uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 # 前端
 cd frontend && npm install && npm run dev
@@ -54,100 +65,157 @@ python -m http.server 8001 --directory web
 ```
 
 访问：
-- 前端 http://localhost:3000（一句话自动化 `/mini`、分享中心 `/gallery`）
-- 后端 API http://localhost:8000/docs
+- 前端 **http://localhost:3000**（一句话自动化 `/mini`、开发助手 `/claude`、分享中心 `/gallery`、自动化管理 `/automations`）
+- 后端 API 文档 **http://localhost:8000/docs**
 
-## 环境变量（.env）
+### CLI 开发助手（像 Claude Code 一样改你的项目）
+
+```bash
+python agent-cli.py                      # 当前目录进入交互会话
+python agent-cli.py C:\path\to\project   # 指定项目
+python agent-cli.py --resume             # 恢复上次会话
+python agent-cli.py --yes                # 自动确认模式
+```
+
+---
+
+## 🔑 环境变量（.env）
+
+完整配置见 [.env.example](.env.example)，核心项：
 
 ```env
-# DeepSeek（文本大脑）
+# DeepSeek（文本大脑，必填）
 DEEPSEEK_API_KEY=sk-xxx
-DEEPSEEK_API_KEYS=sk-a,sk-b          # 多 key 逗号分隔（负载均衡）
-AI_MODEL=deepseek-chat
-AI_MODEL_REASONING=deepseek-reasoner # 复杂任务用推理模型
+DEEPSEEK_API_KEYS=sk-a,sk-b          # 多 key 逗号分隔（自动负载均衡+限流退避）
+AI_MODEL=deepseek-chat               # 日常生成
+AI_MODEL_REASONING=deepseek-reasoner # 修复/复杂任务
 
-# 豆包/火山方舟（多模态：视觉识别/视频/图片生成）
+# 豆包/火山方舟（可选，多模态：视觉/视频/图片/TTS）
 DOUBAO_API_KEY=ark-xxx
-DOUBAO_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
-DOUBAO_VISION_MODEL=doubao-seed-1-6-vision-250815
 
 # 沙箱
-SANDBOX_TIMEOUT=60
+SANDBOX_IMAGE=python:3.11-slim       # Docker 沙箱镜像（无 Docker 自动回退宿主+静态扫描）
 SANDBOX_ALLOW_SUBPROCESS=true
 
-# JWT
-JWT_SECRET_KEY=xxx
+# JWT（必改）
+JWT_SECRET_KEY=change-me-to-a-random-string
 ```
 
-## API 概览
+---
 
-| 方法 | 路径 | 功能 |
+## 🏗 架构
+
+### 一句话自动化闭环
+
+```mermaid
+flowchart LR
+    A[用户一句话需求] --> B[结构化理解\nDeepSeek]
+    B --> C[生成 Python 脚本\n分领域提示词模板]
+    C --> D[静态安全扫描\nAST 分析]
+    D --> E[沙箱执行\nDocker / 宿主回退]
+    E --> F{四重校验\n数量/字段/覆盖/值}
+    F -- 失败 --> G[自愈引擎\nreasoner 修复 + 重跑 ≤5轮]
+    G --> E
+    F -- 通过 --> H[产物发布\nExcel/HTML/图片/视频/音乐]
+    H --> I[迭代/确认/定时/分享]
+```
+
+### 开发助手闭环（apply_patch）
+
+```mermaid
+flowchart LR
+    A[选本地文件夹] --> B[两阶段上下文\n清单→files_to_read→grep]
+    B --> C[方案确认 plan]
+    C --> D[模型输出 patch\n只含改动行]
+    D --> E[difflib 应用\n行号不准→内容匹配]
+    E --> F[语法校验 + 命令执行/测试]
+    F -- 失败 --> G[5轮自愈 + give_up]
+    F -- 通过 --> H[自动应用回本地\ndiff 预览 + git]
+```
+
+### 服务结构
+
+| 服务 | 端口 | 职责 |
 |---|---|---|
-| POST | `/api/mini/tasks` | 提交一句话任务（可带 url/image_paths），扣 1 额度 |
-| GET | `/api/mini/tasks` | 任务历史列表 |
-| GET | `/api/mini/tasks/{id}` | 任务状态/结果 |
-| POST | `/api/mini/tasks/{id}/iterate` | 迭代修改（提反馈重跑） |
-| POST | `/api/mini/tasks/{id}/confirm` | 确认结果（最终版） |
-| POST | `/api/mini/tasks/{id}/cancel` | 取消运行中任务 |
-| POST | `/api/mini/tasks/{id}/schedule` | 设置定时执行 |
-| POST | `/api/mini/tasks/{id}/download` | 下载结果文件 |
-| POST | `/api/mini/qa` | 数据问答（file_path + question） |
-| GET | `/api/gallery` | 分享作品列表 |
-| GET | `/api/gallery/download-zip` | 作品 zip 打包下载 |
-| POST | `/api/upload` | 上传文件（截图/数据文件） |
-| POST | `/api/sessions/login` | 打开浏览器登录（保存登录态） |
+| FastAPI 后端 | 8000 | 任务引擎、沙箱、API、调度器 |
+| Next.js 前端 | 3000 | Web 工作台 |
+| 静态产物服务 | 8001 | 分享作品（与 API **不同源**，防同源 XSS） |
 
-## 架构
+### 核心模块
 
 ```
-用户一句话
-   │
-   ▼
-统一任务对象（普通/报告/定时，可带图片）
-   │
-   ▼
-DeepSeek 结构化理解 → 生成 Python 脚本（分领域提示词模板）
-   │
-   ▼
-沙箱执行 → 四重校验（数量/字段/覆盖/值）→ 自愈 → 预览
-   │
-   ▼
-结果：Excel/HTML报告/图片/视频/漫剧/音乐 + 迭代/确认/定时/分享
-   │
-   ▼
-多模态补盲区：DeepSeek 看不懂的（图片/视频）→ 豆包视觉/Seedance
+backend/app/
+├── api/              auth, upload, mini(任务/自动化), gallery, game, auth_sessions(登录态)
+├── services/
+│   ├── mini_generator.py   LLM-as-Compiler 主闭环（生成→校验→自愈）
+│   ├── mini_tasks.py       任务队列 + apply_patch + 两阶段上下文 + 调度器（30s）
+│   ├── llm_client.py       多 key 轮询 + 重试 + 限流退避
+│   ├── vision/video/tts_client.py   多模态客户端
+│   └── page_capture.py     Playwright DOM 结构采集（反爬优先控件）
+├── sandbox/
+│   ├── docker_executor.py  Docker 沙箱（内存/CPU 限制、只读挂载）+ 宿主回退
+│   └── security.py         AST 静态安全扫描（纵深防御）
+├── skills/            SKILL.md 技能系统
+└── database.py        SQLite（参数化查询 + 字段白名单）
 ```
 
-服务结构：`backend/app/services/mini_generator.py`（核心闭环）、`mini_tasks.py`（后台队列+持久化+定时）、`vision_client.py`/`video_client.py`/`tts_client.py`（多模态）、`api/mini.py`/`gallery.py`（API）。
+---
 
-## 项目结构
+## 🛡 安全设计
 
-```
-ai-automation-generator/
-├── backend/
-│   ├── app/
-│   │   ├── api/          auth, auth_sessions, upload, mini, gallery   ← 后端 API
-│   │   ├── services/     mini_generator, mini_tasks, vision/video/tts_client,
-│   │   │                 page_capture, self_healing, llm_client, long_task
-│   │   ├── sandbox/      docker_executor + 安全扫描/自动修复
-│   │   ├── config.py / database.py / main.py
-│   │   └── requirements.txt
-│   └── Dockerfile
-├── frontend/
-│   └── src/app/          login, register, mini（一句话自动化）, gallery（分享中心）
-├── make_*.py             AI 内容生成器：游戏 / 网页游戏 / 可视化报告 / AI漫剧 / 音乐
-├── gen_*.py              生成器产物脚本
-├── start.ps1             一键启动（后端+前端+分享服务+可选公网隧道）
-├── docker-compose.yml
-└── README.md
-```
+这个项目在安全上做了**深度投入**（可作为面试讲点），包括：
 
-> 说明：仓库只包含核心代码与内容生成器；测试脚本与运行产物（batch_*.py、test_*.py、*_result.json、调试图片等）不入库（见 `.gitignore`）。
+1. **同源 XSS 隔离**：产物页（LLM 生成的 HTML）与 API **不同源**部署，API 不挂载 web/ 静态目录；下载端点对 html/svg/xml 强制 `octet-stream + nosniff + attachment`
+2. **AST 静态扫描**（`sandbox/security.py`）：`eval/exec/compile`、`os.system/popen`、`__builtins__` 走私、`getattr`/`__dict__` 绕过、SSRF 内网地址（含 DNS 解析后判定）、敏感文件读取（.env/.db/密钥）、登录态 `_AUTH` 外泄、越权删除——全部在**执行前**拦截
+3. **Docker 沙箱**：无 privileged、脚本目录只读挂载、内存/CPU 限额、bridge 网络、超时+卡死检测+进程树清理
+4. **命令安全**：危险命令黑名单 + Windows cmd 分隔符（`&`）拦截 + 超时限制
+5. **zip 防护**：zip-slip 路径穿越 + zip 炸弹（按实际写出字节计数）
+6. **认证**：JWT（算法白名单）+ 匿名身份绑定 IP + XFF 可信代理校验（取末值）+ 匿名限速
+7. **数据层**：SQL 全参数化 + 动态字段白名单 + 积分原子扣减 + 任务归属校验
+8. **产物外泄防护**：`[OUTPUT_FILE]` 协议只接受沙箱输出目录内的路径
 
+详见 [docs/SECURITY.md](docs/SECURITY.md)。
 
-## 验证成绩（真实测试）
+---
 
-- 100 个通用任务连测 98%+（Excel/Word/PPT/文件/数据/文本/API/图片/PDF）
-- 复合长难任务（3-6 维度组合）9/9 通过，数据精确（与官方 API 逐项核对）
+## 📚 文档
+
+- [架构详解](docs/ARCHITECTURE.md) — 核心机制深度拆解（LLM-as-Compiler、apply_patch、两阶段上下文、自愈引擎）
+- [安全设计](docs/SECURITY.md) — 威胁模型与防护措施
+- [API 概览](docs/API.md) — 端点清单
+- [CLI 使用](agent-cli.py) — 开发助手命令行工具
+
+---
+
+## 🧪 验证成绩（真实测试）
+
+- 100 个通用任务连测 **98%+** 通过（Excel/Word/PPT/文件/数据/文本/API/图片/PDF）
+- 复合长难任务（3-6 维度组合）**9/9** 通过，数据与官方 API 逐项核对一致
 - 小红书登录态抓取 3/3、多模态（图片识别/视频/图生视频）实测通过
-- 四重校验拦截假通过（数量不足/漏字段/漏功能/值异常自动修复）
+- 四重校验拦截假通过：数量不足 / 漏字段 / 漏功能 / 值异常自动修复
+- apply_patch：已有文件改动只输出几行 diff（实测搜索功能 +4 行/+9 行，无重复）
+- 两阶段上下文：17 文件项目只读取 1-2 个相关文件（grep 精确定位隐藏调用点）
+
+---
+
+## 🗺 Roadmap
+
+- [x] LLM-as-Compiler 闭环 + 四重校验 + 自愈
+- [x] 多模态（视觉/视频/图片/TTS）
+- [x] 技能系统（FFmpeg / CAD）
+- [x] Claude Code 风格开发助手 + apply_patch + 两阶段上下文 + grep
+- [x] 自动化（提醒/监控/循环）
+- [ ] 多模型后端（Anthropic/Gemini/本地模型）
+- [ ] Agent 多轮工具循环（read→edit→run 逐步推理，替代单轮编译）
+- [ ] 测试套件（pytest）与 CI
+- [ ] 视频/音频流式输出
+
+---
+
+## 🤝 贡献
+
+欢迎任何形式的贡献：功能、文档、测试、安全审计。请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+## 📄 License
+
+[MIT](LICENSE) © AI Automation Generator Contributors
