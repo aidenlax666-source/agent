@@ -82,12 +82,18 @@ export default function Home() {
             </p>
           </div>
 
-          <div className="mt-8 flex justify-center">
+          <div className="mt-8 flex justify-center gap-4 flex-wrap">
             <Link href="/mini">
               <Button size="lg" className="gap-2 text-base px-8 py-6">
                 <Sparkles className="w-5 h-5" />
                 开始：描述你的需求
                 <ArrowRight className="w-5 h-5" />
+              </Button>
+            </Link>
+            <Link href="/assistant">
+              <Button size="lg" variant="outline" className="gap-2 text-base px-8 py-6">
+                <Code2 className="w-5 h-5" />
+                改码助手：AI 改你的项目
               </Button>
             </Link>
           </div>

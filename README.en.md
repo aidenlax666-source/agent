@@ -188,10 +188,11 @@ See [docs/SECURITY.md](docs/SECURITY.md) for the full threat model.
 - [x] Skill system (FFmpeg / CAD)
 - [x] AI dev assistant + apply_patch + two-stage context + grep
 - [x] Automation (reminders / monitors / recurring)
-- [ ] Multi-model backends (Anthropic/Gemini/local)
-- [ ] Agentic multi-step tool loop (read→edit→run, replacing single-shot compile)
-- [ ] Test suite (pytest) & CI
+- [x] Multi-model backends (DeepSeek/OpenAI/Anthropic/Ollama switchable)
+- [x] Agent dual-mode (single-shot compile + multi-round autonomous loop)
+- [x] Test suite (35+ pytest cases + auto-test on commit)
 - [ ] Streaming video/audio output
+- [ ] Browser automation reliability (captcha/lazy-load scenarios)
 
 ---
 

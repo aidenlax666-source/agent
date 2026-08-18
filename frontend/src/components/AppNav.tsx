@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Sparkles, History, QrCode, Zap, LogIn, LogOut, User as UserIcon, Coins, FolderGit2, Bell, X, Trash2, Clock, MonitorCheck, AlarmClock, FolderOpen } from "lucide-react";
+import { Sparkles, History, QrCode, Zap, LogIn, LogOut, User as UserIcon, Coins, FolderGit2, Bell, X, Trash2, Clock, MonitorCheck, AlarmClock, FolderOpen, KeyRound } from "lucide-react";
 import { authApi, getAuthToken, setAuthToken, notificationsApi, type NotificationItem, type ReminderItem, type MonitorItem } from "@/lib/api";
 import type { User } from "@/lib/types";
 
@@ -14,6 +14,7 @@ const LINKS = [
   { href: "/history", label: "任务历史", icon: History },
   { href: "/gallery", label: "分享中心", icon: QrCode },
   { href: "/files", label: "我的文件", icon: FolderOpen },
+  { href: "/sessions", label: "登录态", icon: KeyRound },
 ];
 
 function displayName(user: User): string {

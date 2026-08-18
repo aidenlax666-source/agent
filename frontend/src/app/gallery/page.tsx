@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ExternalLink, QrCode, RefreshCw, Link2 } from "lucide-react";
+import { ExternalLink, QrCode, RefreshCw, Link2, Download } from "lucide-react";
 import Link from "next/link";
 import AppNav from "@/components/AppNav";
 import { getAuthToken, getAnonymousId, ASSETS_BASE } from "@/lib/api";
@@ -64,6 +64,31 @@ export default function GalleryPage() {
     load();
   }, [load]);
 
+  const [downloading, setDownloading] = useState(false);
+
+  const downloadZip = async () => {
+    if (downloading) return;
+    setDownloading(true);
+    try {
+      const headers: Record<string, string> = { "X-Anonymous-Id": getAnonymousId() };
+      const token = getAuthToken();
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+      const r = await fetch(`${API_BASE}/api/gallery/download-zip`, { headers });
+      if (!r.ok) throw new Error(`下载失败: ${r.status}`);
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "works.zip";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   const fullUrl = (path: string) => `${origin}${path}`;
   const qrUrl = (path: string) =>
     `https://api.qrserver.com/v1/create-qr-code/?size=180x180&margin=8&data=${encodeURIComponent(fullUrl(path))}`;
@@ -85,6 +110,10 @@ export default function GalleryPage() {
           </div>
           <Button variant="ghost" size="sm" onClick={load} className="gap-2">
             <RefreshCw className="w-4 h-4" /> 刷新
+          </Button>
+          <Button variant="outline" size="sm" onClick={downloadZip} disabled={downloading || items.length === 0} className="gap-2">
+            {downloading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+            打包下载
           </Button>
         </div>
 

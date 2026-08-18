@@ -74,7 +74,7 @@ python -m http.server 8001 --directory web
 ```
 
 访问：
-- 前端 **http://localhost:3000**（一句话自动化 `/mini`、开发助手 `/assistant`、分享中心 `/gallery`、自动化管理 `/automations`）
+- 前端 **http://localhost:3000**（一句话自动化 `/mini`、开发助手 `/assistant`、分享中心 `/gallery`、自动化管理 `/automations`、登录态管理 `/sessions`、我的文件 `/files`）
 - 后端 API 文档 **http://localhost:8000/docs**
 
 ### CLI 开发助手（持续对话改你的项目）
@@ -214,10 +214,11 @@ backend/app/
 - [x] 技能系统（FFmpeg / CAD）
 - [x] AI 开发助手 + apply_patch + 两阶段上下文 + grep
 - [x] 自动化（提醒/监控/循环）
-- [ ] 多模型后端（Anthropic/Gemini/本地模型）
-- [ ] Agent 多轮工具循环（read→edit→run 逐步推理，替代单轮编译）
-- [ ] 测试套件（pytest）与 CI
+- [x] 多模型后端（DeepSeek/OpenAI/Anthropic/Ollama 可切换）
+- [x] Agent 双模式（普通单轮编译 + 复杂任务多轮自主循环）
+- [x] 测试套件（pytest 35+ 用例 + git 提交自动测试）
 - [ ] 视频/音频流式输出
+- [ ] 浏览器自动化可靠性增强（验证码/懒加载场景）
 
 ---
 

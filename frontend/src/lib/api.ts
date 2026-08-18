@@ -128,11 +128,17 @@ export const sessionsApi = {
       body: JSON.stringify({ url }),
     }),
 
-  continueAfterLogin: (project_id: string) =>
+  continueAfterLogin: () =>
     request<{ status: string; message: string }>("/api/sessions/continue-after-login", {
       method: "POST",
-      body: JSON.stringify({ project_id }),
+      body: JSON.stringify({}),
     }),
+
+  status: () =>
+    request<{ status: string; message: string; domain?: string }>("/api/sessions/status"),
+
+  check: () =>
+    request<{ has_profile: boolean }>("/api/sessions/check"),
 };
 
 // ---- Mini Generator（自然语言任务：一句话 → 自动脚本 → 校验 → 结果） ----
