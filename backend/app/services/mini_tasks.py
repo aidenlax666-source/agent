@@ -811,6 +811,36 @@ async def mini_scheduler_loop() -> None:
         await asyncio.sleep(30)
 
 
+def _save_task_log(task_id: str, merged: dict) -> str | None:
+    """任务完整执行输出落日志文件（web/logs/{task_id}.log）。
+
+    DB 里只存截断错误（300 字），完整 stdout/stderr 在这里留存——排查问题
+    不用重跑任务。返回日志文件相对 web/ 的路径（可下载），失败返回 None。
+    """
+    try:
+        parts = []
+        if merged.get("script"):
+            parts.append("【生成脚本】\n" + str(merged["script"]))
+        if merged.get("stdout"):
+            parts.append("【标准输出】\n" + str(merged["stdout"]))
+        if merged.get("error"):
+            parts.append("【错误】\n" + str(merged["error"]))
+        if merged.get("partial_errors"):
+            parts.append("【部分失败】\n" + "；".join(str(x) for x in merged["partial_errors"]))
+        if not parts:
+            return None
+        log_dir = os.path.join(_WEB_DIR, "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, f"{task_id}.log")
+        with open(log_path, "w", encoding="utf-8") as f:
+            f.write("\n\n".join(parts))
+        merged["log_file"] = f"logs/{task_id}.log"
+        return f"logs/{task_id}.log"
+    except Exception as e:
+        logger.warning("[mini:%s] 任务日志落盘失败: %s", task_id, str(e)[:100])
+        return None
+
+
 def _cleanup_assets() -> None:
     """清理超过 asset_cleanup_days 天的 web/ 产物与 uploads/ 上传文件（防磁盘无限增长）。
 
@@ -1609,6 +1639,9 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
                 pass
         await update_mini_task(task_id, status="done", message="完成",
                                result=json.dumps(merged, ensure_ascii=False), error=None)
+        # 完整执行输出落日志文件（web/logs/{task_id}.log，可下载排查）：
+        # DB 里只存截断的错误信息，完整 stdout/stderr 在这里留存
+        _save_task_log(task_id, merged)
     except asyncio.CancelledError:
         record["status"] = "cancelled"
         record["message"] = "已取消"

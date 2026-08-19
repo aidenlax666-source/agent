@@ -1,17 +1,17 @@
-feat: 系统告警通知——worker 失联/队列积压/失败率突增 → 站内通知
+perf: 性能/成本小项——PG 连接池 + 任务完整日志落盘 + 沙箱预构建镜像
 
-可观测性接口有了但无主动告警：worker 全挂、队列积压、任务大面积失败时
-只有人工去看监控页才知道。新增告警循环：
+三项小优化：
 
-- config：alert_enabled（默认关，防误打扰）/ alert_queue_depth=50 /
-  alert_fail_rate=0.5 / alert_min_interval=1800
-- mini_tasks.system_monitor_loop：仅调度 leader 实例跑（复用 leader 租约
-  防多实例重复告警），周期检查三项——worker 失联（Redis 模式 0 活跃
-  worker）、队列积压（深度超阈值）、失败率突增（今日失败率超阈值）；
-  同类告警 alert_min_interval 内去重（Redis dedup 跨实例）
-- 通知合并：system 告警写 user_id=system，list_notifications /
-  unread_notification_count 查询合并 system 通知 → 所有用户可见
-- main.py 挂载 system_monitor_loop（未启用时直接返回）
+1. PG 连接池：db_adapter 的 PgConn 改走 psycopg2 ThreadedConnectionPool
+   （按 dsn 分池、池满兜底直连、归还时回滚未提交事务防脏状态）——
+   避免每次数据库操作新建连接/握手，高并发下省大量开销
 
-测试 +4（system 通知合并/告警去重/禁用直接返回/worker_down 触发），
-共 131 全过。
+2. 任务完整日志落盘：DB 只存截断错误（300 字），完整脚本/stdout/错误
+   写 web/logs/{task_id}.log（_save_task_log），result 带 log_file 字段
+   ——排查问题不用重跑任务；与产物同目录走静态服务可下载
+
+3. 沙箱预构建镜像：Dockerfile.sandbox 预装 playwright/字体/常用库，
+   worker 拿到任务秒级启动容器（默认镜像每次首跑装依赖要等几十秒）；
+   SANDBOX_IMAGE 配置即用；DEPLOYMENT.md 补性能成本章节
+
+测试 +3（日志落盘/空日志不写/连接池归还），共 134 全过。

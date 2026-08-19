@@ -158,6 +158,26 @@ worker 崩溃后槽位 TTL 自动过期释放，不永久占位；执行期间�
 **临时目录不共享**：脚本/输出中转仍在各实例本地 `backend/tmp`
 （产物最终落到共享 `web/`）——共享卷 IO 慢且放大临时垃圾，本地反而更安全。
 
+## 性能与成本（可选优化）
+
+| 优化 | 说明 | 配置 |
+|---|---|---|
+| **PG 连接池** | pg 模式连接复用（ThreadedConnectionPool，避免每次操作新建连接/握手） | 自动启用，无需配置 |
+| **任务完整日志** | DB 只存截断错误；完整 stdout/脚本落 `web/logs/{task_id}.log`（可下载排查，不用重跑任务） | 自动启用 |
+| **沙箱预构建镜像** | 默认镜像每次任务首次运行要装 Playwright，慢；预构建好秒级就绪 | 见下 |
+
+**沙箱预构建镜像**（worker 秒级就绪）：
+
+```bash
+cd backend
+docker build -f Dockerfile.sandbox -t python:3.11-slim-aiagent .
+# .env 配置
+SANDBOX_IMAGE=python:3.11-slim-aiagent
+```
+
+**任务完整日志下载**：任务详情返回 `log_file` 字段（`logs/{task_id}.log`），
+前端可加"查看执行日志"入口；日志与产物同目录，走产物静态服务。
+
 ## 数据库迁移（可选，高并发推荐）
 
 SQLite 适合单机；多实例高并发建议迁移 PostgreSQL。**已内置兼容层**：

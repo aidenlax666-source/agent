@@ -126,14 +126,33 @@ class FakePgConnection:
 
 def _pgconn_with_fake() -> tuple[PgConn, FakePgConnection]:
     import sys, types
-    # 构造完整 psycopg2 包（含 extras 子模块），避免 PgConn 导入失败
+    # 构造完整 psycopg2 包（含 extras + pool 子模块），避免 PgConn 导入失败
     fake_mod = types.ModuleType("psycopg2")
     extras_mod = types.ModuleType("psycopg2.extras")
     extras_mod.RealDictCursor = type("RealDictCursor", (), {})
     fake_mod.extras = extras_mod
+
+    # 假连接池：直接返回新连接（测试无真实 pg）
+    class FakePool:
+        def __init__(self, *a, **k):
+            pass
+
+        def getconn(self):
+            return FakePgConnection("fake")
+
+        def putconn(self, conn):
+            pass
+
+    pool_mod = types.ModuleType("psycopg2.pool")
+    pool_mod.ThreadedConnectionPool = FakePool
+    fake_mod.pool = pool_mod
     fake_mod.connect = lambda dsn: FakePgConnection(dsn)
     sys.modules["psycopg2"] = fake_mod
     sys.modules["psycopg2.extras"] = extras_mod
+    sys.modules["psycopg2.pool"] = pool_mod
+    # 清掉跨测试残留的池引用（防止旧 fake 泄漏）
+    from app.db_adapter import _PgPool
+    _PgPool._pools.clear()
     conn = PgConn("postgresql://u:p@h/db")
     return conn, conn._conn
 

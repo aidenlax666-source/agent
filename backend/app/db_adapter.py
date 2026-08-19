@@ -59,20 +59,22 @@ class PgCursor:
 class PgConn:
     """sqlite3.Connection 风格的 PostgreSQL 连接包装。"""
 
+    _pool = None
+    _pool_lock = threading.Lock()
+
     def __init__(self, dsn: str):
         import psycopg2
         import psycopg2.extras
-        self._conn = psycopg2.connect(dsn)
-        # RealDictCursor：row["col"] / dict(row) 与 sqlite3.Row 对齐
+        self._dsn = dsn
         self._cur_factory = psycopg2.extras.RealDictCursor
+        self._conn = _PgPool.get_connection(dsn)
         self._conn.autocommit = False
 
     # ---- 连接生命周期 ----
     def close(self):
-        try:
-            self._conn.close()
-        except Exception:
-            pass
+        """归还连接到池（不是真关闭）。"""
+        _PgPool.return_connection(self._dsn, self._conn)
+        self._conn = None
 
     def commit(self):
         self._conn.commit()
@@ -91,6 +93,7 @@ class PgConn:
                 self._conn.rollback()
         except Exception:
             pass
+        self.close()
         return False
 
     # ---- 执行 ----
@@ -146,6 +149,50 @@ class PgConn:
             return [r["column_name"] for r in cur.fetchall()]
         finally:
             cur.close()
+
+
+class _PgPool:
+    """psycopg2 连接池（ThreadedConnectionPool）：避免每次操作新建连接。
+
+    按 dsn 分池；池空时新建（默认 maxconn=10）。连接归还时自动回滚
+    未提交事务（防脏状态污染下一使用方）。
+    """
+
+    _pools: dict[str, object] = {}
+    _lock = threading.Lock()
+
+    @classmethod
+    def get_connection(cls, dsn: str):
+        import psycopg2.pool
+        with cls._lock:
+            pool = cls._pools.get(dsn)
+            if pool is None:
+                pool = psycopg2.pool.ThreadedConnectionPool(1, 10, dsn)
+                cls._pools[dsn] = pool
+            try:
+                return pool.getconn()
+            except Exception:
+                # 池满：临时建一个直连（极端并发兜底，用完即关）
+                import psycopg2
+                return psycopg2.connect(dsn)
+
+    @classmethod
+    def return_connection(cls, dsn: str, conn) -> None:
+        try:
+            conn.rollback()  # 清掉未提交事务，防脏状态
+        except Exception:
+            pass
+        try:
+            pool = cls._pools.get(dsn)
+            if pool is not None:
+                pool.putconn(conn)
+                return
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 class _EmptyCursor:

@@ -1,0 +1,38 @@
+# ============================================================
+# 沙箱预构建镜像（可选，推荐生产使用）
+#
+# 默认沙箱用 python:3.11-slim，每次 worker 首次执行任务时拉镜像 +
+# 装依赖（Playwright 等），可能等几十秒。本镜像预装好全部依赖，
+# worker 拿到任务秒级启动容器。
+#
+# 构建（在 backend 目录）：
+#   docker build -f Dockerfile.sandbox -t python:3.11-slim-aiagent .
+#
+# 使用：.env 里配置
+#   SANDBOX_IMAGE=python:3.11-slim-aiagent
+#
+# 注意：镜像名避开官方 python:3.11-slim（避免误覆盖）；
+# 预装的是通用抓取/数据处理栈，特殊依赖（如新库）仍由任务脚本自行安装。
+# ============================================================
+FROM python:3.11-slim
+
+# 系统依赖：Playwright 浏览器 + 字体（中文渲染）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    gnupg \
+    fonts-freefont-ttf \
+    fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python 依赖：与 backend/requirements.txt 对齐的沙箱常用栈
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+# Playwright 浏览器（chromium + Edge 通道复用）
+RUN python -m playwright install chromium \
+    && python -m playwright install-deps chromium \
+    || true
+
+WORKDIR /output
+
+CMD ["python"]
