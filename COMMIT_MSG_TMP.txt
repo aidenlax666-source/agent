@@ -1,12 +1,12 @@
-ci: GitHub Actions 流水线——PR 跑测试 + main 构建镜像推送 GHCR
+docs: HTTPS 完整部署配置——Nginx TLS + certbot 自动续期 + 静态缓存
 
-此前无任何 CI/CD：测试只在本地跑，镜像手工构建，部署全靠手动。
-新增 .github/workflows/ci.yml：
+云端部署此前只提到"Nginx/LB"但无实际配置。新增 deploy/ 三件套：
 
-- backend-test（PR/push main）：Python 3.11 + pytest 全量
-  （FakeRedis 模拟云模式，无需真实 Redis/Postgres）
-- frontend-build（PR/push main）：Next.js 生产构建
-- build-images（main 且前两者通过）：构建 backend/frontend 镜像
-  推送 GHCR（ghcr.io/<repo>/backend:latest + sha 标签）
+- deploy/nginx-https.conf：HTTP→HTTPS 跳转、TLS 1.2/1.3 加固、HSTS/
+  nosniff/X-Frame-Options 安全头、前端(:3000)/API(:8000)/产物(:8001)
+  三路转发、产物静态长缓存、视频音频 Range 流式放行、WebSocket 升级
+- deploy/init-certbot.sh：Let's Encrypt 首次签发 + 启用 certbot.timer
+  自动续期（每天检查，到期前 30 天续）
+- deploy/README.md：部署步骤 + 后端 TRUSTED_PROXY_IPS/CORS 同步说明
 
-DEPLOYMENT.md 补 CI/CD 章节（流水线表 + 服务器拉镜像/自动更新说明）。
+DEPLOYMENT.md 补 HTTPS 章节。纯配置/文档，无代码改动。

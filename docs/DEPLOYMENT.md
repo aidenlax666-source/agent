@@ -100,6 +100,22 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 服务器部署时可 `docker pull ghcr.io/<repo>/backend:latest` 拉取，或接入
 Watchtower/ArgoCD 实现自动更新。
 
+## HTTPS（Nginx + Let's Encrypt）
+
+`deploy/` 目录内置完整 HTTPS 三件套：Nginx 反代配置（HTTP→HTTPS 跳转、
+TLS 加固、安全响应头、前端/API/产物三路转发、静态长缓存、Range 流式）、
+certbot 首次签发脚本、部署说明。快速开始：
+
+```bash
+sudo bash deploy/init-certbot.sh your-domain.com your@email.com   # 签发+自动续期
+sudo cp deploy/nginx-https.conf /etc/nginx/sites-available/aiagent
+sudo ln -sf /etc/nginx/sites-available/aiagent /etc/nginx/sites-enabled/aiagent
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+详见 `deploy/README.md`。启用后后端 `.env` 需同步：
+`TRUSTED_PROXY_IPS=127.0.0.1,::1`（信任本机 Nginx 的 XFF，防伪造 IP 绕限速）。
+
 ### 4. 部署拓扑
 
 ```
