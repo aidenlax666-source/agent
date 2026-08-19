@@ -180,26 +180,71 @@ flowchart LR
 
 > 云服务器部署（多 worker / 多实例扩容）：见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。不配 `REDIS_URL` 即单机模式。
 
-### 核心模块
+### 仓库结构（每个文件/目录的职责）
 
 ```
-backend/app/
-├── api/              auth, upload, mini(任务/自动化), gallery, game,
-│                     auth_sessions(登录态), local_exec(本地执行 poll/report)
-├── services/
-│   ├── mini_generator.py   LLM-as-Compiler 主闭环（生成→校验→自愈）
-│   ├── mini_tasks.py       任务队列 + apply_patch + 两阶段上下文 + 调度器 + reaper
-│   ├── distributed.py      Redis 分布式层（队列/锁/去重/限流/信号量/leader 选举）
-│   ├── local_exec.py       本地执行模式（云端生成脚本 → 本地端执行）
-│   ├── storage.py          产物存储抽象（本地/共享卷/S3）
-│   ├── llm_client.py       多 key 轮询 + 重试 + 限流退避 + 多提供商
-│   ├── vision/video/tts_client.py   多模态客户端
-│   └── page_capture.py     Playwright DOM 结构采集（反爬优先控件）
-├── sandbox/
-│   ├── docker_executor.py  Docker 沙箱（内存/CPU 限制、只读挂载）+ 宿主回退
-│   └── security.py         AST 静态安全扫描（纵深防御）
-├── skills/            SKILL.md 技能系统
-└── database.py        SQLite/PostgreSQL（参数化查询 + 字段白名单 + 连接池）
+ai-automation-generator/
+├── backend/                        # 后端（FastAPI）
+│   ├── app/
+│   │   ├── main.py                 # 应用入口 + lifespan（调度器/worker/reaper/告警）
+│   │   ├── config.py               # 环境变量配置（.env）
+│   │   ├── database.py             # SQLite/PostgreSQL 数据层（参数化 + 白名单 + 连接池）
+│   │   ├── paths.py                # 登录态/产物/临时目录统一路径解析
+│   │   ├── db_adapter.py           # PostgreSQL 兼容适配层（? → %s、PRAGMA 跳过）
+│   │   ├── api/
+│   │   │   ├── auth.py             # 注册/登录/JWT
+│   │   │   ├── auth_sessions.py    # 登录态保存（2h TTL，按账号隔离）
+│   │   │   ├── mini.py             # 任务提交/状态/下载/流式/自动化/监控/统计
+│   │   │   ├── local_exec.py       # 本地执行 poll/report API
+│   │   │   ├── upload.py           # 图片/数据文件上传
+│   │   │   ├── gallery.py          # 分享中心（作品列表/zip 打包）
+│   │   │   └── game.py             # 联机游戏房间
+│   │   ├── services/
+│   │   │   ├── mini_generator.py   # LLM-as-Compiler 主闭环（生成→校验→自愈）
+│   │   │   ├── mini_tasks.py       # 任务引擎 + apply_patch + 两阶段上下文 + 调度器 + reaper
+│   │   │   ├── distributed.py      # Redis 分布式层（队列/锁/去重/限流/信号量/leader）
+│   │   │   ├── local_exec.py       # 本地执行模式（云端生成脚本 → 本地端执行）
+│   │   │   ├── storage.py          # 产物存储抽象（本地/共享卷/S3）
+│   │   │   ├── llm_client.py       # 多 key 轮询 + 重试 + 限流退避 + 多提供商
+│   │   │   ├── long_task.py        # 后台任务注册表（锁 + 取消）
+│   │   │   ├── vision/video/tts_client.py   # 多模态客户端（图片/视频/TTS）
+│   │   │   ├── page_capture.py     # Playwright DOM 结构采集（反爬优先控件）
+│   │   │   └── site_analyzer.py    # 网站结构分析（列表/字段/跳转）
+│   │   ├── sandbox/
+│   │   │   ├── docker_executor.py  # Docker 沙箱（内存/CPU 限制、只读挂载）+ 宿主回退
+│   │   │   ├── security.py         # AST 静态安全扫描（纵深防御）
+│   │   │   ├── static_check.py     # 执行前预检（死循环等）
+│   │   │   └── auto_fix.py         # 已知 Playwright 误用自动修复
+│   │   └── skills/                 # SKILL.md 技能系统（FFmpeg/CAD）
+│   ├── tests/                      # 140 个 pytest 用例
+│   ├── requirements.txt
+│   ├── Dockerfile                  # 后端镜像
+│   └── Dockerfile.sandbox          # 沙箱预构建镜像（worker 秒级就绪）
+│
+├── frontend/                       # 前端（Next.js 14）
+│   └── src/
+│       ├── app/                    # 页面：mini 工作台 / assistant 改码 / gallery 分享
+│       │                           #      automations 定时 / history 历史 / files 文件
+│       │                           #      memory 记忆 / sessions 登录态 / monitor 监控
+│       ├── components/             # AppNav 导航 + UI 组件 + PreviewTable
+│       └── lib/                    # api.ts（API 客户端）+ types + utils
+│
+├── cli/                            # 命令行工具（本地端）
+│   ├── agent-cli.py                # CLI 开发助手（持续对话改项目）
+│   ├── local_worker.py             # 本地执行端源码（混合架构，自包含 AST 扫描）
+│   └── build_local_worker.ps1      # PyInstaller 打包 → local_worker.exe
+│
+├── deploy/                         # 云部署配置
+│   ├── nginx-https.conf            # Nginx 反代 + TLS 加固 + 静态缓存
+│   ├── init-certbot.sh             # Let's Encrypt 签发 + 自动续期
+│   └── README.md                   # 部署步骤
+│
+├── docs/                           # 文档：ARCHITECTURE / SECURITY / API / DEPLOYMENT
+├── docker-compose.yml              # 一键编排（redis/postgres/backend/frontend/assets）
+├── start.ps1                       # 本地一键启动（后端 8000 + 前端 3000 + 产物 8001）
+├── setup-git-hooks.ps1/.sh         # git pre-commit 钩子（commit 自动跑测试）
+├── .env.example                    # 环境变量模板
+└── README.md / README.en.md        # 项目说明
 ```
 
 ### 混合架构（本地执行模式）

@@ -1,17 +1,17 @@
-chore: 整理仓库结构——工具脚本收进 cli/ 目录，根目录只留必要文件
+docs: README 补全仓库结构——每个文件/目录职责描述
 
-根目录此前散落 agent-cli.py（CLI 开发助手）、local_worker.py（本地执行端
-源码）、build_local_worker.ps1（打包脚本），与 frontend/backend/配置混在
-一起。收进 cli/ 目录：
+"核心模块"只有 backend/app 一棵树，缺 cli/、deploy/ 与整体布局。
+替换为完整仓库结构树，标注每个文件/目录职责：
 
-- git mv agent-cli.py cli/agent-cli.py（保留历史）
-- git mv local_worker.py cli/local_worker.py
-- git mv build_local_worker.ps1 cli/build_local_worker.ps1
+- backend：api（auth/auth_sessions/mini/local_exec/upload/gallery/game）、
+  services（mini_generator/mini_tasks/distributed/local_exec/storage/
+  llm_client/long_task/多模态/page_capture/site_analyzer）、sandbox
+  （docker_executor/security/static_check/auto_fix）、skills、tests、
+  Dockerfile/Dockerfile.sandbox
+- frontend：app 页面清单（mini/assistant/gallery/automations/history/
+  files/memory/sessions/monitor）+ components + lib
+- cli：agent-cli / local_worker / build_local_worker.ps1
+- deploy：nginx-https / init-certbot / README
+- 根文件：docker-compose/start.ps1/setup-git-hooks/.env.example 等
 
-根目录现在只保留必要文件：README×2、.env.example、.gitignore、
-docker-compose×2、start.ps1、LICENSE、CONTRIBUTING、CODE_OF_CONDUCT、
-setup-git-hooks×2。
-
-同步更新所有引用（README/en、docs/DEPLOYMENT、setup-git-hooks 的
-pre-commit 路径检测）；.gitignore 补 cli/dist|build|*.spec|配置；
-删除误追踪的 COMMIT_MSG_TMP.txt。测试 140 全过。
+README.en.md 同步英文版仓库结构树。测试 140 全过。

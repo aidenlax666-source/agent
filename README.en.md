@@ -127,22 +127,70 @@ flowchart LR
     F -- pass --> H[Auto-apply to local folder\ndiff preview + git]
 ```
 
-### Modules
+### Repository layout
 
 ```
-backend/app/
-├── api/              auth, upload, mini(tasks/automation), gallery, game, auth_sessions(login state)
-├── services/
-│   ├── mini_generator.py   LLM-as-Compiler main loop (generate→verify→heal)
-│   ├── mini_tasks.py       task queue + apply_patch + two-stage context + scheduler (30s)
-│   ├── llm_client.py       multi-key rotation + retry + rate-limit backoff
-│   ├── vision/video/tts_client.py   multimodal clients
-│   └── page_capture.py     Playwright DOM structure capture
-├── sandbox/
-│   ├── docker_executor.py  Docker sandbox (mem/CPU limits, read-only mounts) + host fallback
-│   └── security.py         AST static scan (defense in depth)
-├── skills/            SKILL.md skill system
-└── database.py        SQLite/PostgreSQL (parameterized queries + field whitelist + connection pool)
+ai-automation-generator/
+├── backend/                        # Backend (FastAPI)
+│   ├── app/
+│   │   ├── main.py                 # App entry + lifespan (scheduler/worker/reaper/alerts)
+│   │   ├── config.py               # Env config (.env)
+│   │   ├── database.py             # SQLite/PostgreSQL data layer (parameterized + whitelist + pool)
+│   │   ├── paths.py                # Unified path resolution (profiles/artifacts/tmp)
+│   │   ├── db_adapter.py           # PostgreSQL adapter (? → %s, skips PRAGMA)
+│   │   ├── api/
+│   │   │   ├── auth.py             # Register/login/JWT
+│   │   │   ├── auth_sessions.py    # Login-state storage (2h TTL, per-account)
+│   │   │   ├── mini.py             # Tasks/submit/status/download/stream/automation/stats
+│   │   │   ├── local_exec.py       # Local-execution poll/report API
+│   │   │   ├── upload.py           # Image/data-file upload
+│   │   │   ├── gallery.py          # Share center (artifacts/zip)
+│   │   │   └── game.py             # Multiplayer game rooms
+│   │   ├── services/
+│   │   │   ├── mini_generator.py   # LLM-as-Compiler main loop (generate→verify→heal)
+│   │   │   ├── mini_tasks.py       # Task engine + apply_patch + two-stage context + scheduler + reaper
+│   │   │   ├── distributed.py      # Redis distributed layer (queue/lock/dedup/ratelimit/semaphore/leader)
+│   │   │   ├── local_exec.py       # Local execution mode (cloud script → local exe)
+│   │   │   ├── storage.py          # Artifact storage abstraction (local/shared volume/S3)
+│   │   │   ├── llm_client.py       # Multi-key rotation + retry + backoff + multi-provider
+│   │   │   ├── long_task.py        # Background task registry (lock + cancel)
+│   │   │   ├── vision/video/tts_client.py   # Multimodal clients
+│   │   │   ├── page_capture.py     # Playwright DOM structure capture
+│   │   │   └── site_analyzer.py    # Website structure analysis
+│   │   ├── sandbox/
+│   │   │   ├── docker_executor.py  # Docker sandbox (mem/CPU limits, read-only mounts) + host fallback
+│   │   │   ├── security.py         # AST static scan (defense in depth)
+│   │   │   ├── static_check.py     # Pre-execution checks (infinite loops etc.)
+│   │   │   └── auto_fix.py         # Known Playwright misuse auto-fix
+│   │   └── skills/                 # SKILL.md skill system (FFmpeg/CAD)
+│   ├── tests/                      # 140 pytest cases
+│   ├── requirements.txt
+│   ├── Dockerfile                  # Backend image
+│   └── Dockerfile.sandbox          # Prebuilt sandbox image (instant worker startup)
+│
+├── frontend/                       # Frontend (Next.js 14)
+│   └── src/
+│       ├── app/                    # Pages: mini / assistant / gallery / automations
+│       │                           #        history / files / memory / sessions / monitor
+│       ├── components/             # AppNav + UI components + PreviewTable
+│       └── lib/                    # api.ts (API client) + types + utils
+│
+├── cli/                            # Command-line tools (local side)
+│   ├── agent-cli.py                # CLI dev assistant (conversational project editing)
+│   ├── local_worker.py             # Local execution end (hybrid mode, self-contained AST scan)
+│   └── build_local_worker.ps1      # PyInstaller packaging → local_worker.exe
+│
+├── deploy/                         # Cloud deployment configs
+│   ├── nginx-https.conf            # Nginx reverse proxy + TLS hardening + static cache
+│   ├── init-certbot.sh             # Let's Encrypt issuance + auto-renewal
+│   └── README.md                   # Deployment steps
+│
+├── docs/                           # Docs: ARCHITECTURE / SECURITY / API / DEPLOYMENT
+├── docker-compose.yml              # One-command orchestration (redis/postgres/backend/frontend/assets)
+├── start.ps1                       # Local one-click start (backend 8000 + frontend 3000 + assets 8001)
+├── setup-git-hooks.ps1/.sh         # git pre-commit hooks (auto-test on commit)
+├── .env.example                    # Env template
+└── README.md / README.en.md        # Project docs
 ```
 
 ---
