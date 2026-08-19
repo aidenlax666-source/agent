@@ -87,6 +87,19 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 > ⚠️ 注意：SQLite 仍为单文件。多实例共享 SQLite 在云环境建议挂载到共享存储
 > （或迁移 PostgreSQL——见下方"数据库迁移"）。
 
+## CI/CD（GitHub Actions）
+
+仓库已内置 `.github/workflows/ci.yml`，三条流水线：
+
+| 触发 | 流水线 | 作用 |
+|---|---|---|
+| PR / push 到 main | `backend-test` | Python 3.11 装依赖 → pytest 全量（FakeRedis 模拟云模式，无需真实 Redis） |
+| PR / push 到 main | `frontend-build` | Next.js 生产构建（类型检查 + 编译） |
+| push 到 main（前两者通过后） | `build-images` | 构建 backend/frontend 镜像 → 推送到 GHCR（`ghcr.io/<repo>/backend:latest`） |
+
+服务器部署时可 `docker pull ghcr.io/<repo>/backend:latest` 拉取，或接入
+Watchtower/ArgoCD 实现自动更新。
+
 ### 4. 部署拓扑
 
 ```

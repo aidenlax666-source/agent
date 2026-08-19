@@ -1,17 +1,12 @@
-feat: 对象存储适配——产物存储抽象层（本地/共享卷/S3 可切换）
+ci: GitHub Actions 流水线——PR 跑测试 + main 构建镜像推送 GHCR
 
-多实例下产物存取此前直接读写 web/ 本地/共享卷文件：流式/下载/打包全部
-依赖挂载，不想挂共享卷或要无限容量时无解。新增存储抽象层：
+此前无任何 CI/CD：测试只在本地跑，镜像手工构建，部署全靠手动。
+新增 .github/workflows/ci.yml：
 
-- 新增 app/services/storage.py：统一接口 artifact_exists/size/read/
-  download_response/stream_response/file_response
-  - local（默认）：web/ 目录或共享卷挂载点，现状行为不变（含防路径穿越）
-  - s3（STORAGE_BACKEND=s3 + S3_* 配置）：boto3，跨实例天然一致、不限
-    磁盘、CDN 友好；流式走 S3 Range 请求（边下边播），下载走代理
-- config：storage_backend / s3_bucket / s3_endpoint / s3_access_key /
-  s3_secret_key / s3_region（MinIO 兼容：填 endpoint 即可）
-- mini API：download/stream 改走存储抽象；output_file 支持 web/ 相对
-  路径（S3 key）与本地绝对路径（本地模式兼容旧行为）
+- backend-test（PR/push main）：Python 3.11 + pytest 全量
+  （FakeRedis 模拟云模式，无需真实 Redis/Postgres）
+- frontend-build（PR/push main）：Next.js 生产构建
+- build-images（main 且前两者通过）：构建 backend/frontend 镜像
+  推送 GHCR（ghcr.io/<repo>/backend:latest + sha 标签）
 
-测试 +9（本地 exists/size/read、下载头、Range 206/416、S3 exists/size/
-read、S3 Range 透传），共 127 全过。
+DEPLOYMENT.md 补 CI/CD 章节（流水线表 + 服务器拉镜像/自动更新说明）。

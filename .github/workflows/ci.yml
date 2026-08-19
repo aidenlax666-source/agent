@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ===== 后端测试 =====
+  backend-test:
+    name: Backend Tests (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          pip install --no-cache-dir -r requirements.txt pytest
+          # Playwright 在 CI 只需装浏览器（抓取相关测试可跳过时注释）
+          python -m playwright install chromium --with-deps || true
+
+      - name: Run tests
+        working-directory: backend
+        env:
+          # 沙箱测试无需真实 Redis（FakeRedis 模拟）；留空走单机模式
+          REDIS_URL: ""
+          DATABASE_URL: ""
+        run: |
+          python -m pytest tests/ -q --tb=short
+
+  # ===== 前端构建检查 =====
+  frontend-build:
+    name: Frontend Build (Next.js)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+
+      - name: Install & build
+        working-directory: frontend
+        run: |
+          npm ci || npm install
+          npm run build
+
+  # ===== main 推送 → 构建并推送镜像 =====
+  build-images:
+    name: Build & Push Docker Images
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [backend-test, frontend-build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/backend:latest
+            ghcr.io/${{ github.repository }}/backend:${{ github.sha }}
+
+      - name: Build & push frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/frontend:latest
+            ghcr.io/${{ github.repository }}/frontend:${{ github.sha }}
