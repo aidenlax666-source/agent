@@ -1,15 +1,13 @@
-feat: 本地端登录向导——用户双击 exe 输入账号密码即可，无需填地址/token
+docs: README 更新——混合架构/云架构能力/环境变量/Roadmap
 
-此前本地端需要用户手动填云端地址 + JWT token，是开发者做法不是用户做法。
-改为正常产品体验：下载 exe → 双击 → 输入云端账号密码登录一次 → 全自动。
+README.md：
+- 亮点表补"混合架构（本地执行）"
+- 快速开始补"本地执行端打包"小节（LOCAL_WORKER_SERVER → exe）
+- 环境变量补云架构项（REDIS_URL/DATABASE_URL/SANDBOX_PROFILE_ROOT/
+  ASSET_WEB_ROOT/SANDBOX_GLOBAL_CONCURRENCY/STORAGE_BACKEND/ALERT_ENABLED/
+  RESULT_CACHE_TTL）
+- 服务结构表补 PostgreSQL + local_worker.exe；访问列表补 /monitor
+- 核心模块补 distributed/local_exec/storage；新增"混合架构"章节
+- Roadmap 补云架构 4 项 + 混合架构 1 项
 
-local_worker.py：
-- 云端地址：命令行 > 本地配置 > 打包内置默认（DEFAULT_SERVER，build 时写入）
-- 首次运行控制台登录向导：输入邮箱+密码 → 调 /api/auth/login 拿 token
-  → 存 local_worker_config.json（exe 同目录）
-- 之后自动读配置；token 失效时自动提示重登；--login 强制重登
-
-build_local_worker.ps1：
-- 支持 $env:LOCAL_WORKER_SERVER 把云端地址打进 exe（用户完全不用填）
-
-文档：DEPLOYMENT 本地端使用改登录向导方式。
+README.en.md：同步云架构 + 混合模式章节、Roadmap、Docs 链接。

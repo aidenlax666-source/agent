@@ -142,7 +142,7 @@ backend/app/
 │   ├── docker_executor.py  Docker sandbox (mem/CPU limits, read-only mounts) + host fallback
 │   └── security.py         AST static scan (defense in depth)
 ├── skills/            SKILL.md skill system
-└── database.py        SQLite (parameterized queries + field whitelist)
+└── database.py        SQLite/PostgreSQL (parameterized queries + field whitelist + connection pool)
 ```
 
 ---
@@ -164,12 +164,63 @@ See [docs/SECURITY.md](docs/SECURITY.md) for the full threat model.
 
 ---
 
+## ☁️ Cloud Architecture & Hybrid Mode
+
+### Distributed task system (Redis, optional)
+
+Configure `REDIS_URL` to enable the cloud multi-instance mode (leave empty for
+single-node, fully backward compatible):
+
+- **Redis task queue** (LPUSH/BRPOP) with worker lease + heartbeat → multi-worker
+  auto load balancing, no duplicate execution
+- **Crash auto-recovery** (reaper): lost tasks (lease expired + not in queue) are
+  re-queued automatically, dead-letter after retry limit
+- **Sandbox for the cloud**: shared dirs (`SANDBOX_PROFILE_ROOT`/`ASSET_WEB_ROOT`)
+  + global concurrency (Redis semaphore) + orphan container cleanup
+- **Global rate limiting** (Redis counter), **queue priority** (high/normal),
+  **result cache** (reuse identical requests, save LLM cost), **leader election**
+- **Observability**: `/monitor` page (success rate / worker health / queue depth)
+  + alert notifications (worker down / queue backlog / failure spike)
+- **PostgreSQL** (`DATABASE_URL`, optional, connection pool) + **object storage**
+  (`STORAGE_BACKEND=s3`) + **CI/CD** (GitHub Actions) + **HTTPS** (nginx/certbot)
+
+### Hybrid mode (local execution)
+
+The cloud sandbox runs on servers and cannot write to a user's local disk.
+Tasks like *"create report.txt in D:/My Documents"* are **auto-detected**
+(keywords: 本地/创建文件/paths) and dispatched to the user's local
+`local_worker.exe`, which executes them on the user's machine and reports back:
+
+```
+User submits a local-file task
+   │  auto-detected (no toggle needed)
+   ▼
+Redis local queue aiagent:queue:local:{user_id} (per-user isolation)
+   │  local exe polls POST /api/local/tasks/poll
+   ▼
+Cloud lazily generates a stdlib-only script → returns to exe
+   ▼
+exe runs it locally (built-in AST scan + subprocess isolation) → file created on disk
+   ▼
+POST /api/local/tasks/report → cloud marks done
+```
+
+**User experience**: download exe → double-click → log in once (email + password)
+→ fully automatic. Cloud URL is baked in at build time; token is saved locally.
+
+```powershell
+$env:LOCAL_WORKER_SERVER="https://your-domain.com"
+powershell -ExecutionPolicy Bypass -File build_local_worker.ps1   # → dist/local_worker.exe
+```
+
+---
+
 ## 📚 Docs
 
 - [Architecture deep-dive](docs/ARCHITECTURE.md) — LLM-as-Compiler, apply_patch, two-stage context, self-healing, sandbox, scheduler, ADR
 - [Security](docs/SECURITY.md) — threat model & mitigation matrix
 - [API overview](docs/API.md) — endpoint list, task state machine, automation intent parsing
-- [Cloud deployment](docs/DEPLOYMENT.md) — multi-instance scaling with Redis (task locks/dedup/scheduling)
+- [Cloud deployment](docs/DEPLOYMENT.md) — multi-instance scaling (Redis queue, hybrid local-execution mode, HTTPS, CI/CD)
 - [CLI usage](agent-cli.py) — dev assistant command-line tool
 
 ---
@@ -194,9 +245,14 @@ See [docs/SECURITY.md](docs/SECURITY.md) for the full threat model.
 - [x] Automation (reminders / monitors / recurring)
 - [x] Multi-model backends (DeepSeek/OpenAI/Anthropic/Ollama switchable)
 - [x] Agent dual-mode (single-shot compile + multi-round autonomous loop)
-- [x] Test suite (50+ pytest cases + auto-test on commit)
+- [x] Test suite (140+ pytest cases + auto-test on commit)
 - [x] Streaming video/audio output (TTS long-text segmentation + Range streaming endpoint)
 - [x] Browser automation reliability (lazy-load/infinite-scroll + captcha detection/wait)
+- [x] **Cloud**: Redis distributed queue + crash auto-recovery + sandbox shared dirs / global concurrency / orphan cleanup
+- [x] **Cloud**: global rate limit / queue priority / result cache / leader election / alerts / monitor page
+- [x] **Cloud**: PostgreSQL adapter (connection pool) + object storage (S3/MinIO) + full task logs
+- [x] **Cloud**: CI/CD (GitHub Actions) + HTTPS (nginx/certbot) + prebuilt sandbox image
+- [x] **Hybrid**: local execution mode (local-file tasks dispatched to user's local exe)
 - [ ] Multimodal input (audio/video understanding)
 
 ---

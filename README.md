@@ -40,6 +40,7 @@ English: [README.en.md](README.en.md)
 | 🤖 **Agent 双模式** | 普通任务走单轮编译（省成本）；复杂任务自动切换多轮自主循环（write→run→finish，可 `give_up`），最多 8 轮 |
 | 🎬 **流式输出** | TTS 长文本分段合成（不截断）、产物 Range 流式播放（视频/音频边下边播） |
 | 🎨 **内容生成全家桶** | HTML 报告、网页游戏、AI 音乐/视频/图片、TTS 配音、数据问答 |
+| 🖥️ **混合架构（本地执行）** | 云端分布式处理普通任务；"在本地创建/操作文件"类任务**自动识别**并派发给用户本地的 `local_worker.exe`，在用户电脑上真实执行、结果回传云端 |
 
 ---
 
@@ -77,7 +78,7 @@ python -m http.server 8001 --directory web
 ```
 
 访问：
-- 前端 **http://localhost:3000**（一句话自动化 `/mini`、开发助手 `/assistant`、分享中心 `/gallery`、自动化管理 `/automations`、登录态管理 `/sessions`、我的文件 `/files`、AI 记忆 `/memory`、任务历史 `/history`）
+- 前端 **http://localhost:3000**（一句话自动化 `/mini`、开发助手 `/assistant`、分享中心 `/gallery`、自动化管理 `/automations`、登录态管理 `/sessions`、我的文件 `/files`、AI 记忆 `/memory`、任务历史 `/history`、系统监控 `/monitor`）
 - 后端 API 文档 **http://localhost:8000/docs**
 
 ### CLI 开发助手（持续对话改你的项目）
@@ -87,6 +88,17 @@ python agent-cli.py                      # 当前目录进入交互会话
 python agent-cli.py C:\path\to\project   # 指定项目
 python agent-cli.py --resume             # 恢复上次会话
 python agent-cli.py --yes                # 自动确认模式
+```
+
+### 本地执行端（混合架构，可选）
+
+需要"在用户本地创建/操作文件"的任务（如"在 D:/xx 创建 文件.txt"）由本地端
+执行。打包 exe 分发给用户：
+
+```powershell
+$env:LOCAL_WORKER_SERVER="https://your-domain.com"   # 云端地址打进 exe
+powershell -ExecutionPolicy Bypass -File build_local_worker.ps1
+# 产物 dist/local_worker.exe → 用户双击 → 登录一次 → 自动接收本地任务
 ```
 
 ---
@@ -111,6 +123,16 @@ SANDBOX_ALLOW_SUBPROCESS=true
 
 # JWT（必改）
 JWT_SECRET_KEY=change-me-to-a-random-string
+
+# ===== 云架构（可选，多实例部署时配置）=====
+REDIS_URL=redis://localhost:6379/0   # 留空=单机模式（默认）；配了=分布式队列/锁/去重/限流
+DATABASE_URL=                        # 留空=SQLite；配 postgresql://... 走 PostgreSQL
+SANDBOX_PROFILE_ROOT=                # 登录态共享目录（多实例挂共享卷）
+ASSET_WEB_ROOT=                      # 产物共享目录（多实例挂共享卷）
+SANDBOX_GLOBAL_CONCURRENCY=0         # 全局沙箱并发（0=每实例各自限制）
+STORAGE_BACKEND=local                # 产物存储：local | s3（S3_BUCKET 等）
+ALERT_ENABLED=false                  # 系统告警（worker 失联/队列积压/失败率突增）
+RESULT_CACHE_TTL=0                   # 结果缓存秒数（同用户同需求复用，省 LLM 成本）
 ```
 
 ---
@@ -149,10 +171,12 @@ flowchart LR
 
 | 服务 | 端口 | 职责 |
 |---|---|---|
-| FastAPI 后端 | 8000 | 任务引擎、沙箱、API、调度器 |
+| FastAPI 后端 | 8000 | 任务引擎、沙箱、API、调度器、分布式 worker |
 | Next.js 前端 | 3000 | Web 工作台 |
 | 静态产物服务 | 8001 | 分享作品（与 API **不同源**，防同源 XSS） |
-| Redis（可选） | 6379 | 云架构多实例：任务锁/去重/调度共享（配 `REDIS_URL` 启用） |
+| Redis（可选） | 6379 | 云架构多实例：任务队列/锁/去重/限流/信号量（配 `REDIS_URL` 启用） |
+| PostgreSQL（可选） | 5432 | 云架构高并发数据层（配 `DATABASE_URL` 启用，默认 SQLite） |
+| local_worker.exe | 用户本地 | 混合架构：执行"创建/操作本地文件"类任务（下载 exe 双击即用） |
 
 > 云服务器部署（多 worker / 多实例扩容）：见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。不配 `REDIS_URL` 即单机模式。
 
@@ -160,18 +184,49 @@ flowchart LR
 
 ```
 backend/app/
-├── api/              auth, upload, mini(任务/自动化), gallery, game, auth_sessions(登录态)
+├── api/              auth, upload, mini(任务/自动化), gallery, game,
+│                     auth_sessions(登录态), local_exec(本地执行 poll/report)
 ├── services/
 │   ├── mini_generator.py   LLM-as-Compiler 主闭环（生成→校验→自愈）
-│   ├── mini_tasks.py       任务队列 + apply_patch + 两阶段上下文 + 调度器（30s）
-│   ├── llm_client.py       多 key 轮询 + 重试 + 限流退避
+│   ├── mini_tasks.py       任务队列 + apply_patch + 两阶段上下文 + 调度器 + reaper
+│   ├── distributed.py      Redis 分布式层（队列/锁/去重/限流/信号量/leader 选举）
+│   ├── local_exec.py       本地执行模式（云端生成脚本 → 本地端执行）
+│   ├── storage.py          产物存储抽象（本地/共享卷/S3）
+│   ├── llm_client.py       多 key 轮询 + 重试 + 限流退避 + 多提供商
 │   ├── vision/video/tts_client.py   多模态客户端
 │   └── page_capture.py     Playwright DOM 结构采集（反爬优先控件）
 ├── sandbox/
 │   ├── docker_executor.py  Docker 沙箱（内存/CPU 限制、只读挂载）+ 宿主回退
 │   └── security.py         AST 静态安全扫描（纵深防御）
 ├── skills/            SKILL.md 技能系统
-└── database.py        SQLite（参数化查询 + 字段白名单）
+└── database.py        SQLite/PostgreSQL（参数化查询 + 字段白名单 + 连接池）
+```
+
+### 混合架构（本地执行模式）
+
+云端沙箱在服务器，写不到用户本地磁盘。"在 D:/我的文档 创建 报告.txt" 这类
+本地文件操作任务**自动识别**（无需开关），派发给用户本地的 `local_worker.exe`：
+
+```
+用户提交需求（含"本地/创建文件/路径"等意图）
+   │  submit 自动识别
+   ▼
+Redis 本地队列 aiagent:queue:local:{user_id}（按用户隔离）
+   │  用户本地 exe 轮询 /api/local/tasks/poll 领取
+   ▼
+云端懒生成"本地操作脚本"（Python 标准库）→ 返回 exe
+   ▼
+exe 在用户电脑执行（内置 AST 扫描 + 子进程隔离）→ 文件直接建在本地
+   ▼
+回传 /api/local/tasks/report → 云端标记 done，结果可见
+```
+
+**用户侧体验**：下载 exe → 双击 → 输入云端账号密码登录一次 → 全自动
+（云端地址打包内置，token 本地保存）。打包：
+
+```powershell
+$env:LOCAL_WORKER_SERVER="https://your-domain.com"
+powershell -ExecutionPolicy Bypass -File build_local_worker.ps1   # 产物 dist/local_worker.exe
 ```
 
 ---
@@ -198,6 +253,7 @@ backend/app/
 - [架构详解](docs/ARCHITECTURE.md) — 核心机制深度拆解（LLM-as-Compiler、apply_patch、两阶段上下文、自愈引擎）
 - [安全设计](docs/SECURITY.md) — 威胁模型与防护措施
 - [API 概览](docs/API.md) — 端点清单
+- [云部署指南](docs/DEPLOYMENT.md) — 云架构/混合架构/多实例/HTTPS/CI 全套
 - [CLI 使用](agent-cli.py) — 开发助手命令行工具
 
 ---
@@ -222,9 +278,14 @@ backend/app/
 - [x] 自动化（提醒/监控/循环）
 - [x] 多模型后端（DeepSeek/OpenAI/Anthropic/Ollama 可切换）
 - [x] Agent 双模式（普通单轮编译 + 复杂任务多轮自主循环）
-- [x] 测试套件（50+ 用例 + git 提交自动测试）
+- [x] 测试套件（140 用例 + git 提交自动测试）
 - [x] 视频/音频流式输出（TTS 长文分段合成 + Range 流式播放端点）
 - [x] 浏览器自动化可靠性增强（懒加载/无限滚动 + 验证码检测等待）
+- [x] **云架构**：Redis 分布式任务队列 + worker 崩溃自动恢复 + 沙箱共享目录/全局并发/孤儿清理
+- [x] **云架构**：全局限流 / 队列优先级 / 结果缓存 / leader 选举 / 告警通知 / 系统监控页
+- [x] **云架构**：PostgreSQL 兼容层（连接池）+ 对象存储（S3/MinIO）+ 完整日志落盘
+- [x] **云架构**：CI/CD（GitHub Actions）+ HTTPS 全套（Nginx/certbot）+ 沙箱预构建镜像
+- [x] **混合架构**：本地执行模式（本地文件操作任务自动派发给用户本地 exe 端）
 - [ ] 多模态输入（音频/视频理解）
 
 ---
