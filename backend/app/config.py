@@ -71,6 +71,15 @@ class Settings(BaseSettings):
     sandbox_profile_root: str = ""  # 登录态根目录；空 = backend/browser_profile
     asset_web_root: str = ""        # 产物根目录；空 = 仓库根 web/
 
+    # 产物存储后端：local（默认，读写 web/ 目录或共享卷挂载点）| s3（对象存储）
+    # s3 模式产物在对象存储：跨实例天然一致、不限磁盘；需配 S3_* 五项
+    storage_backend: str = "local"
+    s3_bucket: str = ""
+    s3_endpoint: str = ""           # 空 = AWS 默认端点；MinIO 等填 http://minio:9000
+    s3_access_key: str = ""
+    s3_secret_key: str = ""
+    s3_region: str = ""             # 空 = us-east-1（boto3 默认）
+
     # 全局沙箱并发（可选）：>0 且配了 REDIS_URL 时，用 Redis 信号量做跨实例精确限制
     # （总并发 = 该值，不再 = 实例数 × 单实例并发）。0 = 每实例各自限制（现状）。
     sandbox_global_concurrency: int = 0

@@ -802,21 +802,27 @@ async def download_output(task_id: str, user=Depends(get_current_user)):
 
     安全：产物 HTML 是 LLM/网页抓取内容拼接的不可信数据，一律强制下载 +
     nosniff，禁止在 API 源内联渲染（防存储型 XSS 偷取同源 localStorage JWT）。
+    存储抽象：本地/共享卷/S3 统一走 storage.artifact_download_response。
     """
+    from app.services import storage
     status = mini_tasks.get_status(task_id, user_id=user["id"])
     if status is None:
         raise HTTPException(status_code=404, detail="任务不存在")
     result = status.get("result") or {}
     path = result.get("output_file")
-    if not path or not os.path.exists(path):
+    if not path:
+        raise HTTPException(status_code=404, detail="该任务没有可下载的结果文件")
+    # output_file 可能是绝对路径（本地）或 web/ 相对路径；统一转成相对 web/ 的路径
+    rel = _rel_artifact_path(path)
+    if not storage.artifact_exists(rel):
         raise HTTPException(status_code=404, detail="该任务没有可下载的结果文件")
     filename = os.path.basename(path)
     ext = os.path.splitext(filename)[1].lower()
     if ext in (".html", ".htm", ".svg", ".xml"):
         # 不可信标记语言：强制下载 + 非 HTML 媒体类型（防内联执行）
-        return FileResponse(path, media_type="application/octet-stream",
-                            headers={"X-Content-Type-Options": "nosniff",
-                                     "Content-Disposition": f'attachment; filename="{filename}"'})
+        return storage.artifact_download_response(
+            rel, filename,
+            extra_headers={"Content-Disposition": f'attachment; filename="{filename}"'})
     media = {
         ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         ".png": "image/png",
@@ -827,8 +833,30 @@ async def download_output(task_id: str, user=Depends(get_current_user)):
         ".mp3": "audio/mpeg",
         ".dxf": "application/dxf",
     }.get(ext, "application/octet-stream")
-    return FileResponse(path, media_type=media, filename=filename,
-                        headers={"X-Content-Type-Options": "nosniff"})
+    return storage.artifact_download_response(rel, filename, media_type=media)
+
+
+def _rel_artifact_path(path: str) -> str:
+    """把 output_file 转成存储抽象可用的路径。
+
+    优先转成相对 web/ 的路径（S3 模式产物在对象存储，key 即相对路径）；
+    本地模式若该文件真实存在（可能是 web/ 外绝对路径，如沙箱临时产物），
+    直接返回原路径（storage 本地模式按绝对路径读写）。
+    """
+    from app.paths import web_root
+    from app.services import storage
+    root = os.path.normpath(web_root())
+    p = os.path.normpath(path)
+    try:
+        if p.startswith(root + os.sep) or p == root:
+            return os.path.relpath(p, root).replace(os.sep, "/")
+    except Exception:
+        pass
+    # 本地模式：文件真实存在 → 用原路径（绝对路径读写）
+    if storage._backend() == "local" and os.path.isfile(p):
+        return p
+    # 兜底：文件名（web/ 内相对或 S3 key）
+    return os.path.basename(p).replace(os.sep, "/")
 
 
 @router.get("/mini/tasks/{task_id}/stream")
@@ -836,58 +864,20 @@ async def stream_output(task_id: str, request: Request, user=Depends(get_current
     """流式输出产物（视频/音频等大文件）：支持 Range，边下边播，不整块加载内存。
 
     浏览器 <video>/<audio> 拿到流式响应后立即开始播放（seek 用 Range 头）。
+    S3 模式走 Range 请求代理，本地模式走文件切片（行为一致）。
     """
-    import os as _os
-
+    from app.services import storage
     status = mini_tasks.get_status(task_id, user_id=user["id"])
     if status is None:
         raise HTTPException(status_code=404, detail="任务不存在")
     result = status.get("result") or {}
     path = result.get("output_file")
-    if not path or not _os.path.exists(path):
+    if not path:
         raise HTTPException(status_code=404, detail="没有可流式输出的文件")
-    size = _os.path.getsize(path)
-    ext = _os.path.splitext(path)[1].lower()
+    rel = _rel_artifact_path(path)
+    ext = os.path.splitext(path)[1].lower()
     media = {
         ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
         ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4", ".aac": "audio/aac",
     }.get(ext, "application/octet-stream")
-
-    # Range 支持：视频/音频 seek 播放必需
-    range_header = request.headers.get("range", "")
-    start, end = 0, size - 1
-    if range_header and range_header.startswith("bytes="):
-        try:
-            rng = range_header[6:].split("-")
-            start = int(rng[0]) if rng[0] else 0
-            if len(rng) > 1 and rng[1]:
-                end = min(int(rng[1]), size - 1)
-            if start > end or start >= size:
-                return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
-        except ValueError:
-            pass
-
-    chunk_size = 1024 * 256
-
-    def _iter_file():
-        with open(path, "rb") as f:
-            f.seek(start)
-            remaining = end - start + 1
-            while remaining > 0:
-                data = f.read(min(chunk_size, remaining))
-                if not data:
-                    break
-                remaining -= len(data)
-                yield data
-
-    headers = {
-        "Accept-Ranges": "bytes",
-        "Content-Range": f"bytes {start}-{end}/{size}",
-        "Content-Disposition": f'inline; filename="{_os.path.basename(path)}"',
-    }
-    return StreamingResponse(
-        _iter_file(),
-        media_type=media,
-        status_code=206 if range_header else 200,
-        headers=headers,
-    )
+    return storage.artifact_stream_response(rel, media, range_header=request.headers.get("range", ""))

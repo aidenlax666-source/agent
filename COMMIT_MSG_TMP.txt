@@ -1,14 +1,17 @@
-feat: 调度器 leader 选举——多实例只一个实例扫库，失联自动接管
+feat: 对象存储适配——产物存储抽象层（本地/共享卷/S3 可切换）
 
-mini_scheduler_loop 此前每个实例都跑（30s 全表扫描定时任务/提醒/监控）：
-原子抢占和 dedup 保证不重复触发，但 N 实例 = N 倍 DB 扫描，浪费且无谓
-压库。新增 leader 选举：
+多实例下产物存取此前直接读写 web/ 本地/共享卷文件：流式/下载/打包全部
+依赖挂载，不想挂共享卷或要无限容量时无解。新增存储抽象层：
 
-- distributed：try_become_leader()（SETNX aiagent:leader:scheduler，
-  TTL 60s，value=worker_id）+ renew_leadership()（仅持有者续期，防止
-  误续他人租约）；单机模式（无 Redis）直接放行（本来只有本实例）
-- mini_scheduler_loop：启动抢 leader（leader/standby 日志）；循环内
-  leader 续期、非 leader 每轮尝试抢占（原 leader 崩溃/租约过期后自动
-  接管），非 leader 不扫库直接等下一轮
+- 新增 app/services/storage.py：统一接口 artifact_exists/size/read/
+  download_response/stream_response/file_response
+  - local（默认）：web/ 目录或共享卷挂载点，现状行为不变（含防路径穿越）
+  - s3（STORAGE_BACKEND=s3 + S3_* 配置）：boto3，跨实例天然一致、不限
+    磁盘、CDN 友好；流式走 S3 Range 请求（边下边播），下载走代理
+- config：storage_backend / s3_bucket / s3_endpoint / s3_access_key /
+  s3_secret_key / s3_region（MinIO 兼容：填 endpoint 即可）
+- mini API：download/stream 改走存储抽象；output_file 支持 web/ 相对
+  路径（S3 key）与本地绝对路径（本地模式兼容旧行为）
 
-测试 +4（单机放行/唯一 leader/失联接管/续期 TTL），共 118 全过。
+测试 +9（本地 exists/size/read、下载头、Range 206/416、S3 exists/size/
+read、S3 Range 透传），共 127 全过。
