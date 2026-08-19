@@ -169,6 +169,7 @@ See [docs/SECURITY.md](docs/SECURITY.md) for the full threat model.
 - [Architecture deep-dive](docs/ARCHITECTURE.md) — LLM-as-Compiler, apply_patch, two-stage context, self-healing, sandbox, scheduler, ADR
 - [Security](docs/SECURITY.md) — threat model & mitigation matrix
 - [API overview](docs/API.md) — endpoint list, task state machine, automation intent parsing
+- [Cloud deployment](docs/DEPLOYMENT.md) — multi-instance scaling with Redis (task locks/dedup/scheduling)
 - [CLI usage](agent-cli.py) — dev assistant command-line tool
 
 ---

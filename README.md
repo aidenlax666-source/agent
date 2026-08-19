@@ -152,6 +152,9 @@ flowchart LR
 | FastAPI 后端 | 8000 | 任务引擎、沙箱、API、调度器 |
 | Next.js 前端 | 3000 | Web 工作台 |
 | 静态产物服务 | 8001 | 分享作品（与 API **不同源**，防同源 XSS） |
+| Redis（可选） | 6379 | 云架构多实例：任务锁/去重/调度共享（配 `REDIS_URL` 启用） |
+
+> 云服务器部署（多 worker / 多实例扩容）：见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。不配 `REDIS_URL` 即单机模式。
 
 ### 核心模块
 
