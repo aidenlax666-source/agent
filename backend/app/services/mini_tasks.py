@@ -736,10 +736,27 @@ async def mini_scheduler_loop() -> None:
     """调度循环：每 30 秒检查一次到期的 mini 定时任务、定时提醒、监控任务；每天清理超期产物。
 
     30 秒间隔保证提醒（1 分钟窗口）不会因整分钟边界错过。
+    多实例（云架构）：leader 选举——只有持有 Redis leader 租约的实例真正扫描
+    （避免 N 实例 = N 倍 DB 扫描）；leader 失联后租约过期，其他实例自动接管。
     """
-    logger.info("[mini调度器] 启动，每 30 秒检查一次")
+    from app.services import distributed as _dist
+    is_leader = _dist.try_become_leader()
+    role = "leader" if is_leader else "standby"
+    logger.info("[mini调度器] 启动（%s），每 30 秒检查一次", role)
     _last_cleanup_day = -1
     while True:
+        # leader 续期/抢回：非 leader 每轮尝试抢占（原 leader 崩溃后自动接管）
+        if is_leader:
+            if not _dist.renew_leadership():
+                is_leader = False
+                logger.warning("[mini调度器] leader 租约丢失，转为 standby")
+        else:
+            if _dist.try_become_leader():
+                is_leader = True
+                logger.info("[mini调度器] 成为 leader（原 leader 失联，接管调度）")
+        if not is_leader:
+            await asyncio.sleep(30)
+            continue
         try:
             import time as _t
             from app.database import (claim_mini_run, get_due_mini_tasks, list_reminders,

@@ -160,6 +160,43 @@ def scheduler_release(task_id: str) -> None:
 
 
 # ============================================================
+# 3.5 调度器 leader 选举（多实例只一个实例跑调度循环）
+# ============================================================
+
+LEADER_KEY = "aiagent:leader:scheduler"
+LEADER_TTL = 60  # leader 租约 TTL（秒）；失联后自动过期，其他实例接管
+
+
+def try_become_leader(ttl_seconds: int = LEADER_TTL) -> bool:
+    """尝试成为调度 leader（SETNX）。成功返回 True（本实例负责跑调度循环）。
+
+    单机模式（无 Redis）返回 True：本来就只有本实例，直接当 leader。
+    """
+    r = _get_redis()
+    if r is None:
+        return True
+    try:
+        return bool(r.set(LEADER_KEY, get_worker_id(), nx=True, ex=ttl_seconds))
+    except Exception:
+        return True  # Redis 抖动时放行（单机行为兜底）
+
+
+def renew_leadership(ttl_seconds: int = LEADER_TTL) -> bool:
+    """续期 leader 租约；返回是否仍是 leader（true=续期成功或单机模式）。"""
+    r = _get_redis()
+    if r is None:
+        return True
+    try:
+        # 只有自己持有才续期（防误续别人的租约）
+        if r.get(LEADER_KEY) == get_worker_id():
+            r.expire(LEADER_KEY, ttl_seconds)
+            return True
+    except Exception:
+        return True
+    return False
+
+
+# ============================================================
 # 4. 分布式任务队列（真正的云架构：任务进 Redis 队列，worker 消费）
 # ============================================================
 

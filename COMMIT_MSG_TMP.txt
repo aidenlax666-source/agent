@@ -1,18 +1,14 @@
-feat: 任务过程日志 steps 落库——跨实例一致、worker 崩溃不丢
+feat: 调度器 leader 选举——多实例只一个实例扫库，失联自动接管
 
-此前 steps（过程可见性：每个执行步骤）只存在执行实例的内存 _TASKS 里，
-未写 SQLite：任务在实例 B 跑、用户轮询打到实例 A 拿不到过程日志；
-worker 崩溃/重启后过程日志全丢。且发现白名单里有 progress 但表结构
-无该列（传 progress 会报 no such column）的隐藏 bug。
+mini_scheduler_loop 此前每个实例都跑（30s 全表扫描定时任务/提醒/监控）：
+原子抢占和 dedup 保证不重复触发，但 N 实例 = N 倍 DB 扫描，浪费且无谓
+压库。新增 leader 选举：
 
-改动：
-- database.py：mini_tasks 新增 steps 列（JSON 数组）与 progress 列（修复
-  隐藏 bug），含老库迁移；_save_mini_task 存 steps；白名单加 steps；
-  _update_mini_task 对 steps/progress 正确处理；_get_mini_task /
-  _list_mini_tasks / reaper 读取均解析 steps
-- mini_tasks.py：_run_task 每个执行模式开始时把 steps+progress 落库
-  （update_mini_task），跨实例可见、崩溃不丢；get_status 内存/DB 两条
-  路径都返回 steps（DB 路径解析 JSON 字符串）
+- distributed：try_become_leader()（SETNX aiagent:leader:scheduler，
+  TTL 60s，value=worker_id）+ renew_leadership()（仅持有者续期，防止
+  误续他人租约）；单机模式（无 Redis）直接放行（本来只有本实例）
+- mini_scheduler_loop：启动抢 leader（leader/standby 日志）；循环内
+  leader 续期、非 leader 每轮尝试抢占（原 leader 崩溃/租约过期后自动
+  接管），非 leader 不扫库直接等下一轮
 
-测试 +4（落库与增量更新/模拟重启跨实例读取/空默认/get_status 返回），
-共 118 全过。
+测试 +4（单机放行/唯一 leader/失联接管/续期 TTL），共 118 全过。
