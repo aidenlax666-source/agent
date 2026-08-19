@@ -148,3 +148,48 @@ def scheduler_claim(task_id: str, expected_next: float, new_next: float) -> bool
 
 def scheduler_release(task_id: str) -> None:
     release_lock(f"sched:{task_id}")
+
+
+# ============================================================
+# 4. 分布式任务队列（真正的云架构：任务进 Redis 队列，worker 消费）
+# ============================================================
+
+TASK_QUEUE_KEY = "aiagent:queue:tasks"
+# 任务执行状态记录（BRPOP 后标记，防 worker 崩溃任务静默丢失）
+TASK_LEASE_KEY = "aiagent:task-lease"
+
+
+def enqueue_task(task_id: str) -> bool:
+    """任务入队（LPUSH）。返回是否成功；无 Redis 返回 False（调用方走单机模式）。"""
+    r = _get_redis()
+    if r is None:
+        return False
+    try:
+        r.lpush(TASK_QUEUE_KEY, task_id)
+        return True
+    except Exception as e:
+        logger.warning("[distributed] 任务入队失败: %s", str(e)[:100])
+        return False
+
+
+def dequeue_task(timeout: float = 5.0) -> str | None:
+    """从队列取一个任务（BRPOP，阻塞 timeout 秒）。无任务返回 None。"""
+    r = _get_redis()
+    if r is None:
+        return None
+    try:
+        item = r.brpop(TASK_QUEUE_KEY, timeout=timeout)
+        if item:
+            return item[1]  # (queue_name, task_id)
+    except Exception as e:
+        logger.warning("[distributed] 取任务失败: %s", str(e)[:100])
+    return None
+
+
+def claim_task_lease(task_id: str, ttl_seconds: int = 1800) -> bool:
+    """领取任务执行租约（防多 worker 同时执行同一任务 + worker 崩溃后任务被找回）。"""
+    return acquire_lock(f"task-run:{task_id}", ttl_seconds=ttl_seconds)
+
+
+def release_task_lease(task_id: str) -> None:
+    release_lock(f"task-run:{task_id}")

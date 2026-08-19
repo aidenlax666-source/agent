@@ -24,6 +24,11 @@ async def lifespan(app: FastAPI):
     await init_db()
     # 启动 mini 定时任务调度器
     asyncio.create_task(mini_scheduler_loop())
+    # 分布式任务 worker：有 Redis 时从队列消费任务（云架构多实例）
+    from app.services import distributed
+    from app.services.mini_tasks import distributed_worker_loop
+    if distributed.redis_enabled():
+        asyncio.create_task(distributed_worker_loop())
     yield
 
 

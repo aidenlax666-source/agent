@@ -390,6 +390,19 @@ def submit(requirement: str, url: str | None = None, user_id: str = "", image_pa
         except Exception as e:
             logger.warning("[mini:%s] skip_run 落库失败: %s", task_id, str(e)[:100])
         return record
+    # ---- 分布式队列模式（云架构）：任务进 Redis 队列，worker 消费执行 ----
+    # 有 Redis：先落库（worker 从 DB 重建执行上下文），再入队；任一失败回退单机进程内
+    from app.services import distributed as _dist
+    if _dist.redis_enabled():
+        try:
+            from app.database import _save_mini_task
+            _save_mini_task(record)  # 持久化：worker 或本实例崩溃后任务不丢
+            if _dist.enqueue_task(task_id):
+                logger.info("[mini:%s] 已入分布式队列", task_id)
+                return record
+            logger.warning("[mini:%s] 入队失败，回退单机执行", task_id)
+        except Exception as e:
+            logger.warning("[mini:%s] 队列模式异常，回退单机执行: %s", task_id, str(e)[:100])
     started = start_background(task_id, _run_task(task_id, requirement, url, record))
     if not started:
         record["status"] = "error"
@@ -1108,6 +1121,86 @@ async def _run_agent_task(task_id: str, requirement: str, record: dict,
         final["error"] = "Agent 未产出任何结果"
         final["error_human"] = "AI 在复杂模式下没有完成目标，可以换个更具体的说法重试，或改用普通模式。"
     return final
+
+
+
+def _task_record_from_db(task_id: str) -> dict | None:
+    """从 SQLite 重建任务执行上下文（worker 消费队列时用，进程重启不丢）。"""
+    try:
+        from app.database import _get_mini_task
+        rec = _get_mini_task(task_id)
+        if not rec:
+            return None
+        # 转成 _run_task 需要的 record 形态
+        return {
+            "id": rec["id"],
+            "user_id": rec.get("user_id") or "",
+            "requirement": rec.get("requirement") or "",
+            "url": rec.get("url") or "",
+            "status": "queued",
+            "progress": 0,
+            "message": "排队中",
+            "result": rec.get("result"),
+            "error": None,
+            "image_paths": _json_list(rec.get("image_paths")),
+            "data_paths": _json_list(rec.get("data_paths")),
+        }
+    except Exception as e:
+        logger.warning("[worker] 重建任务 %s 上下文失败: %s", task_id[:8], str(e)[:100])
+        return None
+
+
+async def distributed_worker_loop(poll_seconds: float = 1.0) -> None:
+    """分布式任务 worker：从 Redis 队列 BRPOP 取任务并执行（云架构多 worker 自动分发）。
+
+    每个后端实例可启动一个 worker；多个 worker 从同一队列竞争消费（BRPOP 天然互斥）。
+    任务执行期间续租约（心跳），防租约过期被其他 worker 抢走；
+    worker 崩溃时：任务已在 SQLite 持久化，可重新入队恢复（任务不丢）。
+    无 Redis 时不启动（单机模式走进程内 asyncio）。
+    """
+    from app.services import distributed as _dist
+    logger.info("[worker] 分布式任务 worker 启动（监听队列）")
+
+    async def _heartbeat(task_id: str, ttl: int = 1800):
+        """长任务心跳：每 30s 续一次租约，防过期被抢。"""
+        while True:
+            await asyncio.sleep(30)
+            _dist.renew_lock(f"task-run:{task_id}", ttl_seconds=ttl)
+
+    while True:
+        try:
+            task_id = _dist.dequeue_task(timeout=poll_seconds)
+            if not task_id:
+                continue
+            # 领取执行租约：防多 worker 同时执行同一任务（BRPOP 已互斥，双保险）
+            if not _dist.claim_task_lease(task_id, ttl_seconds=1800):
+                continue
+            record = _task_record_from_db(task_id)
+            if record is None:
+                _dist.release_task_lease(task_id)
+                continue
+            requirement = record["requirement"]
+            url = record.get("url") or ""
+            hb = asyncio.create_task(_heartbeat(task_id))
+            try:
+                await _run_task(task_id, requirement, url, record)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.exception("[worker] 任务 %s 执行异常: %s", task_id[:8], str(e)[:120])
+            finally:
+                hb.cancel()
+                try:
+                    await hb
+                except (asyncio.CancelledError, Exception):
+                    pass
+                _dist.release_task_lease(task_id)
+        except asyncio.CancelledError:
+            logger.info("[worker] 分布式 worker 已停止")
+            raise
+        except Exception as e:
+            logger.warning("[worker] 循环异常（继续）: %s", str(e)[:120])
+            await asyncio.sleep(2)
 
 
 async def _run_task(task_id: str, requirement: str, url: str | None, record: dict) -> None:
