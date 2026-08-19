@@ -254,6 +254,34 @@ def _check_anon_rate(ip: str) -> None:
     raise HTTPException(status_code=429, detail="操作太频繁，请稍后再试")
 
 
+async def _maybe_cached_result(user: dict, requirement: str, url: str | None, auto: dict | None) -> dict | None:
+    """结果缓存（省 LLM 成本）：同一用户提交完全相同需求 + 最近 TTL 内有成功结果 →
+    直接复用（不扣积分、不重新调 LLM）。仅对普通执行任务生效（提醒/监控是设置型，不走缓存）。
+
+    命中返回 dict（task_id/cached/result/message），未命中返回 None。
+    """
+    from app.config import get_settings as _get_settings
+    _ttl = _get_settings().result_cache_ttl
+    if _ttl <= 0:
+        return None
+    if auto and auto.get("kind") in ("reminder", "monitor"):
+        return None
+    try:
+        from app.database import find_cached_result
+        cached = await find_cached_result(user["id"], requirement, url or "", within_seconds=_ttl)
+        if cached is None:
+            return None
+        return {
+            "task_id": cached["id"],
+            "cached": True,
+            "message": "已复用最近一次相同任务的结果（缓存命中）",
+            "result": cached.get("result"),
+            "output_file": (cached.get("result") or {}).get("output_file"),
+        }
+    except Exception:
+        return None  # 缓存查询失败不阻塞正常提交
+
+
 def _check_url(url) -> str | None:
     """URL 只允许 http/https（防 file:// 等本地文件入口）。"""
     if url is None:
@@ -314,6 +342,16 @@ async def create_task(data: dict, request: Request, user=Depends(get_current_use
     # 数据文件必须是上传目录内的文件（防任意文件读取）
     data_paths = [_ensure_upload_path(p) for p in data_paths]
 
+    # 自动化意图解析（提醒 / 监控 / 循环执行，纯正则零成本）
+    auto = mini_tasks.parse_automation(requirement)
+
+    # 结果缓存（省 LLM 成本）：同一用户提交完全相同需求 + 最近 TTL 内有成功结果 →
+    # 直接复用（不扣积分、不重新调 LLM）。仅对普通执行任务生效（提醒/监控是设置型，不走缓存）。
+    cached_resp = await _maybe_cached_result(user, requirement, url, auto)
+    if cached_resp is not None:
+        cached_resp["credits_left"] = None  # 未扣分
+        return cached_resp
+
     # 额度校验：原子扣减（防并发竞态），余额不足返回 402
     from app.database import (get_credits, try_decrement_credits, add_reminder as _db_add_reminder,
                               add_monitor as _db_add_monitor, update_mini_task as _db_update_task,
@@ -321,9 +359,6 @@ async def create_task(data: dict, request: Request, user=Depends(get_current_use
     if not await try_decrement_credits(user["id"], 1):
         raise HTTPException(status_code=402, detail="额度不足，无法提交任务")
     credits = await get_credits(user["id"])
-
-    # 自动化意图解析（提醒 / 监控 / 循环执行，纯正则零成本）
-    auto = mini_tasks.parse_automation(requirement)
 
     # 优先级：high（用户主动提交的普通任务默认高优插队）；提醒/监控"设置型"不执行不排队
     priority = "high" if data.get("priority") in ("high", "urgent", "紧急") else "normal"

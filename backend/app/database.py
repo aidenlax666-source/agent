@@ -438,6 +438,40 @@ async def mark_task_dead(task_id: str, reason: str) -> None:
     return await _run_async(_mark_task_dead, task_id, reason)
 
 
+# ---- 结果缓存（省 LLM 成本：同用户同需求复用最近成功结果） ----
+
+def _find_cached_result(user_id: str, requirement: str, url: str, within_seconds: float) -> dict | None:
+    """查同一用户最近一次完全相同的成功任务（含结果）。
+
+    仅当 status='done'、result 非空、updated_at 在窗口内才命中。
+    返回任务记录（含解析后的 result），未命中返回 None。
+    """
+    if not user_id or not requirement:
+        return None
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM mini_tasks WHERE user_id=? AND requirement=? AND url=? "
+            "AND status='done' AND result IS NOT NULL AND result != '' "
+            "AND updated_at IS NOT NULL AND updated_at >= ? "
+            "ORDER BY updated_at DESC LIMIT 1",
+            (user_id, requirement, url or "", time.time() - within_seconds),
+        ).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    try:
+        d["result"] = json.loads(d["result"])
+    except (json.JSONDecodeError, TypeError):
+        return None
+    d["image_paths"] = _decode_json_list(d.get("image_paths"))
+    d["data_paths"] = _decode_json_list(d.get("data_paths"))
+    return d
+
+
+async def find_cached_result(user_id: str, requirement: str, url: str, within_seconds: float) -> dict | None:
+    return await _run_async(_find_cached_result, user_id, requirement, url, within_seconds)
+
+
 async def update_mini_run(task_id: str, last_run_at: float, next_run_at: float | None) -> None:
     return await _run_async(_update_mini_run, task_id, last_run_at, next_run_at)
 

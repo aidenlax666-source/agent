@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     # 产物/上传文件清理（天）：0=不清理（默认）。>0 时每天清理超过 N 天的 web/ 产物与 uploads/ 上传文件
     asset_cleanup_days: int = 0
 
+    # 结果缓存（秒）：同一用户提交完全相同需求时，直接复用最近一次成功结果
+    # （不重复调 LLM，省成本）。0 = 关闭（默认）。如 300 = 5 分钟内重复需求命中缓存。
+    # 仅缓存 status=done 且带结果的任务；需求/URL 需逐字一致。
+    result_cache_ttl: int = 0
+
     # Sandbox
     sandbox_image: str = "python:3.11-slim"
     sandbox_timeout: int = 60

@@ -1,12 +1,14 @@
-feat: 队列优先级——高优任务插队（双队列）
+feat: 结果缓存——同用户同需求复用上次成功结果（省 LLM 成本）
 
-任务队列此前是单一 FIFO（BRPOP），所有任务平等排队，紧急任务可能被长队
-挡住。新增高优队列：
+用户反复提交相同需求（如"查今天的天气"）时，每次都重新调 LLM 生成+执行
+是纯浪费。新增结果缓存：
 
-- distributed：TASK_QUEUE_KEY_HIGH + enqueue_task(priority=normal|high)
-  分队列 LPUSH；dequeue_task 先短阻塞等高优队列（timeout≤2s）再等普通
-  队列——高优随时插队、普通不饿死；task_in_queue 同时查两个队列
-- mini_tasks.submit 增加 priority 参数；reaper 重试保持普通队列（不紧急）
-- mini API：create_task 支持 priority=high/urgent/紧急 → 高优入队
+- config：RESULT_CACHE_TTL（秒，0=关闭默认；如 300=5 分钟内重复需求命中）
+- database：find_cached_result()——同 user_id + 需求逐字一致 + URL 一致 +
+  status=done + 结果非空 + updated_at 在窗口内 → 取最近一次
+- mini API：create_task 先查缓存（_maybe_cached_result），命中直接返回
+  缓存结果、**不扣积分**；提醒/监控"设置型"任务不走缓存（避免定时任务
+  永远返回同一个结果）
 
-测试 +3（高优先消费/队列隔离/priority 透传到 submit），共 90 全过。
+测试 +7（命中/不同用户隔离/不同需求不命中/过期不命中/失败不命中/取最新/
+API 层命中不扣分），共 97 全过。
