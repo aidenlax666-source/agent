@@ -40,6 +40,12 @@ output.xlsx
 cf.exe
 cloudflared.exe
 
+# ===== CLI 打包产物（PyInstaller，不入库）=====
+cli/dist/
+cli/build/
+cli/*.spec
+cli/local_worker_config.json
+
 # ===== IDE =====
 .vscode/
 .idea/

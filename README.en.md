@@ -65,10 +65,10 @@ Access:
 ### CLI dev assistant (conversational project editing)
 
 ```bash
-python agent-cli.py                      # interactive session in cwd
-python agent-cli.py C:\path\to\project   # target a project
-python agent-cli.py --resume             # resume last session
-python agent-cli.py --yes                # auto-approve mode
+python cli/agent-cli.py                      # interactive session in cwd
+python cli/agent-cli.py C:\path\to\project   # target a project
+python cli/agent-cli.py --resume             # resume last session
+python cli/agent-cli.py --yes                # auto-approve mode
 ```
 
 ---
@@ -210,7 +210,7 @@ POST /api/local/tasks/report → cloud marks done
 
 ```powershell
 $env:LOCAL_WORKER_SERVER="https://your-domain.com"
-powershell -ExecutionPolicy Bypass -File build_local_worker.ps1   # → dist/local_worker.exe
+powershell -ExecutionPolicy Bypass -File cli/build_local_worker.ps1   # → cli/dist/local_worker.exe
 ```
 
 ---
@@ -221,7 +221,7 @@ powershell -ExecutionPolicy Bypass -File build_local_worker.ps1   # → dist/loc
 - [Security](docs/SECURITY.md) — threat model & mitigation matrix
 - [API overview](docs/API.md) — endpoint list, task state machine, automation intent parsing
 - [Cloud deployment](docs/DEPLOYMENT.md) — multi-instance scaling (Redis queue, hybrid local-execution mode, HTTPS, CI/CD)
-- [CLI usage](agent-cli.py) — dev assistant command-line tool
+- [CLI usage](cli/agent-cli.py) — dev assistant command-line tool
 
 ---
 

@@ -6,7 +6,7 @@ echo "=== [pre-commit] 运行测试套件 ==="
 cd "$(git rev-parse --show-toplevel)" || exit 1
 
 # 只跑与改动相关的测试（后端改了跑后端，前端改了就跳过——前端测试暂无）
-CHANGED_BACKEND=$(git diff --cached --name-only | grep -E "^backend/|^agent-cli.py" || true)
+CHANGED_BACKEND=$(git diff --cached --name-only | grep -E "^backend/|^cli/agent-cli.py" || true)
 
 if [ -n "$CHANGED_BACKEND" ]; then
     echo "检测到后端改动，运行 pytest..."

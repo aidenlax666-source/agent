@@ -13,7 +13,7 @@ $hookContent = @'
 echo "=== [pre-commit] 运行测试套件 ==="
 cd "$(git rev-parse --show-toplevel)" || exit 1
 
-CHANGED_BACKEND=$(git diff --cached --name-only | grep -E "^backend/|^agent-cli\.py")
+CHANGED_BACKEND=$(git diff --cached --name-only | grep -E "^backend/|^cli/agent-cli\.py")
 
 if [ -n "$CHANGED_BACKEND" ]; then
     echo "检测到后端改动，运行 pytest..."

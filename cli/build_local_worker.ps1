@@ -1,12 +1,12 @@
 # ============================================================
 # 打包本地执行端为独立 exe（Windows 双击即用）
 #
-# 用法（PowerShell）：
+# 用法（PowerShell，在 cli/ 目录下执行）：
 #   powershell -ExecutionPolicy Bypass -File build_local_worker.ps1
 #   指定云端地址（推荐）：
 #   $env:LOCAL_WORKER_SERVER="https://your-cloud.com"; powershell -ExecutionPolicy Bypass -File build_local_worker.ps1
 #
-# 产物：dist/local_worker.exe（约 10-15MB，含 Python 运行时）
+# 产物：cli/dist/local_worker.exe（约 10-15MB，含 Python 运行时）
 # 用户体验：双击 exe → 输入云端账号密码登录一次 → 之后全自动接收本地任务
 # ============================================================
 $ErrorActionPreference = "Stop"

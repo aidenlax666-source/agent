@@ -1,13 +1,17 @@
-docs: README 更新——混合架构/云架构能力/环境变量/Roadmap
+chore: 整理仓库结构——工具脚本收进 cli/ 目录，根目录只留必要文件
 
-README.md：
-- 亮点表补"混合架构（本地执行）"
-- 快速开始补"本地执行端打包"小节（LOCAL_WORKER_SERVER → exe）
-- 环境变量补云架构项（REDIS_URL/DATABASE_URL/SANDBOX_PROFILE_ROOT/
-  ASSET_WEB_ROOT/SANDBOX_GLOBAL_CONCURRENCY/STORAGE_BACKEND/ALERT_ENABLED/
-  RESULT_CACHE_TTL）
-- 服务结构表补 PostgreSQL + local_worker.exe；访问列表补 /monitor
-- 核心模块补 distributed/local_exec/storage；新增"混合架构"章节
-- Roadmap 补云架构 4 项 + 混合架构 1 项
+根目录此前散落 agent-cli.py（CLI 开发助手）、local_worker.py（本地执行端
+源码）、build_local_worker.ps1（打包脚本），与 frontend/backend/配置混在
+一起。收进 cli/ 目录：
 
-README.en.md：同步云架构 + 混合模式章节、Roadmap、Docs 链接。
+- git mv agent-cli.py cli/agent-cli.py（保留历史）
+- git mv local_worker.py cli/local_worker.py
+- git mv build_local_worker.ps1 cli/build_local_worker.ps1
+
+根目录现在只保留必要文件：README×2、.env.example、.gitignore、
+docker-compose×2、start.ps1、LICENSE、CONTRIBUTING、CODE_OF_CONDUCT、
+setup-git-hooks×2。
+
+同步更新所有引用（README/en、docs/DEPLOYMENT、setup-git-hooks 的
+pre-commit 路径检测）；.gitignore 补 cli/dist|build|*.spec|配置；
+删除误追踪的 COMMIT_MSG_TMP.txt。测试 140 全过。

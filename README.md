@@ -84,10 +84,10 @@ python -m http.server 8001 --directory web
 ### CLI 开发助手（持续对话改你的项目）
 
 ```bash
-python agent-cli.py                      # 当前目录进入交互会话
-python agent-cli.py C:\path\to\project   # 指定项目
-python agent-cli.py --resume             # 恢复上次会话
-python agent-cli.py --yes                # 自动确认模式
+python cli/agent-cli.py                      # 当前目录进入交互会话
+python cli/agent-cli.py C:\path\to\project   # 指定项目
+python cli/agent-cli.py --resume             # 恢复上次会话
+python cli/agent-cli.py --yes                # 自动确认模式
 ```
 
 ### 本地执行端（混合架构，可选）
@@ -97,8 +97,8 @@ python agent-cli.py --yes                # 自动确认模式
 
 ```powershell
 $env:LOCAL_WORKER_SERVER="https://your-domain.com"   # 云端地址打进 exe
-powershell -ExecutionPolicy Bypass -File build_local_worker.ps1
-# 产物 dist/local_worker.exe → 用户双击 → 登录一次 → 自动接收本地任务
+powershell -ExecutionPolicy Bypass -File cli/build_local_worker.ps1
+# 产物 cli/dist/local_worker.exe → 用户双击 → 登录一次 → 自动接收本地任务
 ```
 
 ---
@@ -226,7 +226,7 @@ exe 在用户电脑执行（内置 AST 扫描 + 子进程隔离）→ 文件直�
 
 ```powershell
 $env:LOCAL_WORKER_SERVER="https://your-domain.com"
-powershell -ExecutionPolicy Bypass -File build_local_worker.ps1   # 产物 dist/local_worker.exe
+powershell -ExecutionPolicy Bypass -File cli/build_local_worker.ps1   # 产物 cli/dist/local_worker.exe
 ```
 
 ---
@@ -254,7 +254,7 @@ powershell -ExecutionPolicy Bypass -File build_local_worker.ps1   # 产物 dist/
 - [安全设计](docs/SECURITY.md) — 威胁模型与防护措施
 - [API 概览](docs/API.md) — 端点清单
 - [云部署指南](docs/DEPLOYMENT.md) — 云架构/混合架构/多实例/HTTPS/CI 全套
-- [CLI 使用](agent-cli.py) — 开发助手命令行工具
+- [CLI 使用](cli/agent-cli.py) — 开发助手命令行工具
 
 ---
 

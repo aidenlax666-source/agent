@@ -236,8 +236,8 @@ POST /api/local/tasks/report 回传 → 云端标记 done/failed，任务详情�
 # 1. 打包 exe（Windows，开发者在仓库根目录执行一次）
 #    指定云端地址打进 exe（用户不用填）：
 $env:LOCAL_WORKER_SERVER="https://your-domain.com"
-powershell -ExecutionPolicy Bypass -File build_local_worker.ps1
-# 产物：dist/local_worker.exe（约 10-15MB）
+powershell -ExecutionPolicy Bypass -File cli/build_local_worker.ps1
+# 产物：cli/dist/local_worker.exe（约 10-15MB）
 
 # 2. 用户拿到 exe，双击运行 → 输入云端账号邮箱+密码登录一次
 local_worker.exe
