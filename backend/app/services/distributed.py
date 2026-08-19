@@ -164,17 +164,21 @@ def scheduler_release(task_id: str) -> None:
 # ============================================================
 
 TASK_QUEUE_KEY = "aiagent:queue:tasks"
+# 高优先级队列：高优任务（如用户主动提交、紧急迭代）先于普通任务消费
+TASK_QUEUE_KEY_HIGH = "aiagent:queue:tasks:high"
 # 任务执行状态记录（BRPOP 后标记，防 worker 崩溃任务静默丢失）
 TASK_LEASE_KEY = "aiagent:task-lease"
 
 
-def enqueue_task(task_id: str) -> bool:
-    """任务入队（LPUSH）。返回是否成功；无 Redis 返回 False（调用方走单机模式）。"""
+def enqueue_task(task_id: str, priority: str = "normal") -> bool:
+    """任务入队（LPUSH）。priority: normal | high（高优先消费）。
+    返回是否成功；无 Redis 返回 False（调用方走单机模式）。"""
     r = _get_redis()
     if r is None:
         return False
+    key = TASK_QUEUE_KEY_HIGH if priority == "high" else TASK_QUEUE_KEY
     try:
-        r.lpush(TASK_QUEUE_KEY, task_id)
+        r.lpush(key, task_id)
         return True
     except Exception as e:
         logger.warning("[distributed] 任务入队失败: %s", str(e)[:100])
@@ -182,14 +186,24 @@ def enqueue_task(task_id: str) -> bool:
 
 
 def dequeue_task(timeout: float = 5.0) -> str | None:
-    """从队列取一个任务（BRPOP，阻塞 timeout 秒）。无任务返回 None。"""
+    """从队列取一个任务（BRPOP，阻塞 timeout 秒）。无任务返回 None。
+
+    优先级：先阻塞等高优队列（timeout 的 1/4），再等普通队列——
+    高优任务随时插队，普通任务不饿死（高优空时照样消费普通）。
+    """
     r = _get_redis()
     if r is None:
         return None
     try:
-        item = r.brpop(TASK_QUEUE_KEY, timeout=timeout)
+        # 先短等高优队列
+        item = r.brpop(TASK_QUEUE_KEY_HIGH, timeout=min(timeout, 2.0))
         if item:
-            return item[1]  # (queue_name, task_id)
+            return item[1]
+        # 再等普通队列（剩余时间）
+        remaining = max(timeout - min(timeout, 2.0), 0.1)
+        item = r.brpop(TASK_QUEUE_KEY, timeout=remaining)
+        if item:
+            return item[1]
     except Exception as e:
         logger.warning("[distributed] 取任务失败: %s", str(e)[:100])
     return None
@@ -205,8 +219,11 @@ def task_in_queue(task_id: str) -> bool:
     if r is None:
         return False
     try:
-        items = r.lrange(TASK_QUEUE_KEY, 0, -1)
-        return task_id in items
+        for key in (TASK_QUEUE_KEY, TASK_QUEUE_KEY_HIGH):
+            items = r.lrange(key, 0, -1)
+            if task_id in items:
+                return True
+        return False
     except Exception:
         return False  # Redis 抖动时保守判断"不在队列"，由租约/重试次数兜底
 

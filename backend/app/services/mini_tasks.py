@@ -327,12 +327,13 @@ def _json_list(v) -> list:
 
 def submit(requirement: str, url: str | None = None, user_id: str = "", image_paths: list[str] | None = None,
            data_paths: list[str] | None = None, skip_run: bool = False,
-           schedule: dict | None = None) -> dict:
+           schedule: dict | None = None, priority: str = "normal") -> dict:
     """提交一个后台任务，立即返回任务信息（持久化到 SQLite，重启不丢）。
 
     统一入口：LLM 自动判断"数据问答"还是"任务执行"，无需用户选择。
     skip_run=True：只落库不执行（用于提醒/监控等"设置型"任务，由调度器驱动）。
     schedule={type,value}：提交时直接设置定时重跑（随 INSERT 一次写入，无竞态）。
+    priority=normal|high：高优任务（用户主动提交/紧急迭代）先进高优队列。
     """
     task_id = uuid.uuid4().hex[:12]
     record = {
@@ -399,8 +400,8 @@ def submit(requirement: str, url: str | None = None, user_id: str = "", image_pa
         try:
             from app.database import _save_mini_task
             _save_mini_task(record)  # 持久化：worker 或本实例崩溃后任务不丢
-            if _dist.enqueue_task(task_id):
-                logger.info("[mini:%s] 已入分布式队列", task_id)
+            if _dist.enqueue_task(task_id, priority=priority):
+                logger.info("[mini:%s] 已入分布式队列（%s）", task_id, priority)
                 return record
             logger.warning("[mini:%s] 入队失败，回退单机执行", task_id)
         except Exception as e:

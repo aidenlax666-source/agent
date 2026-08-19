@@ -325,6 +325,9 @@ async def create_task(data: dict, request: Request, user=Depends(get_current_use
     # 自动化意图解析（提醒 / 监控 / 循环执行，纯正则零成本）
     auto = mini_tasks.parse_automation(requirement)
 
+    # 优先级：high（用户主动提交的普通任务默认高优插队）；提醒/监控"设置型"不执行不排队
+    priority = "high" if data.get("priority") in ("high", "urgent", "紧急") else "normal"
+
     # ---- 定时提醒：创建提醒项 + 落一条"设置型"历史记录（不跑任务引擎）----
     if auto.get("kind") == "reminder" and auto.get("reminders"):
         # 单请求提醒条数上限（防正则批量灌入）
@@ -370,7 +373,7 @@ async def create_task(data: dict, request: Request, user=Depends(get_current_use
     schedule = auto.get("schedule") or data.get("schedule")
     sched_dict = schedule if isinstance(schedule, dict) and schedule.get("type") in ("interval", "daily") else None
     record = mini_tasks.submit(requirement, url, user["id"], image_paths=image_paths,
-                               data_paths=data_paths, schedule=sched_dict)
+                               data_paths=data_paths, schedule=sched_dict, priority=priority)
     automation_note = ""
     if sched_dict:
         automation_note = f"{sched_dict['type']}:{sched_dict.get('value')}"
