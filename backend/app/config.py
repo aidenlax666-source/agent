@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     # Redis（云架构：多实例共享任务锁/去重/调度；留空则回退单机内存模式）
     redis_url: str = ""  # 如 redis://localhost:6379/0；为空 = 单机模式（当前行为）
 
+    # 数据库：空 = SQLite（默认，backend/data/automation.db）；
+    # 云架构多实例高并发可配 PostgreSQL，如 postgresql://user:pass@host:5432/dbname
+    # （database.py 连接层自动兼容：sqlite 用 ? 占位符，pg 适配层转 %s）
+    database_url: str = ""
+
     # JWT
     jwt_secret_key: str = ""  # 必须在 .env 配置；为空时启动生成临时密钥并告警
     jwt_algorithm: str = "HS256"

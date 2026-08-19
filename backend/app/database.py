@@ -25,13 +25,28 @@ def _uid() -> str:
 # Synchronous DB operations (run in thread pool)
 # ============================================================
 
-def _get_conn() -> sqlite3.Connection:
+def _get_conn():
+    """返回数据库连接：配置 DATABASE_URL=postgresql://... 时用 PostgreSQL 兼容连接，
+    否则 SQLite（默认，保持现状）。"""
+    from app.config import get_settings
+    from app.db_adapter import PgConn, is_postgres_url
+    url = (get_settings().database_url or "").strip()
+    if is_postgres_url(url):
+        return PgConn(url)
     conn = sqlite3.connect(str(DB_PATH), timeout=15)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=10000")  # 高并发写不抛 locked，等待 10s
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
+
+
+def _table_columns(conn, table: str) -> set[str]:
+    """统一取表列名：sqlite 用 PRAGMA table_info，pg 用 information_schema。"""
+    from app.db_adapter import PgConn
+    if isinstance(conn, PgConn):
+        return {c.lower() for c in conn.table_columns(table)}
+    return {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
 
 def _init_db():
@@ -125,9 +140,9 @@ def _init_db():
 
             -- Guest user created by API on first request if needed
         """)
-    # 老库迁移：补 image_paths/data_paths 列（不存在才加）
+    # 老库迁移：补 image_paths/data_paths/retry_count 列（不存在才加）
     with _get_conn() as conn:
-        cols = {r["name"] for r in conn.execute("PRAGMA table_info(mini_tasks)").fetchall()}
+        cols = _table_columns(conn, "mini_tasks")
         for col in ("image_paths", "data_paths"):
             if col not in cols:
                 conn.execute(f"ALTER TABLE mini_tasks ADD COLUMN {col} TEXT DEFAULT ''")
@@ -312,7 +327,7 @@ def _ensure_mini_schedule_columns() -> None:
     """老库补列（新表已含）。"""
     try:
         with _get_conn() as conn:
-            cols = {r["name"] for r in conn.execute("PRAGMA table_info(mini_tasks)")}
+            cols = _table_columns(conn, "mini_tasks")
             for col, ddl in [
                 ("schedule_type", "TEXT DEFAULT ''"),
                 ("schedule_value", "TEXT DEFAULT ''"),

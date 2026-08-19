@@ -1,13 +1,26 @@
 version: "3.9"
 
 services:
-  # Redis：云架构多实例共享（任务锁/提醒去重/调度抢占）
+  # Redis：云架构多实例共享（任务锁/提醒去重/调度抢占/队列）
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
     restart: unless-stopped
     command: redis-server --appendonly yes
+
+  # PostgreSQL（可选）：云架构多实例高并发数据层；不启用时 backend 用 SQLite
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: aiagent
+      POSTGRES_PASSWORD: aiagent
+      POSTGRES_DB: aiagent
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
 
   backend:
     build:
@@ -23,6 +36,7 @@ services:
       - .env
     depends_on:
       - redis
+      - postgres
 
   frontend:
     build:
@@ -48,3 +62,6 @@ services:
     volumes:
       - ./web:/web:ro
     restart: unless-stopped
+
+volumes:
+  pgdata:

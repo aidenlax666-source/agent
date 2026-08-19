@@ -30,6 +30,9 @@ docker>=7.0.0
 # Redis（云架构多实例：任务锁/去重/调度共享；不配 REDIS_URL 时可不用）
 redis>=4.0.0
 
+# PostgreSQL（云架构多实例高并发可选；不配 DATABASE_URL 时用 SQLite 无需安装）
+psycopg2-binary>=2.9.0
+
 # Utils
 pydantic>=2.0.0
 pydantic-settings>=2.0.0

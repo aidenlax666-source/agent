@@ -10,9 +10,13 @@
 | 提醒/监控去重 | 进程内 dict | Redis 带 TTL key（跨实例只触发一次） |
 | 调度抢占 | SQLite 原子更新 | SQLite 原子 + Redis 锁双保险 |
 | **任务执行** | 进程内 asyncio（本实例跑） | **Redis 队列**：提交入队 → worker 消费（多实例自动负载均衡） |
+| **任务恢复** | 进程内取消即停 | **reaper 自动重入队** + 重试上限死信（无需手动） |
 | **沙箱目录** | 各实例本地（browser_profile/web） | 共享卷（`SANDBOX_PROFILE_ROOT`/`ASSET_WEB_ROOT`） |
 | **沙箱并发** | 每实例各自限 | 全局精确限制（`SANDBOX_GLOBAL_CONCURRENCY`，Redis 信号量） |
 | **孤儿沙箱** | 进程内取消即清理 | 容器标签 + 启动回收（任务租约判断） |
+| **匿名限流** | 进程内计数 | Redis 计数器跨实例共享（`rate_limit`） |
+| **队列优先级** | 无 | 高优/普通双队列（`priority=high` 插队） |
+| **数据层** | SQLite（默认） | PostgreSQL 可选（`DATABASE_URL`，自动适配） |
 | 运行实例 | 1 个 uvicorn | 多 worker / 多台服务器 |
 | 适用 | 本地个人使用 | 云服务器 / 团队使用 |
 
@@ -40,7 +44,8 @@ Worker（每实例一个，BRPOP 竞争消费）
 - **任务不丢**：提交即落 SQLite + 入队——worker 崩溃任务仍在队列/库中
 - **自动负载均衡**：多个 worker 从同一队列 BRPOP 竞争，谁空闲谁拿（天然分发）
 - **多实例不重复执行**：BRPOP 互斥 + 租约双保险
-- **worker 崩溃恢复**：任务持久化在 SQLite，重启 worker 后可重新入队/手动重跑
+- **崩溃自动恢复**：reaper 循环扫描失联任务（租约过期 + 不在队列）→ 自动重新
+  入队，重试超限（3 次）标记死信失败——不再需要手动重跑
 
 ## 本地单机（现状，无需改动）
 
@@ -126,13 +131,24 @@ worker 崩溃后槽位 TTL 自动过期释放，不永久占位；执行期间�
 
 ## 数据库迁移（可选，高并发推荐）
 
-SQLite 适合单机；多实例高并发建议迁移 PostgreSQL：
+SQLite 适合单机；多实例高并发建议迁移 PostgreSQL。**已内置兼容层**：
+`DATABASE_URL=postgresql://user:pass@host:5432/dbname` 即自动走 PostgreSQL，
+业务 SQL 不用改（占位符 `?` 自动转 `%s`，`PRAGMA` 跳过，列检查走
+information_schema）。不配 DATABASE_URL 则保持 SQLite（默认）。
 
-1. 用 SQLAlchemy 重写 `database.py` 的连接层（当前是原生 sqlite3）
-2. 或加一个兼容层：`DATABASE_URL` 支持 `postgresql://`，其余 SQL 基本兼容（SQLite/PostgreSQL 语法差异小）
+```env
+# 云架构 .env 追加
+DATABASE_URL=postgresql://aiagent:aiagent@postgres:5432/aiagent  # docker-compose 服务名
+```
 
-> 当前 `database.py` 是原生 sqlite3，迁移 PostgreSQL 需要改连接层（较大改动，
-> 列入后续工作；单机/低并发 SQLite + WAL 完全够用）。
+```bash
+# Docker 一键（含 redis + postgres）
+docker-compose up -d redis postgres backend frontend assets
+```
+
+> ⚠️ SQLite 模式多实例共享需挂载共享存储；迁移 PostgreSQL 后多实例直接共享
+> （数据层无单文件限制）。实现：`backend/app/db_adapter.py`（psycopg2 兼容层）+ 
+> `_get_conn()` 按配置分发。
 
 ## 已知取舍（诚实声明）
 

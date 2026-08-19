@@ -7,7 +7,6 @@ from __future__ import annotations
 import io
 import json
 import os
-import sqlite3
 import zipfile
 from pathlib import Path
 
@@ -25,9 +24,8 @@ def _user_artifact_names(user_id: str) -> set[str]:
     """查当前用户所有任务的产物文件名（从 task result 的 url 字段提取）。"""
     names: set[str] = set()
     try:
-        from app.database import DB_PATH
-        conn = sqlite3.connect(str(DB_PATH))
-        conn.row_factory = sqlite3.Row
+        from app.database import _get_conn
+        conn = _get_conn()
         rows = conn.execute("SELECT result FROM mini_tasks WHERE user_id=?", (user_id,)).fetchall()
         conn.close()
         for row in rows:

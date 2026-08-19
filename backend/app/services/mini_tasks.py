@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 """mini_generator 后台任务队列：提交 → 后台执行 → 查询状态/结果。
 
 复用 long_task 的进程内 asyncio 注册表，无需 Redis/Celery。
@@ -418,10 +418,8 @@ def schedule_task(task_id: str, schedule_type: str, schedule_value: str, enabled
     rec = _TASKS.get(task_id)
     if rec is None:
         try:
-            import sqlite3
-            from app.database import DB_PATH
-            conn = sqlite3.connect(str(DB_PATH))
-            conn.row_factory = sqlite3.Row
+            from app.database import _get_conn
+            conn = _get_conn()
             row = conn.execute("SELECT * FROM mini_tasks WHERE id=?", (task_id,)).fetchone()
             conn.close()
             if row:
@@ -854,10 +852,8 @@ def confirm_task(task_id: str, user_id: str = "") -> dict | None:
     rec = _TASKS.get(task_id)
     if rec is None:
         try:
-            import sqlite3
-            from app.database import DB_PATH
-            conn = sqlite3.connect(str(DB_PATH))
-            conn.row_factory = sqlite3.Row
+            from app.database import _get_conn
+            conn = _get_conn()
             row = conn.execute("SELECT * FROM mini_tasks WHERE id=?", (task_id,)).fetchone()
             conn.close()
             if row:
@@ -884,10 +880,8 @@ def iterate(task_id: str, feedback: str, user_id: str = "") -> dict | None:
     rec = _TASKS.get(task_id)
     if rec is None:
         try:
-            import sqlite3
-            from app.database import DB_PATH
-            conn = sqlite3.connect(str(DB_PATH))
-            conn.row_factory = sqlite3.Row
+            from app.database import _get_conn
+            conn = _get_conn()
             row = conn.execute("SELECT * FROM mini_tasks WHERE id=?", (task_id,)).fetchone()
             conn.close()
             if row:
@@ -2870,10 +2864,8 @@ def get_status(task_id: str, user_id: str = "") -> dict | None:
     if rec is None:
         # 内存没有（如重启后）→ 从 SQLite 恢复（同步查询）
         try:
-            import sqlite3
-            from app.database import DB_PATH
-            conn = sqlite3.connect(str(DB_PATH))
-            conn.row_factory = sqlite3.Row
+            from app.database import _get_conn
+            conn = _get_conn()
             row = conn.execute("SELECT * FROM mini_tasks WHERE id=?", (task_id,)).fetchone()
             conn.close()
             if not row:
@@ -2922,10 +2914,8 @@ def list_tasks(limit: int = 20, user_id: str = "") -> list[dict]:
     """任务列表：优先 SQLite（持久化历史），内存 running 任务补充，按 user_id 过滤。"""
     items: list[dict] = []
     try:
-        import sqlite3
-        from app.database import DB_PATH
-        conn = sqlite3.connect(str(DB_PATH))
-        conn.row_factory = sqlite3.Row
+        from app.database import _get_conn
+        conn = _get_conn()
         if user_id:
             rows = conn.execute(
                 "SELECT * FROM mini_tasks WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
@@ -2969,10 +2959,8 @@ def cancel_task(task_id: str, user_id: str = "") -> bool:
         rec = _TASKS.get(task_id)
         if rec is None:
             try:
-                import sqlite3
-                from app.database import DB_PATH
-                conn = sqlite3.connect(str(DB_PATH))
-                conn.row_factory = sqlite3.Row
+                from app.database import _get_conn
+                conn = _get_conn()
                 row = conn.execute("SELECT user_id FROM mini_tasks WHERE id=?", (task_id,)).fetchone()
                 conn.close()
                 if not row:
@@ -2991,10 +2979,8 @@ def delete_task(task_id: str, user_id: str = "") -> bool:
         rec = _TASKS.get(task_id)
         if rec is None:
             try:
-                import sqlite3
-                from app.database import DB_PATH
-                conn = sqlite3.connect(str(DB_PATH))
-                conn.row_factory = sqlite3.Row
+                from app.database import _get_conn
+                conn = _get_conn()
                 row = conn.execute("SELECT user_id FROM mini_tasks WHERE id=?", (task_id,)).fetchone()
                 conn.close()
                 if not row:

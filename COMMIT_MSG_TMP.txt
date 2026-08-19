@@ -1,16 +1,21 @@
-feat: 系统可观测性——任务统计 + worker 健康 + 队列深度 + 监控页
+feat: PostgreSQL 迁移——database.py 连接层兼容 DATABASE_URL（sqlite 默认 + pg 可选）
 
-运维视角看系统是否健康：worker 是否在跑、队列是否积压、任务成功率。
+云架构多实例高并发下 SQLite 单文件是瓶颈，此前 DEPLOYMENT.md 把 PG 迁移
+列为后续工作。本次落地：**不配 DATABASE_URL 就是原 SQLite 行为**，配置
+postgresql:// 即自动走 PostgreSQL，业务 SQL 零改动。
 
-后端：
-- distributed：worker_heartbeat()（worker 循环每轮刷新，TTL 120s 失联自清）+
-  list_workers() + queue_depth()（普通/高优分开统计）
-- database：task_stats() 聚合总量/今日/状态分布/成功率/平均耗时
-- mini API：GET /api/system/stats 汇总三者（单机模式 workers/queue 为空但接口可用）
+实现：
+- config：新增 DATABASE_URL（空=SQLite 默认）
+- 新增 backend/app/db_adapter.py：PgConn 把 psycopg2 包装成 sqlite3 风格
+  连接——`?` 占位符自动转 `%s`、RealDictRow 对齐 row["col"]/dict(row)、
+  executescript 按分号拆分、PRAGMA 语句静默跳过、列检查走 information_schema
+- database.py：_get_conn() 按配置分发 sqlite/pg；_table_columns() 统一取列名；
+  _init_db/_ensure_mini_schedule_columns 迁移检查改用统一接口
+- mini_tasks.py 7 处散落 sqlite3.connect 直连 + gallery.py 1 处 → 统一走
+  _get_conn()（pg 模式下数据一致，不再直连 sqlite 文件）
+- requirements.txt 加 psycopg2-binary（可选，不配 DATABASE_URL 无需装）
+- docker-compose.yml 加 postgres 服务（可选）；DEPLOYMENT.md 数据库迁移章节
+  从"后续工作"改为"已内置"，架构对比表补数据层/任务恢复/限流/优先级行
 
-前端：
-- 新页面 /monitor：核心指标卡（总量/成功率/平均耗时/运行模式）+ 状态分布
-  + worker 列表（含失联告警"没有活跃 worker"）+ 队列深度；15s 自动刷新
-- AppNav 加入口
-
-测试 +4（统计聚合/worker 心跳与失联/队列深度/单机模式），共 101 全过。
+测试 +9（URL 识别/SQL 拆分/占位符转换/PRAGMA 跳过/假 psycopg2 执行路径），
+共 110 全过（sqlite 路径无回归）。
