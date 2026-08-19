@@ -84,6 +84,12 @@ class Settings(BaseSettings):
     # （总并发 = 该值，不再 = 实例数 × 单实例并发）。0 = 每实例各自限制（现状）。
     sandbox_global_concurrency: int = 0
 
+    # 系统告警（可选）：异常时写站内通知（所有用户可见，含 user_id=system 的通知）
+    alert_enabled: bool = False            # 总开关（默认关，避免误打扰）
+    alert_queue_depth: int = 50            # 队列积压阈值：普通+高优深度超过即告警
+    alert_fail_rate: float = 0.5           # 今日失败率阈值：超过即告警
+    alert_min_interval: int = 1800         # 同类告警最小间隔（秒），防刷屏（默认 30 分钟）
+
     # Redis（云架构：多实例共享任务锁/去重/调度；留空则回退单机内存模式）
     redis_url: str = ""  # 如 redis://localhost:6379/0；为空 = 单机模式（当前行为）
 

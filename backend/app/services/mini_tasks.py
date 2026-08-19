@@ -1264,6 +1264,75 @@ async def distributed_reaper_loop(poll_seconds: float = 60.0) -> None:
         await asyncio.sleep(poll_seconds)
 
 
+async def system_monitor_loop(poll_seconds: float = 60.0) -> None:
+    """系统告警循环（云架构，仅 leader 实例跑）：异常时发站内通知（所有用户可见）。
+
+    检查三项指标（均需 alert_enabled=True 才生效）：
+    - worker 失联：Redis 有 worker 心跳记录，但活跃 worker 为 0（= 任务没人消费）
+    - 队列积压：普通+高优队列深度超过 alert_queue_depth
+    - 失败率突增：今日任务失败率超过 alert_fail_rate
+
+    告警去重：同类型告警 alert_min_interval 秒内只发一次（Redis dedup 跨实例）。
+    """
+    from app.services import distributed as _dist
+    from app.database import add_notification, task_stats
+    s = get_settings()
+    if not s.alert_enabled:
+        logger.info("[告警] 未启用（alert_enabled=False），跳过启动")
+        return
+    logger.info("[告警] 系统监控启动（每 %ss 检查一次）", poll_seconds)
+    while True:
+        try:
+            # 仅 leader 跑（复用调度器 leader 租约，防多实例重复告警）
+            if not _dist.renew_leadership():
+                await asyncio.sleep(poll_seconds)
+                continue
+
+            # 1) worker 失联：Redis 模式下 0 活跃 worker = 任务无人消费
+            if _dist.redis_enabled():
+                workers = _dist.list_workers()
+                if not workers:
+                    _alert("worker_down", "⚠️ Worker 失联",
+                           "没有活跃 worker，队列中的任务将无法执行。请检查后端实例是否全部宕机。",
+                           s, _dist)
+
+            # 2) 队列积压
+            depth = _dist.queue_depth()
+            total_depth = int(depth.get("normal") or 0) + int(depth.get("high") or 0)
+            if total_depth > s.alert_queue_depth:
+                _alert("queue_backlog", "📦 队列积压",
+                       f"任务队列积压 {total_depth} 个（普通 {depth.get('normal', 0)} / 高优 {depth.get('high', 0)}）。"
+                       "任务处理速度跟不上，建议扩容 worker。",
+                       s, _dist)
+
+            # 3) 失败率突增
+            stats = await task_stats()
+            rate = stats.get("success_rate_today")
+            if rate is not None and (1 - rate) > s.alert_fail_rate:
+                _alert("fail_rate", "❌ 失败率突增",
+                       f"今日任务失败率 {(1 - rate) * 100:.0f}%（成功率 {rate * 100:.0f}%），"
+                       "超过告警阈值，可能存在大面积故障。",
+                       s, _dist)
+        except asyncio.CancelledError:
+            logger.info("[告警] 系统监控已停止")
+            raise
+        except Exception as e:
+            logger.warning("[告警] 检查异常（继续）: %s", str(e)[:120])
+        await asyncio.sleep(poll_seconds)
+
+
+def _alert(key: str, title: str, content: str, s, _dist) -> None:
+    """发一条系统告警（去重：同类告警 interval 内只发一次）。"""
+    try:
+        if not _dist.dedup_mark(f"alert:{key}", ttl_seconds=max(60, int(s.alert_min_interval))):
+            return
+        from app.database import _add_notification
+        _add_notification("system", title, content)
+        logger.warning("[告警] %s: %s", title, content[:80])
+    except Exception as e:
+        logger.warning("[告警] 发送失败: %s", str(e)[:100])
+
+
 async def _run_task(task_id: str, requirement: str, url: str | None, record: dict) -> None:
     """后台执行一个任务（联机游戏/报告/内容/视频/图片/音乐/代码任务，可组合多模式），同步 SQLite。"""
     from app.database import save_mini_task, update_mini_task, get_memory

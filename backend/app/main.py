@@ -33,10 +33,12 @@ async def lifespan(app: FastAPI):
         pass
     # 分布式任务 worker + 崩溃恢复 reaper：有 Redis 时启动（云架构多实例）
     from app.services import distributed
-    from app.services.mini_tasks import distributed_worker_loop, distributed_reaper_loop
+    from app.services.mini_tasks import distributed_worker_loop, distributed_reaper_loop, system_monitor_loop
     if distributed.redis_enabled():
         asyncio.create_task(distributed_worker_loop())
         asyncio.create_task(distributed_reaper_loop())
+    # 系统告警（仅 leader 实例跑；alert_enabled=False 时内部直接返回）
+    asyncio.create_task(system_monitor_loop())
     yield
 
 

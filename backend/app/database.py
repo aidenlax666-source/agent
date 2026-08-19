@@ -617,7 +617,8 @@ def _add_notification(user_id: str, title: str, content: str = "") -> None:
 def _list_notifications(user_id: str, limit: int = 20) -> list[dict]:
     with _get_conn() as conn:
         rows = conn.execute(
-            "SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
+            "SELECT * FROM notifications WHERE user_id=? OR user_id='system' "
+            "ORDER BY created_at DESC LIMIT ?",
             (user_id, limit),
         ).fetchall()
     return [dict(r) for r in rows]
@@ -626,7 +627,8 @@ def _list_notifications(user_id: str, limit: int = 20) -> list[dict]:
 def _unread_notification_count(user_id: str) -> int:
     with _get_conn() as conn:
         row = conn.execute(
-            "SELECT COUNT(*) AS c FROM notifications WHERE user_id=? AND read=0", (user_id,)
+            "SELECT COUNT(*) AS c FROM notifications WHERE (user_id=? OR user_id='system') AND read=0",
+            (user_id,),
         ).fetchone()
     return int(row["c"]) if row else 0
 
