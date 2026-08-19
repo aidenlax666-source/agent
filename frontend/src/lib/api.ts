@@ -370,3 +370,21 @@ export const memoryApi = {
   clear: () =>
     request<{ ok: boolean }>("/api/memory", { method: "DELETE" }),
 };
+
+// ===== 系统可观测性（任务统计 / worker 健康 / 队列深度）=====
+export interface SystemStats {
+  total: number;
+  today: number;
+  by_status: Record<string, number>;
+  success_rate_today: number | null;
+  done_today: number;
+  failed_today: number;
+  avg_elapsed_today: number | null;
+  workers: { id: string; last_heartbeat: number }[];
+  queue_depth: { normal: number; high: number } | Record<string, never>;
+  redis_enabled: boolean;
+}
+
+export const systemApi = {
+  stats: () => request<SystemStats>("/api/system/stats"),
+};

@@ -639,6 +639,19 @@ async def list_all(limit: int = 20, user=Depends(get_current_user)):
     return {"tasks": mini_tasks.list_tasks(limit=limit, user_id=user["id"])}
 
 
+@router.get("/system/stats")
+async def system_stats(user=Depends(get_current_user)):
+    """任务统计（运维/监控）：总量、今日量、状态分布、成功率、平均耗时。"""
+    from app.database import task_stats as _db_stats
+    stats = await _db_stats()
+    # worker 健康 + 队列深度（有 Redis 才返回；单机模式为空但接口可用）
+    from app.services import distributed as _dist
+    stats["workers"] = _dist.list_workers()
+    stats["queue_depth"] = _dist.queue_depth()
+    stats["redis_enabled"] = _dist.redis_enabled()
+    return stats
+
+
 @router.get("/mini/tasks/{task_id}")
 async def task_status(task_id: str, user=Depends(get_current_user)):
     """查询任务状态（仅本人可见，账号数据独立）。"""

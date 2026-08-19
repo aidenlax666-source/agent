@@ -472,6 +472,50 @@ async def find_cached_result(user_id: str, requirement: str, url: str, within_se
     return await _run_async(_find_cached_result, user_id, requirement, url, within_seconds)
 
 
+# ---- 可观测性：任务统计 ----
+
+def _task_stats() -> dict:
+    """任务执行统计（运维/监控）：总量、状态分布、成功率、平均耗时、今日新增。"""
+    with _get_conn() as conn:
+        total = conn.execute("SELECT COUNT(*) AS c FROM mini_tasks").fetchone()["c"]
+        today = conn.execute(
+            "SELECT COUNT(*) AS c FROM mini_tasks WHERE created_at >= ?",
+            (time.time() - 86400,),
+        ).fetchone()["c"]
+        by_status = {
+            r["status"]: r["c"] for r in conn.execute(
+                "SELECT status, COUNT(*) AS c FROM mini_tasks GROUP BY status").fetchall()
+        }
+        done = conn.execute(
+            "SELECT COUNT(*) AS c FROM mini_tasks WHERE status='done' AND updated_at IS NOT NULL AND updated_at >= ?",
+            (time.time() - 86400,),
+        ).fetchone()["c"]
+        failed_today = conn.execute(
+            "SELECT COUNT(*) AS c FROM mini_tasks WHERE status='failed' AND updated_at IS NOT NULL AND updated_at >= ?",
+            (time.time() - 86400,),
+        ).fetchone()["c"]
+        avg_row = conn.execute(
+            "SELECT AVG(updated_at - created_at) AS a FROM mini_tasks "
+            "WHERE status='done' AND updated_at IS NOT NULL AND created_at IS NOT NULL "
+            "AND updated_at >= created_at AND updated_at >= ?",
+            (time.time() - 86400,),
+        ).fetchone()
+    finished_today = done + failed_today
+    return {
+        "total": total,
+        "today": today,
+        "by_status": by_status,
+        "success_rate_today": round(done / finished_today, 3) if finished_today else None,
+        "done_today": done,
+        "failed_today": failed_today,
+        "avg_elapsed_today": round(avg_row["a"], 1) if avg_row and avg_row["a"] is not None else None,
+    }
+
+
+async def task_stats() -> dict:
+    return await _run_async(_task_stats)
+
+
 async def update_mini_run(task_id: str, last_run_at: float, next_run_at: float | None) -> None:
     return await _run_async(_update_mini_run, task_id, last_run_at, next_run_at)
 

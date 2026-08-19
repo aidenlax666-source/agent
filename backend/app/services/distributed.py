@@ -303,6 +303,61 @@ def release_sandbox_slot(slot: int) -> None:
 
 
 # ============================================================
+# 7. 可观测性：worker 心跳 + 队列深度（运维/监控用）
+# ============================================================
+
+WORKER_HEARTBEAT_PREFIX = "aiagent:worker"
+WORKER_HEARTBEAT_TTL = 120  # 心跳 TTL（秒）；超过视为 worker 失联
+
+
+def worker_heartbeat(worker_id: str | None = None) -> None:
+    """注册/刷新本 worker 心跳（带 TTL，失联自动消失）。无 Redis 时无操作。"""
+    r = _get_redis()
+    if r is None:
+        return
+    wid = worker_id or get_worker_id()
+    try:
+        r.set(f"{WORKER_HEARTBEAT_PREFIX}:{wid}", str(time.time()), ex=WORKER_HEARTBEAT_TTL)
+    except Exception:
+        pass
+
+
+def list_workers() -> list[dict]:
+    """列出活跃 worker（心跳未过期）。返回 [{id, last_heartbeat}]。"""
+    r = _get_redis()
+    if r is None:
+        return []
+    try:
+        keys = r.keys(f"{WORKER_HEARTBEAT_PREFIX}:*")
+        workers = []
+        for k in keys or []:
+            try:
+                raw = r.get(k)
+                if raw is None:
+                    continue  # 心跳已过期（TTL 自清理）
+                workers.append({"id": k.rsplit(":", 1)[-1], "last_heartbeat": float(raw)})
+            except Exception:
+                continue
+        return workers
+    except Exception:
+        return []
+
+
+def queue_depth() -> dict:
+    """当前队列深度（普通/高优）。无 Redis 返回空。"""
+    r = _get_redis()
+    if r is None:
+        return {}
+    try:
+        return {
+            "normal": int(r.llen(TASK_QUEUE_KEY) or 0),
+            "high": int(r.llen(TASK_QUEUE_KEY_HIGH) or 0),
+        }
+    except Exception:
+        return {}
+
+
+# ============================================================
 # 6. 全局限流（跨实例共享计数器，防每实例各自计数被绕过）
 # ============================================================
 

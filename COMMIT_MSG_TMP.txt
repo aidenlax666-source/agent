@@ -1,14 +1,16 @@
-feat: 结果缓存——同用户同需求复用上次成功结果（省 LLM 成本）
+feat: 系统可观测性——任务统计 + worker 健康 + 队列深度 + 监控页
 
-用户反复提交相同需求（如"查今天的天气"）时，每次都重新调 LLM 生成+执行
-是纯浪费。新增结果缓存：
+运维视角看系统是否健康：worker 是否在跑、队列是否积压、任务成功率。
 
-- config：RESULT_CACHE_TTL（秒，0=关闭默认；如 300=5 分钟内重复需求命中）
-- database：find_cached_result()——同 user_id + 需求逐字一致 + URL 一致 +
-  status=done + 结果非空 + updated_at 在窗口内 → 取最近一次
-- mini API：create_task 先查缓存（_maybe_cached_result），命中直接返回
-  缓存结果、**不扣积分**；提醒/监控"设置型"任务不走缓存（避免定时任务
-  永远返回同一个结果）
+后端：
+- distributed：worker_heartbeat()（worker 循环每轮刷新，TTL 120s 失联自清）+
+  list_workers() + queue_depth()（普通/高优分开统计）
+- database：task_stats() 聚合总量/今日/状态分布/成功率/平均耗时
+- mini API：GET /api/system/stats 汇总三者（单机模式 workers/queue 为空但接口可用）
 
-测试 +7（命中/不同用户隔离/不同需求不命中/过期不命中/失败不命中/取最新/
-API 层命中不扣分），共 97 全过。
+前端：
+- 新页面 /monitor：核心指标卡（总量/成功率/平均耗时/运行模式）+ 状态分布
+  + worker 列表（含失联告警"没有活跃 worker"）+ 队列深度；15s 自动刷新
+- AppNav 加入口
+
+测试 +4（统计聚合/worker 心跳与失联/队列深度/单机模式），共 101 全过。

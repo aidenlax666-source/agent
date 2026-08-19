@@ -1170,8 +1170,10 @@ async def distributed_worker_loop(poll_seconds: float = 1.0) -> None:
             await asyncio.sleep(30)
             _dist.renew_lock(f"task-run:{task_id}", ttl_seconds=ttl)
 
+    # worker 自身心跳（可观测性）：有任务时随循环刷新，空闲时也保活
     while True:
         try:
+            _dist.worker_heartbeat()
             task_id = _dist.dequeue_task(timeout=poll_seconds)
             if not task_id:
                 continue
