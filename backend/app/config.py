@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     sandbox_allow_subprocess: bool = True  # False 时沙箱禁止 import subprocess/socket/smtplib/ftplib
     sandbox_headful: bool = True  # True=有头浏览器（弹窗口，反爬通过率高）；False=无头（服务器可用）
 
+    # Redis（云架构：多实例共享任务锁/去重/调度；留空则回退单机内存模式）
+    redis_url: str = ""  # 如 redis://localhost:6379/0；为空 = 单机模式（当前行为）
+
     # JWT
     jwt_secret_key: str = ""  # 必须在 .env 配置；为空时启动生成临时密钥并告警
     jwt_algorithm: str = "HS256"

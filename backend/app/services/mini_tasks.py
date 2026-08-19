@@ -558,19 +558,18 @@ def _hold_task(t: "asyncio.Task") -> None:
 async def _fire_reminder(reminder: dict, user_id: str) -> None:
     """定时提醒到点 → 写站内通知（去重：同 id 同分钟只发一次；先写库成功再记去重 key，失败可重试）。"""
     from app.database import add_notification
+    from app.services import distributed
     key = f"rem:{reminder['id']}:{time.strftime('%Y%m%d%H%M')}"
-    if key in _fire_memory:
+    # 分布式去重（有 Redis 跨实例生效；无 Redis 回退进程内）
+    if not distributed.dedup_mark(key, ttl_seconds=120):
         return
     try:
         await add_notification(user_id, "⏰ 定时提醒",
                                f"{reminder.get('time', '')} - {reminder.get('text', '')}")
     except Exception as e:
+        distributed.dedup_clear(key)  # 写库失败：清除去重标记，下轮重试
         logger.warning("[提醒] %s 写库失败（本次不记去重，下轮重试）: %s", user_id[:8], str(e)[:120])
         return
-    _fire_memory[key] = time.time()
-    if len(_fire_memory) > 2000:
-        for k in list(_fire_memory)[:1000]:
-            _fire_memory.pop(k, None)
     logger.info("[提醒] %s 触发: %s", user_id[:8], reminder.get("text", ""))
 
 
@@ -624,6 +623,7 @@ async def _run_monitor_check(monitor: dict) -> None:
     now = time.time()
     fired: list[str] = []
     state_updated = False
+    from app.services import distributed as _dist
     try:
         if mtype == "window":
             titles = await asyncio.to_thread(_window_titles)  # ctypes 同步调用不阻塞事件循环
@@ -632,10 +632,9 @@ async def _run_monitor_check(monitor: dict) -> None:
                 kw = kw.strip().lower()
                 if kw and kw in joined:
                     key = f"mon:{mid}:{kw}"
-                    if _fire_memory.get(key, 0) > now - 300:  # 5 分钟冷却
-                        continue
-                    _fire_memory[key] = now
-                    fired.append(kw)
+                    # 5 分钟冷却（分布式：跨实例只触发一次）
+                    if _dist.dedup_mark(key, ttl_seconds=300):
+                        fired.append(kw)
             await update_monitor_state(mid, now, monitor.get("last_state") or "")
             state_updated = True
         else:  # screen
@@ -647,21 +646,20 @@ async def _run_monitor_check(monitor: dict) -> None:
                 mins = int(m_min.group(1)) if m_min else 5
                 key = f"screen:{mid}"
                 if changed:
-                    _fire_memory.pop(key, None)  # 画面动了，重置计时
+                    _dist.dedup_clear(key)  # 画面动了，重置计时
                 else:
-                    prev_t = _fire_memory.get(key, 0)
-                    if prev_t and now - prev_t >= mins * 60:
-                        _fire_memory.pop(key, None)
+                    # 开始计时 / 到点触发：用带 TTL 的去重标记（跨实例一致）
+                    if _dist.dedup_mark(key, ttl_seconds=int(mins * 60)):
+                        # 首次标记 = 开始计时，不触发；需等待 TTL 过期后再次 mark 才到点
+                        pass
+                    else:
+                        # TTL 过期后再次进入 = 已静止 mins 分钟 → 触发一次并重新计时
                         fired.append(f"屏幕静止超过 {mins} 分钟")
-                    elif not prev_t:
-                        _fire_memory[key] = now  # 开始计时
+                        _dist.dedup_clear(key)
             else:  # 默认：画面变化触发（冷却 60s）
                 if changed:
                     key = f"mon:{mid}:change"
-                    if _fire_memory.get(key, 0) > now - 60:
-                        pass
-                    else:
-                        _fire_memory[key] = now
+                    if _dist.dedup_mark(key, ttl_seconds=60):
                         fired.append("屏幕画面发生变化")
             await update_monitor_state(mid, now, cur)
             state_updated = True

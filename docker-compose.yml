@@ -1,6 +1,14 @@
 version: "3.9"
 
 services:
+  # Redis：云架构多实例共享（任务锁/提醒去重/调度抢占）
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+
   backend:
     build:
       context: ./backend
@@ -13,6 +21,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     env_file:
       - .env
+    depends_on:
+      - redis
 
   frontend:
     build:
