@@ -1205,6 +1205,51 @@ async def distributed_worker_loop(poll_seconds: float = 1.0) -> None:
             await asyncio.sleep(2)
 
 
+# 任务重试上限：超过则标记死信（失败），不再自动重试
+MAX_TASK_RETRIES = 3
+# reaper 判定"任务失联"的阈值：updated_at 超过该秒数未变（租约 TTL 1800s，取稍大值）
+STALE_TASK_AGE = 2400
+
+
+async def distributed_reaper_loop(poll_seconds: float = 60.0) -> None:
+    """崩溃恢复循环（云架构）：自动找回失联任务并重新入队。
+
+    场景：worker BRPOP 取出任务 → 领取租约 → 执行中崩溃。此时任务已不在队列
+    （BRPOP 取出即移出），租约 TTL 过期后无人接管 → 任务卡死。
+    reaper 周期扫描：status 仍为 queued/running 且 updated_at 很久未变的任务，
+    若其租约已过期且不在队列 → 判定失联 → retry_count+1 重新入队；
+    重试超限 → 标记死信（用户可见失败原因），不再无限重试。
+    """
+    from app.services import distributed as _dist
+    from app.database import get_stale_mini_tasks, bump_retry_count, mark_task_dead
+    logger.info("[reaper] 崩溃恢复循环启动（每 %ss 扫描一次）", poll_seconds)
+    while True:
+        try:
+            stale = await get_stale_mini_tasks(older_than=time.time() - STALE_TASK_AGE)
+            for rec in stale:
+                tid = rec["id"]
+                # 租约仍存活 → 有 worker 正在执行，正常
+                if _dist.task_lease_alive(tid):
+                    continue
+                # 仍在队列中 → 只是排队久，正常
+                if _dist.task_in_queue(tid):
+                    continue
+                retries = int(rec.get("retry_count") or 0)
+                if retries >= MAX_TASK_RETRIES:
+                    await mark_task_dead(tid, f"任务多次执行失败（worker 崩溃 {retries} 次），已停止自动重试")
+                    logger.warning("[reaper] 任务 %s 重试超限，标记死信", tid[:8])
+                    continue
+                new_count = await bump_retry_count(tid)
+                if _dist.enqueue_task(tid):
+                    logger.info("[reaper] 任务 %s 失联已重新入队（第 %d/%d 次重试）", tid[:8], new_count, MAX_TASK_RETRIES)
+        except asyncio.CancelledError:
+            logger.info("[reaper] 崩溃恢复循环已停止")
+            raise
+        except Exception as e:
+            logger.warning("[reaper] 扫描异常（继续）: %s", str(e)[:120])
+        await asyncio.sleep(poll_seconds)
+
+
 async def _run_task(task_id: str, requirement: str, url: str | None, record: dict) -> None:
     """后台执行一个任务（联机游戏/报告/内容/视频/图片/音乐/代码任务，可组合多模式），同步 SQLite。"""
     from app.database import save_mini_task, update_mini_task, get_memory

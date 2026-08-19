@@ -31,11 +31,12 @@ async def lifespan(app: FastAPI):
         await asyncio.to_thread(cleanup_orphan_containers)
     except Exception:
         pass
-    # 分布式任务 worker：有 Redis 时从队列消费任务（云架构多实例）
+    # 分布式任务 worker + 崩溃恢复 reaper：有 Redis 时启动（云架构多实例）
     from app.services import distributed
-    from app.services.mini_tasks import distributed_worker_loop
+    from app.services.mini_tasks import distributed_worker_loop, distributed_reaper_loop
     if distributed.redis_enabled():
         asyncio.create_task(distributed_worker_loop())
+        asyncio.create_task(distributed_reaper_loop())
     yield
 
 

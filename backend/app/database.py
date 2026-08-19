@@ -73,7 +73,8 @@ def _init_db():
                 last_run_at REAL,
                 next_run_at REAL,
                 image_paths TEXT DEFAULT '',        -- JSON 数组（上传图片路径，随任务持久化）
-                data_paths TEXT DEFAULT ''          -- JSON 数组（上传数据文件路径）
+                data_paths TEXT DEFAULT '',         -- JSON 数组（上传数据文件路径）
+                retry_count INTEGER DEFAULT 0       -- 崩溃恢复重试次数（分布式 worker）
             );
 
             -- 站内通知（定时提醒 / 监控触发 / 任务完成提醒）
@@ -130,6 +131,8 @@ def _init_db():
         for col in ("image_paths", "data_paths"):
             if col not in cols:
                 conn.execute(f"ALTER TABLE mini_tasks ADD COLUMN {col} TEXT DEFAULT ''")
+        if "retry_count" not in cols:
+            conn.execute("ALTER TABLE mini_tasks ADD COLUMN retry_count INTEGER DEFAULT 0")
 
 
 # ============================================================
@@ -374,6 +377,65 @@ async def get_due_mini_tasks(now: float) -> list[dict]:
 
 async def set_mini_schedule(task_id: str, schedule_type: str, schedule_value: str, enabled: bool, next_run_at: float | None) -> None:
     return await _run_async(_set_mini_schedule, task_id, schedule_type, schedule_value, enabled, next_run_at)
+
+
+# ---- 分布式崩溃恢复（reaper） ----
+
+def _get_stale_mini_tasks(older_than: float) -> list[dict]:
+    """查疑似失联的任务：status 仍为 queued/running 且 updated_at 很久未变。
+
+    分布式 worker 崩溃后任务会卡在 queued/running（租约过期但无人标记），
+    reaper 据此扫描候选，再结合 Redis 租约/队列判断是否真的失联。
+    """
+    with _get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM mini_tasks WHERE status IN ('queued','running') AND updated_at IS NOT NULL AND updated_at <= ?",
+            (older_than,),
+        ).fetchall()
+    out = []
+    for row in rows:
+        d = dict(row)
+        if d.get("result"):
+            try:
+                d["result"] = json.loads(d["result"])
+            except (json.JSONDecodeError, TypeError):
+                d["result"] = None
+        d["image_paths"] = _decode_json_list(d.get("image_paths"))
+        d["data_paths"] = _decode_json_list(d.get("data_paths"))
+        out.append(d)
+    return out
+
+
+def _bump_retry_count(task_id: str) -> int:
+    """重试计数 +1，返回新的计数。"""
+    with _get_conn() as conn:
+        conn.execute(
+            "UPDATE mini_tasks SET retry_count = COALESCE(retry_count,0) + 1, updated_at=? WHERE id=?",
+            (time.time(), task_id),
+        )
+        row = conn.execute("SELECT retry_count FROM mini_tasks WHERE id=?", (task_id,)).fetchone()
+    return int(row["retry_count"]) if row else 0
+
+
+def _mark_task_dead(task_id: str, reason: str) -> None:
+    """死信：重试超限，标记失败不再重试（用户可见错误原因）。"""
+    with _get_conn() as conn:
+        conn.execute(
+            "UPDATE mini_tasks SET status='failed', error=?, message=?, updated_at=? WHERE id=?",
+            (reason, "执行多次失败，已停止重试", time.time(), task_id),
+        )
+
+
+async def get_stale_mini_tasks(older_than: float) -> list[dict]:
+    return await _run_async(_get_stale_mini_tasks, older_than)
+
+
+async def bump_retry_count(task_id: str) -> int:
+    return await _run_async(_bump_retry_count, task_id)
+
+
+async def mark_task_dead(task_id: str, reason: str) -> None:
+    return await _run_async(_mark_task_dead, task_id, reason)
 
 
 async def update_mini_run(task_id: str, last_run_at: float, next_run_at: float | None) -> None:

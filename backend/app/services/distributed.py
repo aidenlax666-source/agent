@@ -195,6 +195,22 @@ def dequeue_task(timeout: float = 5.0) -> str | None:
     return None
 
 
+def task_in_queue(task_id: str) -> bool:
+    """任务是否仍在队列中等待（未被 worker 取出）。
+
+    崩溃恢复用：BRPOP 取出后任务即不在队列；若租约也过期 → 失联，需重新入队。
+    无 Redis（单机模式）返回 False（本实例进程内调度，无队列概念）。
+    """
+    r = _get_redis()
+    if r is None:
+        return False
+    try:
+        items = r.lrange(TASK_QUEUE_KEY, 0, -1)
+        return task_id in items
+    except Exception:
+        return False  # Redis 抖动时保守判断"不在队列"，由租约/重试次数兜底
+
+
 def claim_task_lease(task_id: str, ttl_seconds: int = 1800) -> bool:
     """领取任务执行租约（防多 worker 同时执行同一任务 + worker 崩溃后任务被找回）。"""
     return acquire_lock(f"task-run:{task_id}", ttl_seconds=ttl_seconds)

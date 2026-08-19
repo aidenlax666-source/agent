@@ -1,0 +1,21 @@
+feat: worker 崩溃自动恢复——失联任务重新入队 + 重试上限死信
+
+分布式任务系统此前缺失闭环：worker BRPOP 取出任务后崩溃，任务既不在队列
+（BRPOP 已移出）又无人接管（租约过期），永远卡死。DEPLOYMENT.md 写的
+"可重新入队恢复"其实是手动的。
+
+新增崩溃恢复 reaper 循环（redis_enabled 时由 main.py 启动）：
+- 周期扫描 SQLite 中 status 仍为 queued/running 且 updated_at 超过
+  STALE_TASK_AGE（2400s）的任务
+- 租约仍存活（有 worker 在执行）→ 跳过；仍在队列（只是排队久）→ 跳过
+- 真正失联 → retry_count+1 重新入队（enqueue_task）
+- 重试超过 MAX_TASK_RETRIES（3）→ 标记死信 failed（用户可见失败原因），
+  不再无限重试
+
+实现：
+- database.py：mini_tasks 加 retry_count 列（含老库迁移）+ 查询失联任务 /
+  bump_retry_count / mark_task_dead
+- distributed.py：task_in_queue()（BRPOP 取出后任务不在队列，据此判断失联）
+- mini_tasks.py：distributed_reaper_loop()；main.py lifespan 挂载
+
+测试 +4（失联重入队 / 活跃跳过 / 排队跳过 / 死信），共 83 全过。
