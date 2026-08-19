@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import uuid
 
 from app.config import get_settings
 
@@ -20,6 +21,14 @@ logger = logging.getLogger("app.services.distributed")
 
 _redis = None
 _redis_error: str | None = None
+
+# 本实例（worker）唯一标识：用于沙箱容器打标签 + 孤儿清理（谁启动的谁负责回收）
+_worker_id: str = uuid.uuid4().hex[:12]
+
+
+def get_worker_id() -> str:
+    """返回本进程唯一 worker id（沙箱容器/孤儿清理用）。"""
+    return _worker_id
 
 
 def _get_redis():
@@ -193,3 +202,68 @@ def claim_task_lease(task_id: str, ttl_seconds: int = 1800) -> bool:
 
 def release_task_lease(task_id: str) -> None:
     release_lock(f"task-run:{task_id}")
+
+
+def task_lease_alive(task_id: str) -> bool:
+    """任务执行租约是否仍存在（worker 是否还在跑该任务）。
+
+    孤儿沙箱清理用：容器打的 task 标签对应的租约已过期/被删 =
+    任务已结束或 worker 崩溃 → 容器可以安全回收。
+    """
+    r = _get_redis()
+    if r is not None:
+        try:
+            return bool(r.exists(f"aiagent:lock:task-run:{task_id}"))
+        except Exception:
+            return True  # Redis 抖动时保守不清（宁可残留不可误杀）
+    return any(k == f"task-run:{task_id}" for k, _exp in _local_locks.items())
+
+
+# ============================================================
+# 5. 全局沙箱并发信号量（跨实例精确限制）
+# ============================================================
+
+# 槽位 key 前缀：aiagent:sandbox:slot:{i}，value = 占用者 worker_id
+_SANDBOX_SLOT_PREFIX = "aiagent:sandbox:slot"
+
+
+def acquire_sandbox_slot(limit: int, ttl_seconds: int = 1800) -> int | None:
+    """占用一个全局沙箱槽位（SETNX + TTL，崩溃自动释放）。
+
+    返回槽位号（0-based）；全部被占返回 None（调用方排队重试）。
+    无 Redis（单机模式）返回 0：全局限制不生效，由本地信号量兜底。
+    """
+    r = _get_redis()
+    if r is None:
+        return 0
+    owner = get_worker_id()
+    try:
+        for i in range(limit):
+            if r.set(f"{_SANDBOX_SLOT_PREFIX}:{i}", owner, nx=True, ex=ttl_seconds):
+                return i
+    except Exception as e:
+        logger.warning("[distributed] 沙箱槽位占用失败: %s", str(e)[:100])
+        return 0  # Redis 抖动时放行（本地信号量仍限制本实例并发）
+    return None
+
+
+def renew_sandbox_slot(slot: int, ttl_seconds: int = 1800) -> None:
+    """续期自己占用的槽位（长任务防 TTL 到期被别的实例抢走）。"""
+    r = _get_redis()
+    if r is None:
+        return
+    try:
+        r.expire(f"{_SANDBOX_SLOT_PREFIX}:{slot}", ttl_seconds)
+    except Exception:
+        pass
+
+
+def release_sandbox_slot(slot: int) -> None:
+    """释放自己占用的槽位。"""
+    r = _get_redis()
+    if r is None:
+        return
+    try:
+        r.delete(f"{_SANDBOX_SLOT_PREFIX}:{slot}")
+    except Exception:
+        pass

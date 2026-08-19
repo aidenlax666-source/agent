@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 
+from app.paths import profile_root
+
 
 DOM_CAPTURE_SCRIPT = """
 () => {
@@ -207,8 +209,7 @@ async def capture_page_structure(url: str, timeout: int = 30000, profile_dir: st
         try:
             import json as _json, os as _os
             # Load THIS USER's saved login state (按账号隔离；未指定时回退全局目录)
-            profile_dir = _os.path.normpath(
-                profile_dir or _os.path.join(_os.path.dirname(__file__), "..", "..", "browser_profile"))
+            profile_dir = _os.path.normpath(profile_dir or profile_root())
             storage_state = None
             try:
                 import glob as _glob

@@ -22,6 +22,7 @@ import time
 import urllib.parse
 
 from app.config import get_settings
+from app.paths import user_profile_dir
 from app.services.llm_client import chat_completion, chat_completion_json
 from app.services.page_capture import capture_page_structure, format_dom_for_prompt
 from app.sandbox.docker_executor import execute_in_sandbox
@@ -726,13 +727,7 @@ async def generate_and_verify(
     if _is_deep_scrape(requirement):
         timeout = max(timeout, 600)
     # 按用户隔离的登录态目录（browser_profile/{user_id}/），无则回退全局
-    profile_dir = ""
-    if user_id:
-        candidate = os.path.normpath(os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            "browser_profile", str(user_id)))
-        if os.path.isdir(candidate):
-            profile_dir = candidate
+    profile_dir = user_profile_dir(user_id) if user_id else ""
     report = {
         "requirement": requirement, "url": url or "", "success": False,
         "status": "failed", "script": "", "stdout": "", "rows": 0,

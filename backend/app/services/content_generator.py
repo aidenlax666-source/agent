@@ -9,10 +9,11 @@ import os
 import uuid
 
 from app.services.llm_client import chat_completion
+from app.paths import web_root
 
 logger = logging.getLogger("app.services.content_generator")
 
-_WEB_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "web"))
+_WEB_DIR = web_root()
 
 CONTENT_SYSTEM = """你是一位 AI 内容创作专家。根据用户需求生成**可立即使用的 HTML 单文件**内容（网页/小游戏/漫剧/工具页等）。
 

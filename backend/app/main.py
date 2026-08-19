@@ -24,6 +24,13 @@ async def lifespan(app: FastAPI):
     await init_db()
     # 启动 mini 定时任务调度器
     asyncio.create_task(mini_scheduler_loop())
+    # 孤儿沙箱清理：worker 重启后回收本实例遗留的容器 + 租约已过期的容器
+    # （云架构多实例：崩溃实例的容器由其他实例按任务租约回收，启动时清一次兜底）
+    from app.sandbox.docker_executor import cleanup_orphan_containers
+    try:
+        await asyncio.to_thread(cleanup_orphan_containers)
+    except Exception:
+        pass
     # 分布式任务 worker：有 Redis 时从队列消费任务（云架构多实例）
     from app.services import distributed
     from app.services.mini_tasks import distributed_worker_loop

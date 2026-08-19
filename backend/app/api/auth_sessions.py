@@ -17,11 +17,13 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Depends
 
 from app.api.dependencies import get_current_user
+from app.paths import profile_root
 
 router = APIRouter()
 
 # Persistent browser profile directory - login state lives here
-PROFILE_DIR = Path(__file__).parent.parent.parent / "browser_profile"
+# 云架构多实例可配置 SANDBOX_PROFILE_ROOT 指向共享卷，保证登录态跨实例可见
+PROFILE_DIR = Path(profile_root())
 PROFILE_DIR.mkdir(exist_ok=True)
 
 # 登录态有效期（秒）：第三方 Cookie 会过期，短时保存即可（默认 2 小时）

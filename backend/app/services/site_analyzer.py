@@ -8,6 +8,8 @@ import asyncio
 import json
 import logging
 
+from app.paths import profile_root
+
 logger = logging.getLogger("app.services.site_analyzer")
 
 _ANALYZE_JS = r"""
@@ -133,8 +135,7 @@ async def analyze_site(url: str, timeout: int = 30, profile_dir: str | None = No
 
         # 注入该任务所属用户的登录态（按账号隔离；未指定回退全局目录）
         # 注意：不能给 profile_dir 赋值（会遮蔽外层参数导致 UnboundLocalError），用局部名 pdir
-        pdir = _os.path.normpath(
-            profile_dir or _os.path.join(_os.path.dirname(__file__), "..", "..", "browser_profile"))
+        pdir = _os.path.normpath(profile_dir or profile_root())
         storage_state = None
         try:
             merged = {"cookies": [], "origins": []}

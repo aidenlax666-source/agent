@@ -16,6 +16,7 @@ import uuid
 import logging
 
 from app.config import get_settings
+from app.paths import web_root, user_profile_dir
 from app.services.long_task import start_background, is_running, cancel
 # 模块级引用：测试可替换 chat_completion_json 做 mock（agent 循环/分类等）
 from app.services.llm_client import chat_completion_json as chat_completion_json
@@ -31,8 +32,9 @@ _MAX_KEPT = 200
 # 报告意图关键词：命中则走 HTML 可视化报告模式
 _REPORT_HINTS = ["报告", "可视化", "图表", "报表", "dashboard", "报告页"]
 
-# 报告输出目录：项目 web/（与隧道/静态服务共享，产出即可公网访问）
-_WEB_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "web"))
+# 报告输出目录：默认项目 web/（与静态服务共享，产出即可访问）；
+# 云架构多实例可配置 ASSET_WEB_ROOT 指向共享卷，保证产物跨实例可见
+_WEB_DIR = web_root()
 
 
 def _size_mb(path: str) -> str:
@@ -2585,7 +2587,7 @@ async def _run_report_task(task_id: str, requirement: str, url: str | None) -> d
                     break
             except Exception:
                 break  # 修复代码不合格，放弃
-        result = await execute_in_sandbox(code, timeout=180, preview_mode=False)
+        result = await execute_in_sandbox(code, timeout=180, preview_mode=False, task_id=task_id)
         stdout = result.stdout or ""
         stderr = result.stderr or ""
         report_ok = result.success and result.output_file_path and os.path.exists(result.output_file_path)
@@ -2778,7 +2780,7 @@ async def _run_music_task(task_id: str, requirement: str) -> dict:
 
     # 2. 沙箱执行（隔离环境 + 静态扫描 + 超时/资源限制），产物从沙箱工作区复制到 web/
     from app.sandbox.docker_executor import execute_in_sandbox
-    result = await execute_in_sandbox(code, timeout=180, preview_mode=False)
+    result = await execute_in_sandbox(code, timeout=180, preview_mode=False, task_id=task_id)
     stdout = result.stdout or ""
     stderr = result.stderr or ""
 

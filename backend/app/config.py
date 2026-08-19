@@ -56,9 +56,19 @@ class Settings(BaseSettings):
     sandbox_timeout: int = 60
     sandbox_max_timeout: int = 1800  # 单次执行总超时上限（秒），挡掉 LLM 估算的荒谬值
     sandbox_inactivity_timeout: int = 120  # 无新日志输出的秒数，超过判定卡死
-    sandbox_max_concurrency: int = 3  # 同时最多执行的脚本数，超出排队
+    sandbox_max_concurrency: int = 3  # 单实例同时最多执行的脚本数，超出排队
     sandbox_allow_subprocess: bool = True  # False 时沙箱禁止 import subprocess/socket/smtplib/ftplib
     sandbox_headful: bool = True  # True=有头浏览器（弹窗口，反爬通过率高）；False=无头（服务器可用）
+
+    # 沙箱共享目录（云架构多实例用）：留空 = 各实例本地目录（现状）。
+    # 多实例部署时指向共享卷（NFS/EFS 挂载点或对象存储同步目录），
+    # 否则登录态/产物存在实例 A 的磁盘、任务被实例 B 消费时读不到。
+    sandbox_profile_root: str = ""  # 登录态根目录；空 = backend/browser_profile
+    asset_web_root: str = ""        # 产物根目录；空 = 仓库根 web/
+
+    # 全局沙箱并发（可选）：>0 且配了 REDIS_URL 时，用 Redis 信号量做跨实例精确限制
+    # （总并发 = 该值，不再 = 实例数 × 单实例并发）。0 = 每实例各自限制（现状）。
+    sandbox_global_concurrency: int = 0
 
     # Redis（云架构：多实例共享任务锁/去重/调度；留空则回退单机内存模式）
     redis_url: str = ""  # 如 redis://localhost:6379/0；为空 = 单机模式（当前行为）

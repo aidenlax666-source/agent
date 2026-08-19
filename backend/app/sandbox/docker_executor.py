@@ -3,6 +3,7 @@ from __future__ import annotations
 subprocess fallback for hosts where Docker is unavailable (e.g. Windows dev)."""
 
 import asyncio
+import re
 import tempfile
 import os
 import time
@@ -13,6 +14,7 @@ import uuid
 from dataclasses import dataclass, field
 
 from app.config import get_settings
+from app.paths import profile_root, sandbox_tmp_root
 from app.sandbox.security import scan_dangerous_code
 from app.sandbox.static_check import scan_static_issues
 from app.sandbox.auto_fix import apply_auto_fixes
@@ -35,7 +37,7 @@ def _get_sandbox_semaphore() -> asyncio.Semaphore:
     return _sandbox_semaphore
 
 # 沙箱临时文件目录：放到项目盘（backend/tmp），避免写满 C 盘系统 Temp
-_SANDBOX_TMP = os.path.join(os.path.dirname(__file__), "..", "..", "tmp")
+_SANDBOX_TMP = sandbox_tmp_root()
 os.makedirs(_SANDBOX_TMP, exist_ok=True)
 
 # Output extensions we care about when locating the script's result file.
@@ -155,13 +157,42 @@ async def execute_in_sandbox(
     timeout: int | None = None,
     preview_mode: bool = True,
     profile_dir: str | None = None,
+    task_id: str | None = None,
 ) -> ScriptResult:
     """Execute a Python script in an isolated environment, with global concurrency cap.
 
     profile_dir: 该任务所属用户的登录态目录（按账号隔离）；None 时回退全局目录。
+    task_id: 任务 ID（云架构多实例用）：容器打标签 → 孤儿清理时定位归属；
+             同时用于跨实例全局并发槽位（配置了 sandbox_global_concurrency 时生效）。
     """
-    async with _get_sandbox_semaphore():
-        return await _execute_in_sandbox_impl(script_code, timeout, preview_mode, profile_dir)
+    # 全局并发（跨实例）：配置了 sandbox_global_concurrency 且 Redis 可用时，
+    # 先抢一个全局槽位再进本地信号量——总并发 = 配置值，而不是实例数×单实例并发。
+    global_limit = get_settings().sandbox_global_concurrency
+    slot: int | None = None
+    if global_limit > 0:
+        from app.services import distributed as _dist
+        # 排队等待槽位：最多等 sandbox_max_timeout 的 1/3（长任务本就该尽快拿到资源），
+        # 拿到后 TTL 与任务执行等长，期间不需要续期（单次执行超时 ≤ sandbox_max_timeout）
+        wait_deadline = time.time() + max(60, min(timeout or settings.sandbox_timeout, settings.sandbox_max_timeout) / 3)
+        while slot is None:
+            slot = _dist.acquire_sandbox_slot(global_limit, ttl_seconds=settings.sandbox_max_timeout)
+            if slot is not None:
+                break
+            if time.time() > wait_deadline:
+                return ScriptResult(
+                    success=False,
+                    stdout="",
+                    stderr=f"SandboxBusy: 全局沙箱并发已满（{global_limit} 个任务在执行），排队超时，请稍后重试",
+                    exit_code=-1,
+                )
+            await asyncio.sleep(1)
+    try:
+        async with _get_sandbox_semaphore():
+            return await _execute_in_sandbox_impl(script_code, timeout, preview_mode, profile_dir, task_id)
+    finally:
+        if slot is not None:
+            from app.services import distributed as _dist
+            _dist.release_sandbox_slot(slot)
 
 
 async def _execute_in_sandbox_impl(
@@ -169,6 +200,7 @@ async def _execute_in_sandbox_impl(
     timeout: int | None = None,
     preview_mode: bool = True,
     profile_dir: str | None = None,
+    task_id: str | None = None,
 ) -> ScriptResult:
     """Execute a Python script in an isolated environment.
 
@@ -257,7 +289,7 @@ async def _execute_in_sandbox_impl(
 
     # Inject auth state loading - load THIS USER's saved per-domain login states
     # (按账号隔离：任务只加载所属用户的登录态；未指定时回退全局目录)
-    auth_dir = profile_dir or os.path.join(os.path.dirname(__file__), "..", "..", "browser_profile")
+    auth_dir = profile_dir or profile_root()
     auth_dir = os.path.normpath(auth_dir)
     if os.path.exists(auth_dir):
         _ttl = getattr(settings, "sandbox_login_ttl", 7200)
@@ -325,7 +357,7 @@ async def _execute_in_sandbox_impl(
         script_path = f.name
 
     try:
-        result = await _run_container(script_path, timeout, inactivity_timeout, preview_mode, auth_dir)
+        result = await _run_container(script_path, timeout, inactivity_timeout, preview_mode, auth_dir, task_id)
         result.execution_time = time.time() - start_time
         result.auto_fixes_applied = auto_fix_result.fixes_applied
         return result
@@ -343,15 +375,19 @@ async def _run_container(
     inactivity_timeout: int,
     preview_mode: bool,
     auth_dir: str = "",
+    task_id: str | None = None,
 ) -> ScriptResult:
     """Run the script inside a Docker container, or fall back to subprocess.
 
     auth_dir 通过显式参数传入（不能用模块级全局：并发任务会互相覆盖导致跨用户登录态串号）。
+    task_id 用于容器打标签（孤儿清理定位归属）。
     """
     import logging as _logging
     _log = _logging.getLogger("app.sandbox.docker_executor")
     script_name = os.path.basename(script_path)
-    container_name = f"sandbox_{script_name.replace('.py', '')}"
+    # 容器名：带 task_id 前缀，崩溃残留时按标签即可定位到归属任务
+    _tag = re.sub(r"[^A-Za-z0-9_.-]", "", (task_id or script_name.replace(".py", "")))[:60] or "anon"
+    container_name = f"sandbox_{_tag}"
 
     # Build docker run command
     mem_limit = "256m" if preview_mode else "512m"
@@ -388,6 +424,13 @@ async def _run_container(
         # Create and run container.
         # /scripts is read-only (the script itself); /output is the writable
         # working directory where output.xlsx etc. are written.
+        from app.services import distributed as _dist
+        labels = {
+            "aiagent.sandbox": "1",
+            "aiagent.worker": _dist.get_worker_id(),  # 谁启动的谁负责回收（孤儿清理）
+        }
+        if task_id:
+            labels["aiagent.task"] = task_id  # 定位归属任务（租约过期即孤儿）
         container = await asyncio.to_thread(
             client.containers.run,
             image=settings.sandbox_image,
@@ -404,6 +447,7 @@ async def _run_container(
             detach=True,
             remove=False,
             name=container_name,
+            labels=labels,
         )
 
         try:
@@ -603,3 +647,53 @@ async def _run_fallback(script_path: str, timeout: int, inactivity_timeout: int)
             stderr=f"SubprocessError: {type(e).__name__}: {str(e)}",
             exit_code=-1,
         )
+
+
+# ============================================================
+# 孤儿沙箱清理（云架构多实例）
+# ============================================================
+
+def cleanup_orphan_containers(force_all: bool = False) -> int:
+    """清理孤儿沙箱容器（worker 崩溃/重启后残留，占资源且可能继续跑副作用）。
+
+    回收规则（宁可保守不可误杀）：
+    - 本 worker 之前启动的容器（label aiagent.worker == 本实例）——重启后必是孤儿，直接回收；
+    - 其他 worker 的容器：仅当带 aiagent.task 标签且该任务**执行租约已不存在**
+      （= 任务已结束或 worker 已崩溃）才回收；
+    - force_all=True（如手动运维）时无差别回收全部沙箱容器。
+
+    返回清理数量。Docker 不可用/非容器执行时返回 0（无操作）。
+    """
+    import logging as _logging
+    _log = _logging.getLogger("app.sandbox.docker_executor")
+    try:
+        import docker
+        client = docker.from_env()
+    except Exception:
+        return 0  # 无 Docker（宿主回退模式），无容器可清理
+
+    from app.services import distributed as _dist
+    removed = 0
+    try:
+        containers = client.containers.list(all=True, filters={"label": "aiagent.sandbox=1"})
+    except Exception as e:
+        _log.warning("孤儿容器列表获取失败: %s", str(e)[:120])
+        return 0
+
+    for c in containers:
+        try:
+            labels = c.labels or {}
+            mine = labels.get("aiagent.worker") == _dist.get_worker_id()
+            task_id = labels.get("aiagent.task", "")
+            lease_gone = bool(task_id) and not _dist.task_lease_alive(task_id)
+            if force_all or mine or lease_gone:
+                try:
+                    c.remove(force=True)
+                    removed += 1
+                    _log.info("已清理孤儿沙箱容器 %s (worker=%s task=%s)",
+                              c.name, labels.get("aiagent.worker", "?"), task_id or "-")
+                except Exception as e2:
+                    _log.warning("孤儿容器 %s 清理失败: %s", c.name, str(e2)[:100])
+        except Exception:
+            continue
+    return removed

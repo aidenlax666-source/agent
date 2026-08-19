@@ -9,10 +9,11 @@ import os
 import uuid
 
 from app.services.llm_client import chat_completion
+from app.paths import web_root
 
 logger = logging.getLogger("app.services.game_generator")
 
-_WEB_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "web"))
+_WEB_DIR = web_root()
 
 GAME_SYSTEM = """你是一位联机游戏前端专家。生成一个**多人联机小游戏**的 HTML 单文件（内嵌 CSS + JS，无外部依赖），通过 WebSocket 实现多人同玩。
 

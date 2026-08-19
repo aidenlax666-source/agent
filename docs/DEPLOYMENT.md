@@ -10,6 +10,9 @@
 | 提醒/监控去重 | 进程内 dict | Redis 带 TTL key（跨实例只触发一次） |
 | 调度抢占 | SQLite 原子更新 | SQLite 原子 + Redis 锁双保险 |
 | **任务执行** | 进程内 asyncio（本实例跑） | **Redis 队列**：提交入队 → worker 消费（多实例自动负载均衡） |
+| **沙箱目录** | 各实例本地（browser_profile/web） | 共享卷（`SANDBOX_PROFILE_ROOT`/`ASSET_WEB_ROOT`） |
+| **沙箱并发** | 每实例各自限 | 全局精确限制（`SANDBOX_GLOBAL_CONCURRENCY`，Redis 信号量） |
+| **孤儿沙箱** | 进程内取消即清理 | 容器标签 + 启动回收（任务租约判断） |
 | 运行实例 | 1 个 uvicorn | 多 worker / 多台服务器 |
 | 适用 | 本地个人使用 | 云服务器 / 团队使用 |
 
@@ -84,11 +87,42 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 ```
 客户端 ──▶ Nginx/LB（HTTPS）
               ├──▶ API 实例 1（uvicorn :8000）
-              ├──▶ API 实例 2（uvicorn :8000）  ← Redis 协调去重/锁
+              ├──▶ API 实例 2（uvicorn :8000）  ← Redis 协调去重/锁/队列
               └──▶ 静态资源（assets :8001，web/ 产物）
-                     └── Redis（锁/去重）
+                     └── Redis（锁/去重/队列/沙箱信号量）
+                     └── 共享存储（登录态 + 产物，见下）
                      └── SQLite/PostgreSQL（数据）
 ```
+
+### 5. 沙箱设计（多实例关键）
+
+多实例下沙箱不能再用"每实例本地磁盘"，否则跨实例互相看不见。三项配置：
+
+| 配置 | 默认（单机） | 云架构（多实例） | 作用 |
+|---|---|---|---|
+| `SANDBOX_PROFILE_ROOT` | `backend/browser_profile` | 共享卷路径（NFS/EFS/对象存储同步目录） | 登录态跨实例可见：用户在实例 A 登录，任务被实例 B 消费也能读到 |
+| `ASSET_WEB_ROOT` | 仓库根 `web/` | 共享卷路径 | 产物跨实例可见：产物写在 B 的磁盘，用户从 A 下载也能读到 |
+| `SANDBOX_GLOBAL_CONCURRENCY` | 0（每实例各自限 `SANDBOX_MAX_CONCURRENCY`） | 如 6 | 全局并发精确限制：总并发 = 该值，不再 = 实例数 × 单实例并发 |
+
+```env
+# 云架构 .env 追加
+SANDBOX_PROFILE_ROOT=/mnt/shared/profiles   # 共享卷挂载点
+ASSET_WEB_ROOT=/mnt/shared/web              # 共享卷挂载点
+SANDBOX_GLOBAL_CONCURRENCY=6                # 全集群最多 6 个沙箱并发
+```
+
+**全局并发实现**：Redis 槽位信号量（`aiagent:sandbox:slot:{0..N-1}`，SETNX + TTL）。
+worker 崩溃后槽位 TTL 自动过期释放，不永久占位；执行期间无需续期
+（槽位 TTL = 单次执行超时上限 1800s）。
+
+**孤儿沙箱回收**：每个沙箱容器打标签（`aiagent.worker` / `aiagent.task`）。
+实例启动时清理：
+- 本实例之前启动的容器（重启后必是孤儿）
+- 其他实例的容器：仅当带任务标签且该任务**执行租约已不存在**（= 任务结束或 worker 崩溃）才回收
+- 宁可保守不可误杀（Redis 抖动时不清理）
+
+**临时目录不共享**：脚本/输出中转仍在各实例本地 `backend/tmp`
+（产物最终落到共享 `web/`）——共享卷 IO 慢且放大临时垃圾，本地反而更安全。
 
 ## 数据库迁移（可选，高并发推荐）
 
@@ -104,5 +138,7 @@ SQLite 适合单机；多实例高并发建议迁移 PostgreSQL：
 
 - **Redis 非必需**：不配即单机模式（向后兼容）
 - **进程内 `_TASKS` 缓存**：任务状态最终落 SQLite，多实例读 DB 一致；内存表只是缓存
-- **沙箱并发**：`SANDBOX_MAX_CONCURRENCY`（默认 3）是全局资源保护，多实例各自限制，
-  总并发 = 实例数 × 3（如需精确全局限制可用 Redis 信号量——后续可加）
+- **SQLite 单文件**：多实例共享需挂载共享存储或迁移 PostgreSQL（见上）
+- **子进程回退模式无容器孤儿回收**：`cleanup_orphan_containers` 只对 Docker 容器生效；
+  宿主子进程回退（Windows 本地开发）下 worker 崩溃的残留进程由进程树超时/取消逻辑兜底，
+  云生产环境必须启用 Docker（SECURITY.md 已有此要求）

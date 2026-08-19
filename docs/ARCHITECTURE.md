@@ -154,6 +154,23 @@ Docker 不可用 ──▶ 宿主回退（Windows 本地开发）+ AST 静态扫
 
 Windows 本地开发没有 Docker 时，脚本直接在宿主跑——**这本身不是隔离**。静态扫描是**best-effort 防线**（拦最明显的风险），真正的隔离来自 Docker。文档明确说明：生产环境必须启用 Docker。
 
+### 云架构下的沙箱设计（多实例）
+
+多实例部署时沙箱不能再用"每实例本地磁盘"，三个设计点（均向后兼容，不配=现状）：
+
+1. **共享目录**：登录态（`SANDBOX_PROFILE_ROOT`）与产物（`ASSET_WEB_ROOT`）指向共享卷。
+   否则用户在实例 A 登录、任务被实例 B 消费时读不到登录态，产物也跨实例不可见。
+   路径统一走 `app/paths.py`（`profile_root` / `web_root` / `user_profile_dir`），
+   不再散落硬编码相对路径。临时中转目录保持本地（产物最终落共享 web/）。
+
+2. **全局并发**：`SANDBOX_GLOBAL_CONCURRENCY` > 0 且配 Redis 时，用 Redis 槽位信号量
+   （`aiagent:sandbox:slot:{i}`，SETNX + TTL）做跨实例精确限制——总并发 = 配置值，
+   而不是实例数 × 单实例并发。崩溃自动释放（TTL），本地信号量仍兜底本实例资源。
+
+3. **孤儿沙箱回收**：容器打标签（`aiagent.worker`/`aiagent.task`），实例启动时调用
+   `cleanup_orphan_containers()`：回收本实例遗留容器 + 任务租约已不存在的容器
+   （宁可保守不可误杀，Redis 抖动时跳过）。
+
 ---
 
 ## 6. 自动化引擎（30s 调度器）
