@@ -8,18 +8,19 @@
 本文件**自包含**：不依赖 backend 包（内置 AST 安全扫描），可用 PyInstaller
 打包成双击即用的 local_worker.exe。
 
-用法（直接运行源码）：
-    python local_worker.py --server http://your-cloud.com --token <你的JWT>
+**用户使用（只需登录一次）**：
+    local_worker.exe
+    首次运行：输入云端账号邮箱+密码 → 自动登录并保存
+    之后：直接运行即自动接收本地任务，无需再填任何东西
 
-打包 exe（Windows）：
-    pyinstaller --onefile --console --name local_worker local_worker.py
-    产物在 dist/local_worker.exe，双击即用
+打包 exe（Windows，开发者）：
+    powershell -ExecutionPolicy Bypass -File build_local_worker.ps1
+    # 可在脚本里设置 DEFAULT_SERVER 为你的云端地址，打包进 exe
 
-参数：
-    --server  云端 API 地址（默认 http://localhost:8000）
-    --token   你的登录 JWT token（网页登录后从浏览器 localStorage 拿）
+参数（一般用户不需要）：
+    --server  云端 API 地址（默认内置；可用 --server 覆盖）
     --interval 轮询间隔秒（默认 3）
-    --workdir 本地工作目录（脚本执行 cwd，默认当前目录）
+    --workdir 本地工作目录（默认当前目录）
     --max-tasks 最多执行任务数后退出（0=无限，默认）
 
 安全：
@@ -30,6 +31,7 @@
 
 import argparse
 import ast
+import json
 import os
 import shutil
 import subprocess
@@ -45,6 +47,10 @@ except ImportError:
 
 API = ""
 WORKDIR = ""
+# 打包时的默认云端地址（build_local_worker.ps1 可覆盖此值）；开发默认为本地
+DEFAULT_SERVER = "https://your-cloud.com"
+# 本地配置文件名（保存云端地址 + 登录 token）
+CONFIG_FILE = "local_worker_config.json"
 
 
 # ============================================================
@@ -276,35 +282,123 @@ def _fallback_script(requirement):
 
 
 # ============================================================
+# 配置管理（云端地址 + 登录 token 持久化）
+# ============================================================
+
+def _config_path():
+    """配置文件放工作目录（exe 同级/当前目录），随软件移动。"""
+    return os.path.join(WORKDIR, CONFIG_FILE)
+
+
+def _load_config():
+    try:
+        with open(_config_path(), encoding="utf-8") as f:
+            cfg = json.load(f)
+            if isinstance(cfg, dict):
+                return cfg
+    except Exception:
+        pass
+    return {}
+
+
+def _save_config(cfg):
+    try:
+        with open(_config_path(), "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        print("[local] 配置保存失败: " + str(e))
+        return False
+
+
+def _login(client, server, email, password):
+    """调云端登录接口，返回 token（失败抛异常）。"""
+    r = client.post(server + "/api/auth/login",
+                    json={"email": email, "password": password}, timeout=15)
+    r.raise_for_status()
+    data = r.json()
+    return data.get("access_token")
+
+
+def ensure_token(client, server, cfg, force=False):
+    """确保有有效 token：无/失效 → 控制台登录向导（输入邮箱+密码）。
+
+    返回 (token, cfg)。token 验证通过则复用，否则重新登录并保存。
+    """
+    token = cfg.get("token") or ""
+    if token and not force:
+        # 轻量验证：调 /me 确认 token 有效
+        try:
+            r = client.get(server + "/api/auth/me",
+                           headers={"Authorization": "Bearer " + token}, timeout=10)
+            if r.status_code == 200:
+                return token, cfg
+        except Exception:
+            pass
+        print("[local] 登录已过期，请重新登录")
+    # 登录向导：控制台输入账号密码
+    print("=" * 46)
+    print("  本地执行端 · 登录（只需一次，之后自动）")
+    print("=" * 46)
+    try:
+        email = input("  邮箱: ").strip()
+        password = input("  密码: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\n[local] 已取消登录")
+        sys.exit(1)
+    if not email or not password:
+        print("[local] 邮箱或密码不能为空")
+        sys.exit(1)
+    try:
+        token = _login(client, server, email, password)
+    except Exception as e:
+        print("[local] 登录失败: " + str(e))
+        print("       请确认账号密码正确，或先去网页注册账号")
+        sys.exit(1)
+    cfg["token"] = token
+    cfg["server"] = server
+    _save_config(cfg)
+    print("[local] 登录成功，已保存（下次自动登录）")
+    return token, cfg
+
+
+# ============================================================
 # 主循环
 # ============================================================
 
 def main():
     global API, WORKDIR
     ap = argparse.ArgumentParser(description="AI 自动化 Agent 本地执行端（混合架构）")
-    ap.add_argument("--server", default="http://localhost:8000", help="云端 API 地址")
-    ap.add_argument("--token", required=True, help="你的登录 JWT token（网页登录后获取）")
+    ap.add_argument("--server", default=None, help="云端 API 地址（默认打包内置）")
+    ap.add_argument("--login", action="store_true", help="强制重新登录")
     ap.add_argument("--interval", type=int, default=3, help="轮询间隔秒（默认 3）")
     ap.add_argument("--workdir", default=os.getcwd(), help="本地工作目录（默认当前目录）")
     ap.add_argument("--max-tasks", type=int, default=0, help="最多执行任务数后退出（0=无限）")
     args = ap.parse_args()
 
-    API = args.server.rstrip("/")
     WORKDIR = os.path.abspath(args.workdir)
     os.makedirs(WORKDIR, exist_ok=True)
+
+    # 云端地址：命令行 > 本地配置 > 打包内置默认
+    cfg = _load_config()
+    API = (args.server or cfg.get("server") or DEFAULT_SERVER).rstrip("/")
 
     print("[local] 本地执行端启动")
     print("  server : " + API)
     print("  workdir: " + WORKDIR)
     print("  轮询间隔: %ds（Ctrl+C 停止）" % args.interval)
-    print("  提示：任务脚本在临时目录运行，创建的产物会报告回云端；")
-    print("        需要写特定路径的需求请明确写路径（如 D:/xx/文件.txt）")
 
-    done = 0
     with httpx.Client() as client:
+        # 登录（首次 / token 过期 / 显式 --login）
+        token, cfg = ensure_token(client, API, cfg, force=args.login)
+        print("[local] 已连接云端，等待本地任务...")
+        print("        提示：在网页工作台提交「在 D:/xx 创建 文件.txt」类需求，")
+        print("        本端会自动接收并在你电脑上执行。")
+
+        done = 0
         try:
             while True:
-                executed = poll_task(client, args.token)
+                executed = poll_task(client, token)
                 if executed:
                     done += 1
                     if args.max_tasks and done >= args.max_tasks:

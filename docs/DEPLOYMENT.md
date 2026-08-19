@@ -234,13 +234,20 @@ POST /api/local/tasks/report 回传 → 云端标记 done/failed，任务详情�
 
 ```bash
 # 1. 打包 exe（Windows，开发者在仓库根目录执行一次）
+#    指定云端地址打进 exe（用户不用填）：
+$env:LOCAL_WORKER_SERVER="https://your-domain.com"
 powershell -ExecutionPolicy Bypass -File build_local_worker.ps1
 # 产物：dist/local_worker.exe（约 10-15MB）
 
-# 2. 用户拿到 exe 后运行（填云端地址 + 自己网页登录的 token）
-local_worker.exe --server https://your-domain.com --token <JWT>
+# 2. 用户拿到 exe，双击运行 → 输入云端账号邮箱+密码登录一次
+local_worker.exe
 # 之后保持运行：自动轮询领取自己的本地任务并执行
+# （token 保存在 exe 同目录 local_worker_config.json，过期自动提示重登）
 ```
+
+**用户不需要填云端地址或 token**：云端地址打包时内置，登录只需输一次
+账号密码（和网页同一个账号）。`--login` 可强制重新登录，`--server` 可
+覆盖地址（高级用户）。
 
 **安全**：exe 内置 AST 扫描（拦 eval/exec/命令注入/网络外联/危险删除），
 脚本在独立临时目录执行、超时/进程树清理；token 绑定账号，只领自己的任务。

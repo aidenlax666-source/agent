@@ -1,24 +1,15 @@
-feat: 混合架构——本地文件操作任务自动派发给用户本地 exe 端执行
+feat: 本地端登录向导——用户双击 exe 输入账号密码即可，无需填地址/token
 
-云端沙箱在服务器写不到用户本地磁盘；需求"在 D:/我的文档 创建 报告.txt"
-这类本地文件操作任务此前无法完成。新增混合架构：云端 main 分布式处理
-普通任务，本地文件类任务**自动识别**并派发给用户本地的 local_worker.exe
-在用户电脑上执行，结果回传云端收尾。
+此前本地端需要用户手动填云端地址 + JWT token，是开发者做法不是用户做法。
+改为正常产品体验：下载 exe → 双击 → 输入云端账号密码登录一次 → 全自动。
 
-后端：
-- distributed：本地执行队列（按用户隔离 aiagent:queue:local:{user_id}）
-  enqueue/dequeue_local_task
-- mini_tasks.submit：_is_local_task() 自动识别（本地/我的电脑/创建文件/
-  路径等意图），命中即 local_queued + 进本地队列；local 参数可强制覆盖
-- 新 API（JWT 认证，只操作自己的队列）：
-  POST /api/local/tasks/poll（BRPOP 领取 + 云端懒生成标准库脚本）
-  POST /api/local/tasks/report（回传 stdout/stderr/退出码/产物，云端收尾）
-- main.py 注册路由
+local_worker.py：
+- 云端地址：命令行 > 本地配置 > 打包内置默认（DEFAULT_SERVER，build 时写入）
+- 首次运行控制台登录向导：输入邮箱+密码 → 调 /api/auth/login 拿 token
+  → 存 local_worker_config.json（exe 同目录）
+- 之后自动读配置；token 失效时自动提示重登；--login 强制重登
 
-本地端：
-- local_worker.py：自包含（内置 AST 扫描，不依赖 backend 包），轮询领取/
-  本地执行（临时目录+超时+进程树清理）/回传
-- build_local_worker.ps1：PyInstaller 打包成双击即用 exe（约 10-15MB）
+build_local_worker.ps1：
+- 支持 $env:LOCAL_WORKER_SERVER 把云端地址打进 exe（用户完全不用填）
 
-测试 +6（自动识别/队列隔离/自动提交本地/普通走云端/poll-report 状态机/
-失败标记），共 140 全过。文档：DEPLOYMENT 新增混合架构章节。
+文档：DEPLOYMENT 本地端使用改登录向导方式。
