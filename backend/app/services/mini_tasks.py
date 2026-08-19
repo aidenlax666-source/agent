@@ -325,16 +325,55 @@ def _json_list(v) -> list:
         return []
 
 
+# 本地执行意图关键词：需求提到"本地文件操作"（创建/保存/整理/重命名本地磁盘文件）
+# 时自动走混合架构（派发给用户本地 exe 端），无需用户手动开关
+_LOCAL_TASK_HINTS = (
+    "本地", "我的电脑", "本地文件", "在本地", "保存到本地", "下载到本地",
+    "创建文件", "创建文件夹", "新建文件", "写文件", "写入文件",
+    "整理文件夹", "整理目录", "批量重命名", "重命名文件", "删除文件",
+    "复制文件", "移动到", "我的文档", "桌面创建", "D:/", "D:\\", "C:/", "C:\\",
+)
+
+
+def _is_local_task(requirement: str) -> bool:
+    """自动识别"需要本地执行"的任务：需求里出现本地文件操作意图。
+
+    精确词优先（"本地/我的电脑/保存到本地"），再匹配路径与文件操作动词。
+    """
+    r = requirement or ""
+    if not r.strip():
+        return False
+    r_low = r.lower()
+    # 精确意图词（中文/英文）
+    for hint in _LOCAL_TASK_HINTS:
+        if hint in r:
+            return True
+    # 英文意图
+    for en in ("create a file", "create file", "save to local", "local file",
+               "create folder", "on my computer", "my documents"):
+        if en in r_low:
+            return True
+    # "xx文件" + 创建/生成类动词 → 本地创建文件（如"创建一个报告.txt"）
+    if ("创建" in r or "生成" in r or "新建" in r) and ("文件" in r or ".txt" in r_low
+                                                         or ".csv" in r_low or ".xlsx" in r_low):
+        return True
+    return False
+
+
 def submit(requirement: str, url: str | None = None, user_id: str = "", image_paths: list[str] | None = None,
            data_paths: list[str] | None = None, skip_run: bool = False,
-           schedule: dict | None = None, priority: str = "normal") -> dict:
+           schedule: dict | None = None, priority: str = "normal", local: bool | None = None) -> dict:
     """提交一个后台任务，立即返回任务信息（持久化到 SQLite，重启不丢）。
 
     统一入口：LLM 自动判断"数据问答"还是"任务执行"，无需用户选择。
     skip_run=True：只落库不执行（用于提醒/监控等"设置型"任务，由调度器驱动）。
     schedule={type,value}：提交时直接设置定时重跑（随 INSERT 一次写入，无竞态）。
     priority=normal|high：高优任务（用户主动提交/紧急迭代）先进高优队列。
+    local：混合架构开关。None=自动识别（需求含"本地/创建文件"等意图 → 本地执行）；
+    True=强制本地；False=强制云端。自动识别时无需用户手动开关。
     """
+    if local is None:
+        local = _is_local_task(requirement)
     task_id = uuid.uuid4().hex[:12]
     record = {
         "id": task_id,
@@ -399,8 +438,17 @@ def submit(requirement: str, url: str | None = None, user_id: str = "", image_pa
     if _dist.redis_enabled():
         try:
             from app.database import _save_mini_task
+            if local:
+                # 混合架构：文件类任务 → 该用户本地队列（状态 local_queued）
+                record["status"] = "local_queued"
+                record["message"] = "已派发给本地执行（等待本地设备领取）"
             _save_mini_task(record)  # 持久化：worker 或本实例崩溃后任务不丢
-            if _dist.enqueue_task(task_id, priority=priority):
+            if local:
+                if _dist.enqueue_local_task(task_id, user_id):
+                    logger.info("[mini:%s] 已入本地执行队列（用户 %s）", task_id, user_id)
+                    return record
+                logger.warning("[mini:%s] 本地入队失败，回退云执行", task_id)
+            elif _dist.enqueue_task(task_id, priority=priority):
                 logger.info("[mini:%s] 已入分布式队列（%s）", task_id, priority)
                 return record
             logger.warning("[mini:%s] 入队失败，回退单机执行", task_id)

@@ -265,6 +265,48 @@ def task_in_queue(task_id: str) -> bool:
         return False  # Redis 抖动时保守判断"不在队列"，由租约/重试次数兜底
 
 
+# ============================================================
+# 4.5 本地执行队列（混合架构：文件类任务派发给用户本地 exe 端）
+# ============================================================
+#
+# 普通任务在服务器沙箱执行；"创建/操作本地文件"类任务（用户本地磁盘）
+# 进 Redis 本地队列（按用户隔离），由该用户本地的 local_worker.exe 领取、
+# 在用户电脑上执行，结果回传云端收尾。key: aiagent:queue:local:{user_id}
+
+LOCAL_QUEUE_PREFIX = "aiagent:queue:local"
+
+
+def local_queue_key(user_id: str) -> str:
+    return f"{LOCAL_QUEUE_PREFIX}:{user_id or 'anon'}"
+
+
+def enqueue_local_task(task_id: str, user_id: str) -> bool:
+    """本地执行任务入队（按用户隔离）。返回是否成功。"""
+    r = _get_redis()
+    if r is None:
+        return False
+    try:
+        r.lpush(local_queue_key(user_id), task_id)
+        return True
+    except Exception as e:
+        logger.warning("[distributed] 本地任务入队失败: %s", str(e)[:100])
+        return False
+
+
+def dequeue_local_task(user_id: str, timeout: float = 5.0) -> str | None:
+    """从该用户的本地队列取一个任务（BRPOP）。无任务返回 None。"""
+    r = _get_redis()
+    if r is None:
+        return None
+    try:
+        item = r.brpop(local_queue_key(user_id), timeout=timeout)
+        if item:
+            return item[1]
+    except Exception as e:
+        logger.warning("[distributed] 取本地任务失败: %s", str(e)[:100])
+    return None
+
+
 def claim_task_lease(task_id: str, ttl_seconds: int = 1800) -> bool:
     """领取任务执行租约（防多 worker 同时执行同一任务 + worker 崩溃后任务被找回）。"""
     return acquire_lock(f"task-run:{task_id}", ttl_seconds=ttl_seconds)

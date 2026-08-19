@@ -1,17 +1,24 @@
-perf: 性能/成本小项——PG 连接池 + 任务完整日志落盘 + 沙箱预构建镜像
+feat: 混合架构——本地文件操作任务自动派发给用户本地 exe 端执行
 
-三项小优化：
+云端沙箱在服务器写不到用户本地磁盘；需求"在 D:/我的文档 创建 报告.txt"
+这类本地文件操作任务此前无法完成。新增混合架构：云端 main 分布式处理
+普通任务，本地文件类任务**自动识别**并派发给用户本地的 local_worker.exe
+在用户电脑上执行，结果回传云端收尾。
 
-1. PG 连接池：db_adapter 的 PgConn 改走 psycopg2 ThreadedConnectionPool
-   （按 dsn 分池、池满兜底直连、归还时回滚未提交事务防脏状态）——
-   避免每次数据库操作新建连接/握手，高并发下省大量开销
+后端：
+- distributed：本地执行队列（按用户隔离 aiagent:queue:local:{user_id}）
+  enqueue/dequeue_local_task
+- mini_tasks.submit：_is_local_task() 自动识别（本地/我的电脑/创建文件/
+  路径等意图），命中即 local_queued + 进本地队列；local 参数可强制覆盖
+- 新 API（JWT 认证，只操作自己的队列）：
+  POST /api/local/tasks/poll（BRPOP 领取 + 云端懒生成标准库脚本）
+  POST /api/local/tasks/report（回传 stdout/stderr/退出码/产物，云端收尾）
+- main.py 注册路由
 
-2. 任务完整日志落盘：DB 只存截断错误（300 字），完整脚本/stdout/错误
-   写 web/logs/{task_id}.log（_save_task_log），result 带 log_file 字段
-   ——排查问题不用重跑任务；与产物同目录走静态服务可下载
+本地端：
+- local_worker.py：自包含（内置 AST 扫描，不依赖 backend 包），轮询领取/
+  本地执行（临时目录+超时+进程树清理）/回传
+- build_local_worker.ps1：PyInstaller 打包成双击即用 exe（约 10-15MB）
 
-3. 沙箱预构建镜像：Dockerfile.sandbox 预装 playwright/字体/常用库，
-   worker 拿到任务秒级启动容器（默认镜像每次首跑装依赖要等几十秒）；
-   SANDBOX_IMAGE 配置即用；DEPLOYMENT.md 补性能成本章节
-
-测试 +3（日志落盘/空日志不写/连接池归还），共 134 全过。
+测试 +6（自动识别/队列隔离/自动提交本地/普通走云端/poll-report 状态机/
+失败标记），共 140 全过。文档：DEPLOYMENT 新增混合架构章节。

@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.database import init_db
-from app.api import auth, auth_sessions, upload, mini, gallery, game
+from app.api import auth, auth_sessions, upload, mini, gallery, game, local_exec
 from app.services.mini_tasks import mini_scheduler_loop
 
 settings = get_settings()
@@ -64,6 +64,7 @@ app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
 app.include_router(auth_sessions.router, prefix="/api", tags=["Auth Sessions"])
 app.include_router(upload.router, prefix="/api", tags=["Upload"])
 app.include_router(mini.router, prefix="/api", tags=["Mini Generator"])
+app.include_router(local_exec.router, prefix="/api", tags=["Local Execution"])
 app.include_router(gallery.router, prefix="/api", tags=["Gallery"])
 app.include_router(game.router, prefix="/api", tags=["Multiplayer Game"])
 

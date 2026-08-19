@@ -199,6 +199,56 @@ docker-compose up -d redis postgres backend frontend assets
 > （数据层无单文件限制）。实现：`backend/app/db_adapter.py`（psycopg2 兼容层）+ 
 > `_get_conn()` 按配置分发。
 
+## 混合架构（本地执行模式）
+
+**问题**：云端沙箱在服务器，写不到用户本地磁盘。需求"在 D:/我的文档 创建 报告.txt"
+这类**本地文件操作**任务无法在云端完成。
+
+**方案**：混合架构——云端 main 分布式处理普通任务；本地文件操作类任务**自动识别**
+并派发给**用户本地的 exe 端**（`local_worker.exe`）在用户自己电脑上执行。
+
+```
+用户提交："在 D:/我的文档 创建 报告.txt"
+   │  submit 自动识别（含"本地/创建文件/路径"等意图）
+   ▼
+本地队列 aiagent:queue:local:{user_id}（Redis，按用户隔离）
+   │  用户本地的 local_worker.exe 轮询 /api/local/tasks/poll 领取
+   ▼
+云端懒生成"本地操作脚本"（Python 标准库，LLM）→ 返回给 exe
+   ▼
+exe 本地执行（内置 AST 扫描 + 子进程隔离 + 超时清理）
+   │  产物直接写在用户磁盘
+   ▼
+POST /api/local/tasks/report 回传 → 云端标记 done/failed，任务详情可见
+```
+
+### 自动识别规则（无需用户开关）
+
+需求命中以下任意意图即自动走本地执行：
+- 明确词：本地 / 我的电脑 / 本地文件 / 在本地 / 保存到本地 / 我的文档
+- 文件操作：创建文件 / 创建文件夹 / 新建文件 / 写文件 / 批量重命名 / 整理文件夹
+- 路径：`D:/` `D:\` `C:/` `C:\`
+- 组合："创建/生成/新建" + "文件/.txt/.csv/.xlsx"
+
+### 本地端使用（用户侧）
+
+```bash
+# 1. 打包 exe（Windows，开发者在仓库根目录执行一次）
+powershell -ExecutionPolicy Bypass -File build_local_worker.ps1
+# 产物：dist/local_worker.exe（约 10-15MB）
+
+# 2. 用户拿到 exe 后运行（填云端地址 + 自己网页登录的 token）
+local_worker.exe --server https://your-domain.com --token <JWT>
+# 之后保持运行：自动轮询领取自己的本地任务并执行
+```
+
+**安全**：exe 内置 AST 扫描（拦 eval/exec/命令注入/网络外联/危险删除），
+脚本在独立临时目录执行、超时/进程树清理；token 绑定账号，只领自己的任务。
+
+**云端 API**（JWT 认证，只操作自己的队列）：
+- `POST /api/local/tasks/poll`：领取一个本地任务（BRPOP，短阻塞）
+- `POST /api/local/tasks/report`：回传结果（stdout/stderr/退出码/产物路径）
+
 ## 已知取舍（诚实声明）
 
 - **Redis 非必需**：不配即单机模式（向后兼容）
