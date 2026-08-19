@@ -1,21 +1,13 @@
-feat: worker 崩溃自动恢复——失联任务重新入队 + 重试上限死信
+feat: 全局 API 限流——Redis 计数器跨实例共享（无 Redis 回退内存）
 
-分布式任务系统此前缺失闭环：worker BRPOP 取出任务后崩溃，任务既不在队列
-（BRPOP 已移出）又无人接管（租约过期），永远卡死。DEPLOYMENT.md 写的
-"可重新入队恢复"其实是手动的。
+匿名提交限速此前是进程内内存表（_ANON_SUBMIT_RATE），多实例下每实例
+各自计数——用户轮流打到不同实例即可绕过限额，与沙箱并发是同类问题。
 
-新增崩溃恢复 reaper 循环（redis_enabled 时由 main.py 启动）：
-- 周期扫描 SQLite 中 status 仍为 queued/running 且 updated_at 超过
-  STALE_TASK_AGE（2400s）的任务
-- 租约仍存活（有 worker 在执行）→ 跳过；仍在队列（只是排队久）→ 跳过
-- 真正失联 → retry_count+1 重新入队（enqueue_task）
-- 重试超过 MAX_TASK_RETRIES（3）→ 标记死信 failed（用户可见失败原因），
-  不再无限重试
+新增 distributed.rate_limit(key, limit, window)：Redis INCR+EXPIRE 固定
+窗口计数，key 跨实例共享；Redis 不可用时回退进程内计数（单机行为与原来
+一致）；Redis 抖动时放行（避免误伤用户）。
 
-实现：
-- database.py：mini_tasks 加 retry_count 列（含老库迁移）+ 查询失联任务 /
-  bump_retry_count / mark_task_dead
-- distributed.py：task_in_queue()（BRPOP 取出后任务不在队列，据此判断失联）
-- mini_tasks.py：distributed_reaper_loop()；main.py lifespan 挂载
+接入：_check_anon_rate 改调 rate_limit("anon:{ip}")，删除内存 deque 表
+与旧常量（_ANON_RATE_MAX_KEYS 等）。
 
-测试 +4（失联重入队 / 活跃跳过 / 排队跳过 / 死信），共 83 全过。
+测试 +4（Redis 计数/隔离/窗口重置/单机回退），共 87 全过。

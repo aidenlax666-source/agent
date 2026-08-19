@@ -1,8 +1,6 @@
 from __future__ import annotations
 """mini_generator 后台任务 API：提交自然语言任务 → 后台执行 → 查询状态/结果。"""
 import os
-import time as _time
-from collections import defaultdict, deque
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -221,10 +219,9 @@ UPLOAD_DIR = Path(__file__).parent.parent.parent / "uploads"
 # 需求描述长度上限（防 LLM 成本 DoS；20000 字足以容纳脚本/长需求）
 MAX_REQUIREMENT_LEN = 20000
 
-# 匿名用户提交限速：防止换 ID 无限刷积分/刷任务（内存表，按 IP）
-_ANON_SUBMIT_RATE: dict[str, deque] = defaultdict(deque)
+# 匿名用户提交限速（按 IP，防换 ID 无限刷）：Redis 计数器跨实例共享（云架构），
+# 无 Redis 时 distributed.rate_limit 回退进程内计数（单机行为与原来一致）
 ANON_MAX_PER_MINUTE = 10
-_ANON_RATE_MAX_KEYS = 10000  # 限速表键数上限（防伪造 XFF 无限填充内存）
 
 
 def _client_ip(request: Request) -> str:
@@ -250,17 +247,11 @@ def _client_ip(request: Request) -> str:
 
 
 def _check_anon_rate(ip: str) -> None:
-    now = _time.time()
-    if len(_ANON_SUBMIT_RATE) > _ANON_RATE_MAX_KEYS:
-        # 键数超限：清空最旧一半（按插入顺序）
-        for k in list(_ANON_SUBMIT_RATE.keys())[: _ANON_RATE_MAX_KEYS // 2]:
-            _ANON_SUBMIT_RATE.pop(k, None)
-    q = _ANON_SUBMIT_RATE[ip]
-    while q and now - q[0] > 60:
-        q.popleft()
-    if len(q) >= ANON_MAX_PER_MINUTE:
-        raise HTTPException(status_code=429, detail="操作太频繁，请稍后再试")
-    q.append(now)
+    """匿名提交限速（按 IP）：Redis 计数器跨实例共享（云架构），无 Redis 回退内存表。"""
+    from app.services import distributed as _dist
+    if _dist.rate_limit(f"anon:{ip}", ANON_MAX_PER_MINUTE, window_seconds=60):
+        return
+    raise HTTPException(status_code=429, detail="操作太频繁，请稍后再试")
 
 
 def _check_url(url) -> str | None:

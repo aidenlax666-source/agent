@@ -283,3 +283,36 @@ def release_sandbox_slot(slot: int) -> None:
         r.delete(f"{_SANDBOX_SLOT_PREFIX}:{slot}")
     except Exception:
         pass
+
+
+# ============================================================
+# 6. 全局限流（跨实例共享计数器，防每实例各自计数被绕过）
+# ============================================================
+
+def rate_limit(key: str, limit: int, window_seconds: int = 60) -> bool:
+    """滑动窗口限流：返回 True 表示**放行**，False 表示超限。
+
+    Redis：INCR + EXPIRE（首次设置 TTL），key 计数跨实例共享。
+    单机模式：进程内计数（与现状一致，多实例不共享但单实例正确）。
+    """
+    r = _get_redis()
+    if r is not None:
+        try:
+            k = f"aiagent:ratelimit:{key}"
+            n = r.incr(k)
+            if n == 1:
+                r.expire(k, window_seconds)
+            return n <= limit
+        except Exception as e:
+            logger.warning("[distributed] 限流计数失败（放行）: %s", str(e)[:100])
+            return True  # Redis 抖动时放行，避免误伤
+    # 单机模式：进程内计数
+    now = time.time()
+    if key not in _rate_counts or now - _rate_counts[key][1] > window_seconds:
+        _rate_counts[key] = [1, now]
+        return 1 <= limit
+    _rate_counts[key][0] += 1
+    return _rate_counts[key][0] <= limit
+
+
+_rate_counts: dict[str, list] = {}  # key -> [count, window_start_ts]（单机模式）
