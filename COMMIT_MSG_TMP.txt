@@ -1,21 +1,18 @@
-feat: PostgreSQL 迁移——database.py 连接层兼容 DATABASE_URL（sqlite 默认 + pg 可选）
+feat: 任务过程日志 steps 落库——跨实例一致、worker 崩溃不丢
 
-云架构多实例高并发下 SQLite 单文件是瓶颈，此前 DEPLOYMENT.md 把 PG 迁移
-列为后续工作。本次落地：**不配 DATABASE_URL 就是原 SQLite 行为**，配置
-postgresql:// 即自动走 PostgreSQL，业务 SQL 零改动。
+此前 steps（过程可见性：每个执行步骤）只存在执行实例的内存 _TASKS 里，
+未写 SQLite：任务在实例 B 跑、用户轮询打到实例 A 拿不到过程日志；
+worker 崩溃/重启后过程日志全丢。且发现白名单里有 progress 但表结构
+无该列（传 progress 会报 no such column）的隐藏 bug。
 
-实现：
-- config：新增 DATABASE_URL（空=SQLite 默认）
-- 新增 backend/app/db_adapter.py：PgConn 把 psycopg2 包装成 sqlite3 风格
-  连接——`?` 占位符自动转 `%s`、RealDictRow 对齐 row["col"]/dict(row)、
-  executescript 按分号拆分、PRAGMA 语句静默跳过、列检查走 information_schema
-- database.py：_get_conn() 按配置分发 sqlite/pg；_table_columns() 统一取列名；
-  _init_db/_ensure_mini_schedule_columns 迁移检查改用统一接口
-- mini_tasks.py 7 处散落 sqlite3.connect 直连 + gallery.py 1 处 → 统一走
-  _get_conn()（pg 模式下数据一致，不再直连 sqlite 文件）
-- requirements.txt 加 psycopg2-binary（可选，不配 DATABASE_URL 无需装）
-- docker-compose.yml 加 postgres 服务（可选）；DEPLOYMENT.md 数据库迁移章节
-  从"后续工作"改为"已内置"，架构对比表补数据层/任务恢复/限流/优先级行
+改动：
+- database.py：mini_tasks 新增 steps 列（JSON 数组）与 progress 列（修复
+  隐藏 bug），含老库迁移；_save_mini_task 存 steps；白名单加 steps；
+  _update_mini_task 对 steps/progress 正确处理；_get_mini_task /
+  _list_mini_tasks / reaper 读取均解析 steps
+- mini_tasks.py：_run_task 每个执行模式开始时把 steps+progress 落库
+  （update_mini_task），跨实例可见、崩溃不丢；get_status 内存/DB 两条
+  路径都返回 steps（DB 路径解析 JSON 字符串）
 
-测试 +9（URL 识别/SQL 拆分/占位符转换/PRAGMA 跳过/假 psycopg2 执行路径），
-共 110 全过（sqlite 路径无回归）。
+测试 +4（落库与增量更新/模拟重启跨实例读取/空默认/get_status 返回），
+共 118 全过。

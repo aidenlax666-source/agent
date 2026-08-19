@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 """mini_generator 后台任务队列：提交 → 后台执行 → 查询状态/结果。
 
 复用 long_task 的进程内 asyncio 注册表，无需 Redis/Celery。
@@ -1350,7 +1350,9 @@ async def _run_task(task_id: str, requirement: str, url: str | None, record: dic
             record["steps"] = steps
             record["progress"] = min(95, 10 + int(85 * len(steps) / max(1, len(modes))))
             record["message"] = f"正在{_MODE_LABEL.get(mode, mode)}..."
-            await update_mini_task(task_id, status="running", message=record["message"])
+            # 过程日志每步落库：跨实例可见（worker B 跑，用户轮询 A 也能看到）、worker 崩溃不丢
+            await update_mini_task(task_id, status="running", message=record["message"],
+                                   progress=record["progress"], steps=steps)
             if mode == "game":
                 from app.services.game_generator import generate_multiplayer_game
                 g = await generate_multiplayer_game(requirement)
@@ -2878,6 +2880,12 @@ def get_status(task_id: str, user_id: str = "") -> dict | None:
                     d["result"] = json.loads(d["result"])
                 except Exception:
                     d["result"] = None
+            steps = d.get("steps") or ""
+            if isinstance(steps, str):
+                try:
+                    steps = json.loads(steps) if steps.strip() else []
+                except Exception:
+                    steps = []
             return {
                 "id": d["id"],
                 "requirement": d["requirement"],
@@ -2888,6 +2896,7 @@ def get_status(task_id: str, user_id: str = "") -> dict | None:
                 "created_at": d["created_at"],
                 "error": d["error"],
                 "result": d["result"],
+                "steps": steps or [],
                 "running": False,
             }
         except Exception as e:
@@ -2905,6 +2914,7 @@ def get_status(task_id: str, user_id: str = "") -> dict | None:
         "created_at": rec["created_at"],
         "error": rec["error"],
         "result": rec["result"],
+        "steps": rec.get("steps") or [],
         "running": is_running(task_id),
     }
     return out

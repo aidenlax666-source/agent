@@ -89,7 +89,9 @@ def _init_db():
                 next_run_at REAL,
                 image_paths TEXT DEFAULT '',        -- JSON 数组（上传图片路径，随任务持久化）
                 data_paths TEXT DEFAULT '',         -- JSON 数组（上传数据文件路径）
-                retry_count INTEGER DEFAULT 0       -- 崩溃恢复重试次数（分布式 worker）
+                retry_count INTEGER DEFAULT 0,      -- 崩溃恢复重试次数（分布式 worker）
+                steps TEXT DEFAULT '',              -- JSON 数组：执行过程日志（跨实例可见/崩溃不丢）
+                progress INTEGER DEFAULT 0          -- 进度 0-100（前端进度条）
             );
 
             -- 站内通知（定时提醒 / 监控触发 / 任务完成提醒）
@@ -140,7 +142,7 @@ def _init_db():
 
             -- Guest user created by API on first request if needed
         """)
-    # 老库迁移：补 image_paths/data_paths/retry_count 列（不存在才加）
+    # 老库迁移：补 image_paths/data_paths/retry_count/steps/progress 列（不存在才加）
     with _get_conn() as conn:
         cols = _table_columns(conn, "mini_tasks")
         for col in ("image_paths", "data_paths"):
@@ -148,6 +150,10 @@ def _init_db():
                 conn.execute(f"ALTER TABLE mini_tasks ADD COLUMN {col} TEXT DEFAULT ''")
         if "retry_count" not in cols:
             conn.execute("ALTER TABLE mini_tasks ADD COLUMN retry_count INTEGER DEFAULT 0")
+        if "steps" not in cols:
+            conn.execute("ALTER TABLE mini_tasks ADD COLUMN steps TEXT DEFAULT ''")
+        if "progress" not in cols:
+            conn.execute("ALTER TABLE mini_tasks ADD COLUMN progress INTEGER DEFAULT 0")
 
 
 # ============================================================
@@ -217,14 +223,14 @@ def _save_mini_task(record: dict) -> None:
     with _get_conn() as conn:
         conn.execute(
             """INSERT INTO mini_tasks (id, user_id, requirement, url, status, message, created_at, updated_at,
-                                       result, error, image_paths, data_paths,
+                                       result, error, image_paths, data_paths, steps,
                                        schedule_type, schedule_value, enabled, next_run_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(id) DO UPDATE SET
                  requirement=excluded.requirement, url=excluded.url,
                  status=excluded.status, message=excluded.message, updated_at=excluded.updated_at,
                  result=excluded.result, error=excluded.error,
-                 image_paths=excluded.image_paths, data_paths=excluded.data_paths""",
+                 image_paths=excluded.image_paths, data_paths=excluded.data_paths, steps=excluded.steps""",
             (
                 record["id"], record.get("user_id", ""), record["requirement"], record.get("url", ""),
                 record.get("status", "queued"), record.get("message", ""),
@@ -233,6 +239,7 @@ def _save_mini_task(record: dict) -> None:
                 record.get("error"),
                 json.dumps(record.get("image_paths") or [], ensure_ascii=False),
                 json.dumps(record.get("data_paths") or [], ensure_ascii=False),
+                json.dumps(record.get("steps") or [], ensure_ascii=False),
                 record.get("schedule_type", ""), record.get("schedule_value", ""),
                 1 if record.get("enabled") else 0, record.get("next_run_at"),
             ),
@@ -252,7 +259,7 @@ def _decode_json_list(v) -> list:
 # mini_tasks 允许动态更新的列白名单（防 SQL 注入：字段名只能来自白名单）
 _ALLOWED_MINI_UPDATE_FIELDS = {
     "status", "message", "result", "error", "progress", "url", "requirement",
-    "updated_at", "image_paths", "data_paths",
+    "updated_at", "image_paths", "data_paths", "steps",
 }
 
 
@@ -262,8 +269,8 @@ def _update_mini_task(task_id: str, **fields) -> None:
     if not fields:
         return
     import time as _t
-    # image_paths/data_paths 传 list 时序列化为 JSON
-    for k in ("image_paths", "data_paths"):
+    # image_paths/data_paths/steps 传 list 时序列化为 JSON
+    for k in ("image_paths", "data_paths", "steps"):
         if k in fields and isinstance(fields[k], list):
             fields[k] = json.dumps(fields[k], ensure_ascii=False)
     fields["updated_at"] = _t.time()
@@ -285,6 +292,7 @@ def _get_mini_task(task_id: str) -> dict | None:
             d["result"] = None
     d["image_paths"] = _decode_json_list(d.get("image_paths"))
     d["data_paths"] = _decode_json_list(d.get("data_paths"))
+    d["steps"] = _decode_json_list(d.get("steps"))
     return d
 
 
@@ -301,6 +309,7 @@ def _list_mini_tasks(limit: int = 30) -> list[dict]:
                 d["result"] = json.loads(d["result"])
             except (json.JSONDecodeError, TypeError):
                 d["result"] = None
+        d["steps"] = _decode_json_list(d.get("steps"))
         out.append(d)
     return out
 
@@ -417,6 +426,7 @@ def _get_stale_mini_tasks(older_than: float) -> list[dict]:
                 d["result"] = None
         d["image_paths"] = _decode_json_list(d.get("image_paths"))
         d["data_paths"] = _decode_json_list(d.get("data_paths"))
+        d["steps"] = _decode_json_list(d.get("steps"))
         out.append(d)
     return out
 
